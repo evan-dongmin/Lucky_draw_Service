@@ -1,0 +1,28 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: #0b0e14;
+  color: #f5f7fa;
+  font-family: "Pretendard", "Malgun Gothic", sans-serif;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+#stage-root {
+  text-align: center;
+}
+
+h1 {
+  font-size: 4rem;
+  margin-bottom: 1rem;
+}
+
+#ws-status {
+  font-size: 1.5rem;
+  color: #8b95a5;
+}
