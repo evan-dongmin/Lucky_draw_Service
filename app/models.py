@@ -1,0 +1,110 @@
+from __future__ import annotations
+
+from dataclasses import dataclass, field, asdict
+from typing import Any
+
+
+@dataclass
+class Participant:
+    id: str
+    name: str
+    team: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Participant":
+        return cls(id=data["id"], name=data["name"], team=data.get("team", ""))
+
+
+@dataclass
+class RoundPlan:
+    round_index: int
+    pass_count: int
+    duration_seconds: float
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "RoundPlan":
+        return cls(
+            round_index=data["round_index"],
+            pass_count=data["pass_count"],
+            duration_seconds=data["duration_seconds"],
+        )
+
+
+@dataclass
+class DrawResult:
+    seed: str
+    commit: str
+    winners: list[str] = field(default_factory=list)
+    ranking: list[str] = field(default_factory=list)
+    round_pass_ids: dict[int, list[str]] = field(default_factory=dict)
+    revealed: bool = False
+    created_at: str = ""
+    revealed_at: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "seed": self.seed,
+            "commit": self.commit,
+            "winners": list(self.winners),
+            "ranking": list(self.ranking),
+            "round_pass_ids": {str(k): v for k, v in self.round_pass_ids.items()},
+            "revealed": self.revealed,
+            "created_at": self.created_at,
+            "revealed_at": self.revealed_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "DrawResult":
+        return cls(
+            seed=data["seed"],
+            commit=data["commit"],
+            winners=list(data.get("winners", [])),
+            ranking=list(data.get("ranking", [])),
+            round_pass_ids={int(k): v for k, v in data.get("round_pass_ids", {}).items()},
+            revealed=data.get("revealed", False),
+            created_at=data.get("created_at", ""),
+            revealed_at=data.get("revealed_at"),
+        )
+
+
+@dataclass
+class Session:
+    session_id: str
+    participants: list[Participant] = field(default_factory=list)
+    draw_count: int = 1
+    excluded_ids: list[str] = field(default_factory=list)
+    mode: str = "roulette"
+    created_at: str = ""
+    draws: list[DrawResult] = field(default_factory=list)
+    round_plans: list[RoundPlan] = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "session_id": self.session_id,
+            "participants": [p.to_dict() for p in self.participants],
+            "draw_count": self.draw_count,
+            "excluded_ids": list(self.excluded_ids),
+            "mode": self.mode,
+            "created_at": self.created_at,
+            "draws": [d.to_dict() for d in self.draws],
+            "round_plans": [r.to_dict() for r in self.round_plans],
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "Session":
+        return cls(
+            session_id=data["session_id"],
+            participants=[Participant.from_dict(p) for p in data.get("participants", [])],
+            draw_count=data.get("draw_count", 1),
+            excluded_ids=list(data.get("excluded_ids", [])),
+            mode=data.get("mode", "roulette"),
+            created_at=data.get("created_at", ""),
+            draws=[DrawResult.from_dict(d) for d in data.get("draws", [])],
+            round_plans=[RoundPlan.from_dict(r) for r in data.get("round_plans", [])],
+        )

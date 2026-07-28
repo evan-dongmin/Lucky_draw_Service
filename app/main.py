@@ -6,11 +6,20 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.config import STATIC_DIR
+from app.store import SessionStore
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("lucky_draw")
 
 app = FastAPI(title="타추위 추첨 프로그램")
+store = SessionStore()
+
+
+@app.on_event("startup")
+async def load_session_on_startup() -> None:
+    session = store.load_snapshot()
+    if session:
+        logger.info("세션 스냅샷 복원: %s", session.session_id)
 
 
 class ConnectionHub:
