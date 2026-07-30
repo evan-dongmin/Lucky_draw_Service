@@ -10,8 +10,20 @@ const departmentCountEl = document.getElementById("department-count");
 const commitBadgeEl = document.getElementById("commit-badge");
 const reelEl = document.getElementById("reel");
 const winnerListEl = document.getElementById("winner-list");
+const mcCaptionEl = document.getElementById("mc-caption");
 
 const animatedDrawKeys = new Set();
+let lastOpeningShownFor = null;
+let lastFinalShownFor = null;
+
+async function showMcLine(tag) {
+  try {
+    const result = await fetchJSON(`/api/mc/line/${tag}`);
+    mcCaptionEl.textContent = result.text ? `"${result.text}"` : "";
+  } catch (e) {
+    mcCaptionEl.textContent = "";
+  }
+}
 
 function showView(name) {
   for (const key of Object.keys(views)) {
@@ -64,12 +76,21 @@ function render(session) {
   if (!latest.revealed) {
     commitBadgeEl.textContent = latest.commit;
     showView("committed");
+    if (lastOpeningShownFor !== latest.commit) {
+      lastOpeningShownFor = latest.commit;
+      showMcLine("opening");
+    }
     return;
   }
   const drawKey = `${session.draws.length - 1}:${latest.revealed_at}`;
   if (!animatedDrawKeys.has(drawKey)) {
     animatedDrawKeys.add(drawKey);
-    playRouletteSequence(latest);
+    playRouletteSequence(latest).then(() => {
+      if (lastFinalShownFor !== drawKey) {
+        lastFinalShownFor = drawKey;
+        showMcLine("final_announce").then(() => delay(2500)).then(() => showMcLine("verification"));
+      }
+    });
   } else {
     showView("drawing");
     winnerListEl.innerHTML = latest.winners

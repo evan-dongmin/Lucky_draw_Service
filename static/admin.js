@@ -69,6 +69,19 @@ document.getElementById("btn-sample").addEventListener("click", async () => {
   renderPreview(result);
 });
 
+document.getElementById("btn-mc-pregenerate").addEventListener("click", async () => {
+  const statusEl = document.getElementById("mc-status");
+  statusEl.textContent = "생성 중...";
+  try {
+    const result = await fetchJSON("/api/mc/pregenerate", { method: "POST" });
+    statusEl.textContent = result.has_llm
+      ? `LLM 사전생성 완료 (${result.cached_tags.length}개 상황)`
+      : "API 키 없음 -- 정적 폴백 멘트 사용";
+  } catch (e) {
+    statusEl.textContent = `실패: ${e.message}`;
+  }
+});
+
 document.getElementById("btn-create-session").addEventListener("click", async () => {
   if (!previewParticipants.length) {
     alert("먼저 명단을 미리보기 해주세요.");

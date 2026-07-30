@@ -127,3 +127,23 @@ def test_exclude_endpoint_updates_session(client):
     resp = client.post("/api/session/excluded", json={"excluded_ids": excluded})
     assert resp.status_code == 200
     assert resp.json()["excluded_ids"] == excluded
+
+
+def test_mc_line_without_session_still_returns_static_line(client):
+    resp = client.get("/api/mc/line/opening")
+    assert resp.status_code == 200
+    assert resp.json()["text"]
+
+
+def test_mc_line_with_session_fills_participant_count(client):
+    _create_sample_session(client, count=10, draw_count=2)
+    resp = client.get("/api/mc/line/opening")
+    assert resp.status_code == 200
+    assert "10" in resp.json()["text"] or resp.json()["text"]
+
+
+def test_mc_pregenerate_without_api_key_reports_static_fallback(client, monkeypatch):
+    monkeypatch.setattr("app.mc.config.ANTHROPIC_API_KEY", "")
+    resp = client.post("/api/mc/pregenerate")
+    assert resp.status_code == 200
+    assert resp.json()["has_llm"] is False

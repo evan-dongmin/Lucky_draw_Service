@@ -13,6 +13,7 @@ from pydantic import BaseModel
 
 from app import fairness, roster
 from app.config import STATIC_DIR
+from app.mc import MCAgent
 from app.models import DrawResult, Participant, Session
 from app.store import SessionStore
 
@@ -20,6 +21,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("lucky_draw")
 
 store = SessionStore()
+mc_agent = MCAgent()
 state_lock = asyncio.Lock()
 
 
@@ -28,6 +30,7 @@ async def lifespan(_: FastAPI):
     session = store.load_snapshot()
     if session:
         logger.info("세션 스냅샷 복원: %s", session.session_id)
+    mc_agent.load_cache()
     yield
 
 
@@ -300,6 +303,33 @@ async def verify_draw_endpoint(draw_index: int) -> dict[str, Any]:
         "server_recomputed_winners": recomputed["winners"],
         "matches": fairness.verify_draw(draw),
     }
+
+
+# ---------------------------------------------------------------------------
+# MC Agent: 사전 배치 생성 + 상황별 멘트 조회
+# ---------------------------------------------------------------------------
+
+
+@app.post("/api/mc/pregenerate")
+async def mc_pregenerate() -> dict[str, Any]:
+    async with state_lock:
+        mc_agent.pregenerate()
+        return {"has_llm": mc_agent.has_llm, "cached_tags": mc_agent.cached_tags}
+
+
+@app.get("/api/mc/line/{tag}")
+async def mc_line(tag: str) -> dict[str, Any]:
+    session = store.get_session()
+    params: dict[str, Any] = {}
+    if session:
+        params["participant_count"] = len(session.participants)
+        params["department_count"] = len({p.team or "미지정" for p in session.participants})
+        if session.draws:
+            latest = session.draws[-1]
+            if latest.revealed:
+                params["winner_count"] = len(latest.winners)
+    text = mc_agent.pick_line(tag, **params)
+    return {"tag": tag, "text": text}
 
 
 # ---------------------------------------------------------------------------
