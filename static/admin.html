@@ -36,9 +36,10 @@ P002,김철수,영업팀"></textarea>
         <label>모드
           <select id="mode-select">
             <option value="roulette">룰렛 (안전망 MVP)</option>
-            <option value="racing" disabled>레이싱 (Phase 3 예정)</option>
+            <option value="racing">레이싱 (부서 대항 퍼널)</option>
           </select>
         </label>
+        <label>총 진행 시간(초) <input type="number" id="total-seconds" value="300" min="150" /></label>
         <button id="btn-create-session">세션 생성</button>
       </div>
     </section>
@@ -57,9 +58,11 @@ P002,김철수,영업팀"></textarea>
 
       <div class="row">
         <button id="btn-commit">① 커밋 생성</button>
-        <button id="btn-reveal">② 추첨 시작(리빌)</button>
+        <button id="btn-reveal">② 추첨 시작(리빌) - 룰렛 모드</button>
+        <button id="btn-start-racing">② 레이스 시작 - 레이싱 모드</button>
       </div>
       <div id="commit-display" class="commit-box"></div>
+      <div id="racing-status" class="commit-box"></div>
 
       <div class="row">
         <label><input type="checkbox" id="redraw-exclude-winners" checked /> 이전 당첨자 제외하고 재추첨</label>

@@ -147,3 +147,50 @@ def test_mc_pregenerate_without_api_key_reports_static_fallback(client, monkeypa
     resp = client.post("/api/mc/pregenerate")
     assert resp.status_code == 200
     assert resp.json()["has_llm"] is False
+
+
+def _create_racing_session(client, count=30, draw_count=3, total_seconds=300.0):
+    sample = client.get("/api/roster/sample", params={"count": count}).json()
+    resp = client.post(
+        "/api/session",
+        json={
+            "participants": sample["participants"],
+            "draw_count": draw_count,
+            "mode": "racing",
+            "total_seconds": total_seconds,
+        },
+    )
+    assert resp.status_code == 200
+    return resp.json()
+
+
+def test_racing_start_rejected_for_roulette_mode(client):
+    _create_sample_session(client)
+    client.post("/api/draw/commit")
+    resp = client.post("/api/racing/start", json={})
+    assert resp.status_code == 400
+
+
+def test_racing_start_requires_commit_first(client):
+    _create_racing_session(client)
+    resp = client.post("/api/racing/start", json={})
+    assert resp.status_code == 404
+
+
+def test_racing_start_rejected_if_already_revealed(client):
+    _create_racing_session(client)
+    client.post("/api/draw/commit")
+    client.post("/api/draw/reveal", json={})
+    resp = client.post("/api/racing/start", json={})
+    assert resp.status_code == 400
+
+
+def test_racing_start_succeeds_and_rejects_concurrent_start(client):
+    _create_racing_session(client, total_seconds=150)
+    client.post("/api/draw/commit")
+    resp = client.post("/api/racing/start", json={})
+    assert resp.status_code == 200
+    assert resp.json()["started"] is True
+
+    resp2 = client.post("/api/racing/start", json={})
+    assert resp2.status_code == 409

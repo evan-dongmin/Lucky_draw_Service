@@ -81,3 +81,49 @@ h1 {
   color: #ffd166;
   font-style: italic;
 }
+
+.phase-banner {
+  font-size: 1.6rem;
+  font-weight: 700;
+  margin-bottom: 1.5rem;
+  color: #7cd4f2;
+}
+
+.phase-banner .countdown {
+  font-family: "Consolas", monospace;
+  color: #ffd166;
+  margin-left: 0.75rem;
+}
+
+.department-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  max-width: 600px;
+  margin: 0 auto;
+}
+
+.dept-bar-row {
+  text-align: left;
+}
+
+.dept-bar-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 1rem;
+  margin-bottom: 0.2rem;
+}
+
+.dept-bar-track {
+  background: #171c26;
+  border: 1px solid #2a3242;
+  border-radius: 0.4rem;
+  height: 1.4rem;
+  overflow: hidden;
+}
+
+.dept-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4f8cff, #7cf29c);
+  transition: width 0.25s ease-out;
+}

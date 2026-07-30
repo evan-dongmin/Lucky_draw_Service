@@ -11,7 +11,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import fairness, roster
+from app import director, fairness, race, roster
 from app.config import STATIC_DIR
 from app.mc import MCAgent
 from app.models import DrawResult, Participant, Session
@@ -63,6 +63,11 @@ class ConnectionHub:
 
 
 hub = ConnectionHub()
+active_race_tasks: dict[str, asyncio.Task] = {}
+
+RACE_ROUND_INDEX = {"race_r1": 1, "race_r2": 2, "race_r3": 3}
+SCORE_PHASE_ROUND = {"score_r1_select_r2": 1, "score_r2_select_r3": 2}
+RACE_TICK_INTERVAL_SECONDS = 0.3
 
 
 # ---------------------------------------------------------------------------
@@ -73,13 +78,22 @@ hub = ConnectionHub()
 
 
 def public_draw_dict(draw: DrawResult) -> dict[str, Any]:
+    """리빌 전에도 레이싱 모드는 라운드가 끝날 때마다 그 라운드의 통과자만
+    점진 공개한다(revealed_rounds). 최종 당첨자(winners)·전체 순위(ranking)·
+    시드는 전체 리빌(draw.revealed) 전까지 절대 공개하지 않는다."""
     data = draw.to_dict()
     if not draw.revealed:
         data["seed"] = None
         data["winners"] = []
         data["ranking"] = []
-        data["round_pass_ids"] = {}
-        data["department_pass_rate"] = {}
+        data["round_pass_ids"] = {
+            str(r): ids for r, ids in draw.round_pass_ids.items() if r in draw.revealed_rounds
+        }
+        data["department_pass_rate"] = {
+            str(r): rates
+            for r, rates in draw.department_pass_rate.items()
+            if r in draw.revealed_rounds
+        }
     return data
 
 
@@ -165,6 +179,7 @@ class CreateSessionRequest(BaseModel):
     participants: list[dict[str, Any]]
     draw_count: int = 1
     mode: str = "roulette"
+    total_seconds: float = 300.0
 
 
 @app.post("/api/session")
@@ -178,6 +193,7 @@ async def create_session(payload: CreateSessionRequest) -> dict[str, Any]:
             participants=participants,
             draw_count=payload.draw_count,
             mode=payload.mode,
+            total_seconds=payload.total_seconds,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
         store.set_session(session)
@@ -303,6 +319,132 @@ async def verify_draw_endpoint(draw_index: int) -> dict[str, Any]:
         "server_recomputed_winners": recomputed["winners"],
         "matches": fairness.verify_draw(draw),
     }
+
+
+# ---------------------------------------------------------------------------
+# 레이싱 런북 자동 진행 (Director Agent) -- 3라운드 부서 대항 퍼널
+# ---------------------------------------------------------------------------
+
+
+def _department_denom_sets(
+    departments: dict[str, list[str]], round_index: int, draw: DrawResult
+) -> dict[str, set[str]] | None:
+    """fairness.py의 _department_pass_rates와 동일한 분모 규칙.
+    R1은 부서 전체, R2는 부서 ∩ R1 통과자. R3는 부서 표시를 하지 않는다."""
+    if round_index == 1:
+        return {name: set(ids) for name, ids in departments.items()}
+    if round_index == 2:
+        r1_set = set(draw.round_pass_ids[1])
+        return {name: set(ids) & r1_set for name, ids in departments.items()}
+    return None
+
+
+async def _run_race_phase(draw: DrawResult, round_index: int, duration_seconds: float) -> None:
+    population = draw.ranking if round_index == 1 else draw.round_pass_ids[round_index - 1]
+    pass_count = len(draw.round_pass_ids[round_index])
+    total = len(population)
+    line = race.pass_line(pass_count, total)
+    departments = draw.snapshot.get("departments", {})
+    denom_sets = _department_denom_sets(departments, round_index, draw)
+
+    loop = asyncio.get_running_loop()
+    start = loop.time()
+    while True:
+        elapsed = loop.time() - start
+        ratio = min(elapsed / duration_seconds, 1.0) if duration_seconds > 0 else 1.0
+        positions = race.compute_tick(population, ratio, round_index)
+        payload: dict[str, Any] = {
+            "type": "race_tick",
+            "round": round_index,
+            "progress_ratio": ratio,
+            "pass_line": line,
+            "positions": positions,
+        }
+        if denom_sets is not None:
+            payload["department_live_rate"] = race.department_live_rates(positions, denom_sets, line)
+        await hub.broadcast(payload)
+        if ratio >= 1.0:
+            break
+        await asyncio.sleep(RACE_TICK_INTERVAL_SECONDS)
+
+
+async def _announce_round(session: Session, draw: DrawResult, round_index: int) -> None:
+    async with state_lock:
+        if round_index not in draw.revealed_rounds:
+            draw.revealed_rounds.append(round_index)
+            store.set_session(session)
+    await hub.broadcast(
+        {
+            "type": "round_revealed",
+            "round": round_index,
+            "pass_ids": draw.round_pass_ids[round_index],
+            "department_pass_rate": draw.department_pass_rate.get(round_index, {}),
+        }
+    )
+
+
+async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: float) -> None:
+    try:
+        segments = director.build_runbook(total_seconds=total_seconds, predictions_enabled=False)
+        for seg in segments:
+            session = store.get_session()
+            if session is None or session.session_id != session_id:
+                return  # 세션이 초기화되었으면 조용히 중단
+            if draw_index >= len(session.draws):
+                return
+            draw = session.draws[draw_index]
+
+            await hub.broadcast(
+                {
+                    "type": "phase",
+                    "phase": seg.phase,
+                    "duration_seconds": seg.duration_seconds,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                }
+            )
+
+            if seg.phase in RACE_ROUND_INDEX:
+                await _run_race_phase(draw, RACE_ROUND_INDEX[seg.phase], seg.duration_seconds)
+            elif seg.phase in SCORE_PHASE_ROUND:
+                await _announce_round(session, draw, SCORE_PHASE_ROUND[seg.phase])
+                await asyncio.sleep(seg.duration_seconds)
+            elif seg.phase == "final_announce":
+                async with state_lock:
+                    fairness.reveal(draw)
+                    store.set_session(session)
+                await hub.broadcast({"type": "revealed", "draw": public_draw_dict(draw)})
+                await asyncio.sleep(seg.duration_seconds)
+            else:
+                await asyncio.sleep(seg.duration_seconds)
+
+        await hub.broadcast({"type": "racing_complete"})
+    except Exception:
+        logger.exception("레이싱 런북 진행 중 오류 -- 세션 %s", session_id)
+    finally:
+        active_race_tasks.pop(session_id, None)
+
+
+class RacingStartRequest(BaseModel):
+    draw_index: int | None = None
+
+
+@app.post("/api/racing/start")
+async def start_racing(payload: RacingStartRequest) -> dict[str, Any]:
+    session = _require_session()
+    if session.mode != "racing":
+        raise HTTPException(status_code=400, detail="레이싱 모드 세션이 아닙니다.")
+    draw = _require_draw(session, payload.draw_index)
+    if draw.revealed:
+        raise HTTPException(status_code=400, detail="이미 리빌된 추첨입니다. 재추첨 후 시작하세요.")
+    if session.session_id in active_race_tasks and not active_race_tasks[session.session_id].done():
+        raise HTTPException(status_code=409, detail="이미 레이스가 진행 중입니다.")
+
+    draw_index = payload.draw_index if payload.draw_index is not None else len(session.draws) - 1
+    task = asyncio.create_task(
+        run_racing_sequence(session.session_id, draw_index, session.total_seconds)
+    )
+    active_race_tasks[session.session_id] = task
+    return {"started": True, "total_seconds": session.total_seconds, "draw_index": draw_index}
 
 
 # ---------------------------------------------------------------------------

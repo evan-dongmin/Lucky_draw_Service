@@ -5,6 +5,8 @@ const rosterWarningsEl = document.getElementById("roster-warnings");
 const rosterPreviewEl = document.getElementById("roster-preview");
 const drawCountEl = document.getElementById("draw-count");
 const modeSelectEl = document.getElementById("mode-select");
+const totalSecondsEl = document.getElementById("total-seconds");
+const racingStatusEl = document.getElementById("racing-status");
 const sessionInfoEl = document.getElementById("session-info");
 const excludeIdsEl = document.getElementById("exclude-ids");
 const commitDisplayEl = document.getElementById("commit-display");
@@ -15,7 +17,16 @@ let currentSession = null;
 
 const ws = connectWS((data) => {
   console.log("[ws event]", data.type);
-  refreshSession();
+  if (data.type === "phase") {
+    racingStatusEl.innerHTML = `<strong>진행 단계:</strong> ${data.phase} (${data.duration_seconds.toFixed(1)}초)`;
+  } else if (data.type === "round_revealed") {
+    racingStatusEl.innerHTML = `<strong>${data.round}라운드 통과자 발표:</strong> ${data.pass_ids.length}명 통과`;
+  } else if (data.type === "racing_complete") {
+    racingStatusEl.innerHTML = `<strong>레이스 진행 완료</strong>`;
+  }
+  if (["session_created", "session_updated", "commit_ready", "revealed", "reset"].includes(data.type)) {
+    refreshSession();
+  }
 });
 ws.addEventListener("open", () => {
   statusEl.textContent = "연결됨 (WS ready)";
@@ -94,6 +105,7 @@ document.getElementById("btn-create-session").addEventListener("click", async ()
         participants: previewParticipants,
         draw_count: parseInt(drawCountEl.value, 10),
         mode: modeSelectEl.value,
+        total_seconds: parseFloat(totalSecondsEl.value),
       }),
     });
     await refreshSession();
@@ -131,6 +143,15 @@ document.getElementById("btn-reveal").addEventListener("click", async () => {
   try {
     await fetchJSON("/api/draw/reveal", { method: "POST", body: JSON.stringify({}) });
     await refreshSession();
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+document.getElementById("btn-start-racing").addEventListener("click", async () => {
+  try {
+    const result = await fetchJSON("/api/racing/start", { method: "POST", body: JSON.stringify({}) });
+    racingStatusEl.innerHTML = `레이스 시작됨 (총 ${result.total_seconds}초)`;
   } catch (e) {
     alert(e.message);
   }
