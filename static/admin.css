@@ -10,8 +10,99 @@ body {
   font-family: "Pretendard", "Malgun Gothic", sans-serif;
 }
 
+#admin-root {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.status {
+  color: #5b6577;
+}
+
+.panel {
+  background: #fff;
+  border: 1px solid #dfe4ec;
+  border-radius: 0.75rem;
+  padding: 1.25rem 1.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.panel h2 {
+  margin-top: 0;
+  font-size: 1.1rem;
+}
+
+.row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+textarea {
+  width: 100%;
+  font-family: "Consolas", monospace;
+  font-size: 0.9rem;
+  padding: 0.5rem;
+}
+
 button {
   padding: 0.5rem 1rem;
-  font-size: 1rem;
+  font-size: 0.95rem;
   cursor: pointer;
+  border: 1px solid #2a3242;
+  border-radius: 0.4rem;
+  background: #171c26;
+  color: #fff;
+}
+
+button.danger {
+  background: #b3261e;
+  border-color: #b3261e;
+}
+
+input[type="number"] {
+  width: 5rem;
+  padding: 0.4rem;
+}
+
+.warnings {
+  color: #b3261e;
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 0.9rem;
+}
+
+table th,
+table td {
+  border: 1px solid #dfe4ec;
+  padding: 0.35rem 0.6rem;
+  text-align: left;
+}
+
+.info {
+  font-size: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.commit-box {
+  background: #171c26;
+  color: #ffd166;
+  border-radius: 0.5rem;
+  padding: 1rem;
+  font-family: "Consolas", monospace;
+  word-break: break-all;
+  margin-bottom: 0.75rem;
+}
+
+.draw-history-item {
+  font-family: "Consolas", monospace;
+  font-size: 0.85rem;
+  color: #5b6577;
 }

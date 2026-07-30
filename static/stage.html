@@ -2,13 +2,32 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
-  <title>타추위 추첨 - 무대</title>
+  <title>타추위 추첨 프로그램</title>
   <link rel="stylesheet" href="/static/stage.css" />
 </head>
 <body>
   <main id="stage-root">
-    <h1>타추위 추첨 프로그램</h1>
-    <p id="ws-status">연결 대기 중...</p>
+    <h1>🎉 타추위 경품 추첨</h1>
+
+    <div id="idle-view" class="view">
+      <p id="ws-status">연결 대기 중...</p>
+    </div>
+
+    <div id="waiting-view" class="view hidden">
+      <p class="sub">참가자 <span id="participant-count">-</span>명 · 부서 <span id="department-count">-</span>개</p>
+      <p class="hint">커밋 공개를 기다리는 중...</p>
+    </div>
+
+    <div id="committed-view" class="view hidden">
+      <p class="sub">이 값이 오늘 추첨의 봉인입니다</p>
+      <div id="commit-badge" class="commit-badge"></div>
+      <p class="hint">추첨 시작을 기다리는 중...</p>
+    </div>
+
+    <div id="drawing-view" class="view hidden">
+      <div id="reel" class="reel">-</div>
+      <ol id="winner-list" class="winner-list"></ol>
+    </div>
   </main>
   <script src="/static/shared.js"></script>
   <script src="/static/stage.js"></script>

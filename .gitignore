@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# 런타임 세션 스냅샷 (장애 복구용, 소스 아님)
+data/session_snapshot.json
+data/*.tmp

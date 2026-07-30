@@ -7,7 +7,7 @@ body {
   background: #0b0e14;
   color: #f5f7fa;
   font-family: "Pretendard", "Malgun Gothic", sans-serif;
-  height: 100vh;
+  min-height: 100vh;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -15,14 +15,61 @@ body {
 
 #stage-root {
   text-align: center;
+  width: 100%;
+  max-width: 900px;
+  padding: 2rem;
 }
 
 h1 {
-  font-size: 4rem;
-  margin-bottom: 1rem;
+  font-size: 3.5rem;
+  margin-bottom: 1.5rem;
 }
 
-#ws-status {
+.hidden {
+  display: none;
+}
+
+#ws-status,
+.sub {
   font-size: 1.5rem;
   color: #8b95a5;
+}
+
+.hint {
+  font-size: 1.1rem;
+  color: #5b6577;
+  margin-top: 1rem;
+}
+
+.commit-badge {
+  font-family: "Consolas", monospace;
+  font-size: 1.1rem;
+  word-break: break-all;
+  background: #171c26;
+  border: 1px solid #2a3242;
+  border-radius: 0.75rem;
+  padding: 1.25rem;
+  margin: 1rem auto;
+  max-width: 700px;
+  color: #ffd166;
+}
+
+.reel {
+  font-size: 3rem;
+  font-weight: 700;
+  min-height: 4.5rem;
+  padding: 1rem;
+  background: #171c26;
+  border-radius: 1rem;
+  border: 2px solid #2a3242;
+  margin-bottom: 1.5rem;
+}
+
+.winner-list {
+  list-style: decimal;
+  font-size: 1.6rem;
+  text-align: left;
+  max-width: 500px;
+  margin: 0 auto;
+  color: #7cf29c;
 }

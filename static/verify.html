@@ -3,11 +3,33 @@
 <head>
   <meta charset="utf-8" />
   <title>타추위 추첨 - 공정성 검증</title>
+  <link rel="stylesheet" href="/static/admin.css" />
+  <style>
+    .verify-ok { color: #1a7f37; font-weight: 700; }
+    .verify-fail { color: #b3261e; font-weight: 700; }
+    .mono { font-family: "Consolas", monospace; word-break: break-all; font-size: 0.85rem; }
+  </style>
 </head>
 <body>
-  <main>
+  <main id="admin-root">
     <h1>공정성 검증</h1>
-    <p>P1-4에서 구현 예정.</p>
+    <p>서버가 알려주는 값을 그대로 믿지 않고, <strong>이 페이지가 브라우저 안에서 직접</strong>
+      시드+명단으로 커밋 해시와 당첨자를 재계산해 비교합니다. (WebCrypto 사용, 서버 전송 없음)</p>
+
+    <section class="panel">
+      <div class="row">
+        <label>추첨 번호(draw_index) <input type="number" id="draw-index" value="0" min="0" /></label>
+        <button id="btn-load">불러와서 독립 검증</button>
+      </div>
+      <div id="result"></div>
+      <div class="row">
+        <button id="btn-tamper" disabled>위·변조 탐지 데모 보기</button>
+      </div>
+      <div id="tamper-result"></div>
+    </section>
   </main>
+  <script src="/static/shared.js"></script>
+  <script src="/static/fairness.js"></script>
+  <script src="/static/verify.js"></script>
 </body>
 </html>

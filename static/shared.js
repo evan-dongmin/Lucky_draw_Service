@@ -20,3 +20,32 @@ function sendWS(ws, message) {
     ws.send(JSON.stringify(message));
   }
 }
+
+function delay(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchJSON(url, options) {
+  const resp = await fetch(url, {
+    ...options,
+    headers: { "Content-Type": "application/json", ...(options && options.headers) },
+  });
+  let body = null;
+  try {
+    body = await resp.json();
+  } catch (e) {
+    body = null;
+  }
+  if (!resp.ok) {
+    const detail = body && body.detail ? body.detail : `요청 실패 (${resp.status})`;
+    const err = new Error(detail);
+    err.status = resp.status;
+    err.body = body;
+    throw err;
+  }
+  return body;
+}
+
+function participantLabel(p) {
+  return p.team ? `${p.name} (${p.team})` : p.name;
+}

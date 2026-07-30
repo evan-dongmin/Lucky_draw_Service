@@ -8,8 +8,67 @@
 <body>
   <main id="admin-root">
     <h1>운영 콘솔</h1>
-    <p id="ws-status">연결 대기 중...</p>
-    <button id="ping-btn">에코 테스트</button>
+    <p id="ws-status" class="status">연결 대기 중...</p>
+
+    <section id="section-roster" class="panel">
+      <h2>1. 참가자 명단</h2>
+      <div class="row">
+        <textarea id="roster-text" rows="6" placeholder="사번,이름,팀
+P001,홍길동,개발팀
+P002,김철수,영업팀"></textarea>
+      </div>
+      <div class="row">
+        <button id="btn-preview-text">붙여넣은 텍스트 미리보기</button>
+        <input type="file" id="roster-file" accept=".csv,.xlsx" />
+        <button id="btn-upload-file">파일 업로드 미리보기</button>
+        <button id="btn-sample">샘플 250명 생성</button>
+      </div>
+      <div id="roster-warnings" class="warnings"></div>
+      <div id="roster-preview" class="preview"></div>
+    </section>
+
+    <section id="section-session" class="panel">
+      <h2>2. 세션 생성</h2>
+      <div class="row">
+        <label>당첨 인원수 <input type="number" id="draw-count" value="3" min="1" /></label>
+        <label>모드
+          <select id="mode-select">
+            <option value="roulette">룰렛 (안전망 MVP)</option>
+            <option value="racing" disabled>레이싱 (Phase 3 예정)</option>
+          </select>
+        </label>
+        <button id="btn-create-session">세션 생성</button>
+      </div>
+    </section>
+
+    <section id="section-run" class="panel">
+      <h2>3. 진행</h2>
+      <div id="session-info" class="info">세션 없음</div>
+
+      <div class="row">
+        <label>제외할 참가자 ID (쉼표/줄바꿈 구분)</label>
+      </div>
+      <div class="row">
+        <textarea id="exclude-ids" rows="2"></textarea>
+        <button id="btn-apply-exclude">제외 적용</button>
+      </div>
+
+      <div class="row">
+        <button id="btn-commit">① 커밋 생성</button>
+        <button id="btn-reveal">② 추첨 시작(리빌)</button>
+      </div>
+      <div id="commit-display" class="commit-box"></div>
+
+      <div class="row">
+        <label><input type="checkbox" id="redraw-exclude-winners" checked /> 이전 당첨자 제외하고 재추첨</label>
+        <button id="btn-redraw">재추첨</button>
+        <button id="btn-reset" class="danger">전체 초기화</button>
+      </div>
+
+      <div id="draws-history"></div>
+
+      <p><a href="/verify" target="_blank">공정성 검증 페이지 열기 →</a> · <a href="/" target="_blank">무대 화면 열기 →</a></p>
+    </section>
   </main>
   <script src="/static/shared.js"></script>
   <script src="/static/admin.js"></script>
