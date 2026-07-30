@@ -40,9 +40,12 @@ class RoundPlan:
 class DrawResult:
     seed: str
     commit: str
+    snapshot: dict[str, Any] = field(default_factory=dict)
     winners: list[str] = field(default_factory=list)
     ranking: list[str] = field(default_factory=list)
     round_pass_ids: dict[int, list[str]] = field(default_factory=dict)
+    department_pass_rate: dict[int, dict[str, float]] = field(default_factory=dict)
+    finalist_count: int = 0
     revealed: bool = False
     created_at: str = ""
     revealed_at: str | None = None
@@ -51,9 +54,14 @@ class DrawResult:
         return {
             "seed": self.seed,
             "commit": self.commit,
+            "snapshot": self.snapshot,
             "winners": list(self.winners),
             "ranking": list(self.ranking),
             "round_pass_ids": {str(k): v for k, v in self.round_pass_ids.items()},
+            "department_pass_rate": {
+                str(k): v for k, v in self.department_pass_rate.items()
+            },
+            "finalist_count": self.finalist_count,
             "revealed": self.revealed,
             "created_at": self.created_at,
             "revealed_at": self.revealed_at,
@@ -64,9 +72,14 @@ class DrawResult:
         return cls(
             seed=data["seed"],
             commit=data["commit"],
+            snapshot=data.get("snapshot", {}),
             winners=list(data.get("winners", [])),
             ranking=list(data.get("ranking", [])),
             round_pass_ids={int(k): v for k, v in data.get("round_pass_ids", {}).items()},
+            department_pass_rate={
+                int(k): v for k, v in data.get("department_pass_rate", {}).items()
+            },
+            finalist_count=data.get("finalist_count", 0),
             revealed=data.get("revealed", False),
             created_at=data.get("created_at", ""),
             revealed_at=data.get("revealed_at"),
