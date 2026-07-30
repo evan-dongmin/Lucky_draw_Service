@@ -127,3 +127,25 @@ h1 {
   background: linear-gradient(90deg, #4f8cff, #7cf29c);
   transition: width 0.25s ease-out;
 }
+
+.racing-columns {
+  display: flex;
+  justify-content: center;
+  gap: 3rem;
+  flex-wrap: wrap;
+}
+
+.prediction-leaderboard {
+  text-align: left;
+  min-width: 260px;
+}
+
+.prediction-leaderboard h3 {
+  color: #ffd166;
+  margin-bottom: 0.5rem;
+}
+
+.prediction-leaderboard ol {
+  font-size: 1rem;
+  padding-left: 1.2rem;
+}

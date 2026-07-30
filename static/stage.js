@@ -17,6 +17,10 @@ const departmentBarsEl = document.getElementById("department-bars");
 const racingFinalEl = document.getElementById("racing-final");
 const racingReelEl = document.getElementById("racing-reel");
 const racingWinnerListEl = document.getElementById("racing-winner-list");
+const predictionLeaderboardEl = document.getElementById("prediction-leaderboard");
+const predictionLeaderboardListEl = document.getElementById("prediction-leaderboard-list");
+
+let lastPredictionWindow = null;
 
 const animatedDrawKeys = new Set();
 let lastOpeningShownFor = null;
@@ -71,6 +75,14 @@ async function playRouletteSequence(draw) {
 // ---------------------------------------------------------------------------
 // 레이싱 모드: 부서 통과율 실시간 랭킹 + 라운드 진행 상태머신
 // ---------------------------------------------------------------------------
+
+function renderPredictionLeaderboard(top) {
+  if (!top || !top.length) return;
+  predictionLeaderboardEl.classList.remove("hidden");
+  predictionLeaderboardListEl.innerHTML = top
+    .map((entry) => `<li>${entry.participant_id} - ${entry.score}점</li>`)
+    .join("");
+}
 
 function renderDepartmentBars(rates) {
   latestDepartmentRates = rates;
@@ -231,8 +243,14 @@ const ws = connectWS((data) => {
   if (["phase", "race_tick", "round_revealed", "racing_complete"].includes(data.type)) {
     handleRacingEvent(data);
   }
+  if (data.type === "prediction_leaderboard") {
+    renderPredictionLeaderboard(data.top);
+  }
+  if (data.type === "prediction_window") {
+    lastPredictionWindow = data;
+  }
   refresh();
-});
+}, "stage");
 ws.addEventListener("open", () => {
   refresh();
 });

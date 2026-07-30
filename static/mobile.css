@@ -1,0 +1,147 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 1rem;
+  background: #0b0e14;
+  color: #f5f7fa;
+  font-family: "Pretendard", "Malgun Gothic", sans-serif;
+}
+
+#mobile-root {
+  max-width: 480px;
+  margin: 0 auto;
+}
+
+h1 {
+  font-size: 1.6rem;
+  text-align: center;
+}
+
+h2 {
+  font-size: 1.1rem;
+  color: #ffd166;
+}
+
+.hidden {
+  display: none;
+}
+
+.panel {
+  background: #171c26;
+  border: 1px solid #2a3242;
+  border-radius: 0.75rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.choice-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.choice-btn {
+  padding: 0.6rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid #4f8cff;
+  background: #12213f;
+  color: #fff;
+  font-size: 1rem;
+  cursor: pointer;
+  min-width: 44px;
+  min-height: 44px;
+}
+
+.choice-btn.selected {
+  background: #4f8cff;
+}
+
+.error {
+  color: #ff8080;
+}
+
+.my-name {
+  font-size: 1.2rem;
+  font-weight: 700;
+  text-align: center;
+}
+
+.my-score {
+  text-align: center;
+  color: #7cf29c;
+  margin-bottom: 1rem;
+}
+
+.pred-card {
+  background: #171c26;
+  border: 1px solid #2a3242;
+  border-radius: 0.75rem;
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+
+.pred-card.state-pending {
+  opacity: 0.7;
+}
+
+.pred-card.state-open {
+  border-color: #ffd166;
+}
+
+.pred-card.state-locked {
+  border-color: #4f8cff;
+}
+
+.pred-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.pred-card-badge {
+  font-size: 0.8rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 1rem;
+  background: #2a3242;
+}
+
+.alloc-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.alloc-row input[type="range"] {
+  flex: 1;
+}
+
+.alloc-value {
+  width: 3rem;
+  text-align: right;
+  font-family: "Consolas", monospace;
+}
+
+.countdown-badge {
+  font-family: "Consolas", monospace;
+  color: #ffd166;
+}
+
+button {
+  padding: 0.6rem 1rem;
+  font-size: 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid #2a3242;
+  background: #4f8cff;
+  color: #fff;
+  cursor: pointer;
+}
+
+#leaderboard-list {
+  padding-left: 1.2rem;
+}

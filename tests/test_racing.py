@@ -38,7 +38,7 @@ async def test_run_racing_sequence_full_flow(monkeypatch):
 
     messages: list[dict] = []
 
-    async def fake_broadcast(message, sender=None):
+    async def fake_broadcast(message, sender=None, roles=None):
         messages.append(message)
 
     monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
@@ -92,7 +92,7 @@ async def test_racing_sequence_stops_gracefully_if_session_reset_midway(monkeypa
 
     messages: list[dict] = []
 
-    async def fake_broadcast(message, sender=None):
+    async def fake_broadcast(message, sender=None, roles=None):
         messages.append(message)
         if message.get("type") == "phase" and message.get("phase") == "race_r1":
             main_module.store.clear()  # 진행 도중 세션이 초기화된 상황을 흉내낸다

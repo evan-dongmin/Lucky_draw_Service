@@ -97,6 +97,7 @@ class Session:
     excluded_ids: list[str] = field(default_factory=list)
     mode: str = "roulette"
     total_seconds: float = 300.0
+    predictions_enabled: bool = False
     created_at: str = ""
     draws: list[DrawResult] = field(default_factory=list)
     round_plans: list[RoundPlan] = field(default_factory=list)
@@ -109,6 +110,7 @@ class Session:
             "excluded_ids": list(self.excluded_ids),
             "mode": self.mode,
             "total_seconds": self.total_seconds,
+            "predictions_enabled": self.predictions_enabled,
             "created_at": self.created_at,
             "draws": [d.to_dict() for d in self.draws],
             "round_plans": [r.to_dict() for r in self.round_plans],
@@ -123,6 +125,7 @@ class Session:
             excluded_ids=list(data.get("excluded_ids", [])),
             mode=data.get("mode", "roulette"),
             total_seconds=data.get("total_seconds", 300.0),
+            predictions_enabled=data.get("predictions_enabled", False),
             created_at=data.get("created_at", ""),
             draws=[DrawResult.from_dict(d) for d in data.get("draws", [])],
             round_plans=[RoundPlan.from_dict(r) for r in data.get("round_plans", [])],

@@ -11,10 +11,12 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import director, fairness, race, roster
+from app import departments as departments_module
+from app import director, fairness, predictions, race, roster
 from app.config import STATIC_DIR
 from app.mc import MCAgent
 from app.models import DrawResult, Participant, Session
+from app.predictions import PredictionEngine
 from app.store import SessionStore
 
 logging.basicConfig(level=logging.INFO)
@@ -38,23 +40,31 @@ app = FastAPI(title="타추위 추첨 프로그램", lifespan=lifespan)
 
 
 class ConnectionHub:
-    """WS 연결 관리: stage/admin/mobile 화면 간 상태 브로드캐스트."""
+    """WS 연결 관리: stage/admin/mobile 화면 간 상태 브로드캐스트.
+
+    역할(role)별로 필터링해 보낼 수 있다 -- 특히 레이스 위치 틱("race_tick")은
+    Stage 화면에만 필요하고 250대 모바일에 그대로 뿌리면 안 되므로(기획안의
+    "모바일에 프레임 데이터 전송 금지" 원칙), roles 인자로 수신 대상을 제한한다.
+    """
 
     def __init__(self) -> None:
-        self.connections: list[WebSocket] = []
+        self.connections: dict[WebSocket, str] = {}
 
-    async def connect(self, websocket: WebSocket) -> None:
+    async def connect(self, websocket: WebSocket, role: str = "unknown") -> None:
         await websocket.accept()
-        self.connections.append(websocket)
+        self.connections[websocket] = role
 
     def disconnect(self, websocket: WebSocket) -> None:
-        if websocket in self.connections:
-            self.connections.remove(websocket)
+        self.connections.pop(websocket, None)
 
-    async def broadcast(self, message: dict, sender: WebSocket | None = None) -> None:
+    async def broadcast(
+        self, message: dict, sender: WebSocket | None = None, roles: set[str] | None = None
+    ) -> None:
         payload = json.dumps(message, ensure_ascii=False)
-        for connection in list(self.connections):
+        for connection, role in list(self.connections.items()):
             if connection is sender:
+                continue
+            if roles is not None and role not in roles:
                 continue
             try:
                 await connection.send_text(payload)
@@ -64,6 +74,8 @@ class ConnectionHub:
 
 hub = ConnectionHub()
 active_race_tasks: dict[str, asyncio.Task] = {}
+prediction_engine = PredictionEngine()
+predict_tokens: dict[str, str] = {}  # 기기 토큰 -> participant_id (예측 게임 온보딩용)
 
 RACE_ROUND_INDEX = {"race_r1": 1, "race_r2": 2, "race_r3": 3}
 SCORE_PHASE_ROUND = {"score_r1_select_r2": 1, "score_r2_select_r3": 2}
@@ -180,6 +192,7 @@ class CreateSessionRequest(BaseModel):
     draw_count: int = 1
     mode: str = "roulette"
     total_seconds: float = 300.0
+    predictions_enabled: bool = False
 
 
 @app.post("/api/session")
@@ -194,9 +207,12 @@ async def create_session(payload: CreateSessionRequest) -> dict[str, Any]:
             draw_count=payload.draw_count,
             mode=payload.mode,
             total_seconds=payload.total_seconds,
+            predictions_enabled=payload.predictions_enabled,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
         store.set_session(session)
+        prediction_engine.reset()  # 새 세션 -- 예측 카드/토큰 초기화
+        predict_tokens.clear()
         await hub.broadcast({"type": "session_created", "session": public_session_dict(session)})
         return public_session_dict(session)
 
@@ -225,6 +241,12 @@ async def set_excluded(payload: ExcludeRequest) -> dict[str, Any]:
 async def reset_session() -> dict[str, Any]:
     async with state_lock:
         store.clear()
+        prediction_engine.reset()
+        predict_tokens.clear()
+        for session_id, task in list(active_race_tasks.items()):
+            if not task.done():
+                task.cancel()
+            active_race_tasks.pop(session_id, None)
         await hub.broadcast({"type": "reset"})
         return {"ok": True}
 
@@ -249,6 +271,12 @@ async def commit_draw() -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         session.draws.append(draw)
         store.set_session(session)
+        if session.predictions_enabled:
+            department_names = list(draw.snapshot.get("departments", {}).keys())
+            prediction_engine.open_round(1, department_names)
+            await hub.broadcast(
+                {"type": "prediction_window", "round": 1, "state": "open", "candidates": department_names}
+            )
         public = public_draw_dict(draw)
         await hub.broadcast({"type": "commit_ready", "draw": public, "draw_index": len(session.draws) - 1})
         return public
@@ -296,6 +324,13 @@ async def redraw(payload: RedrawRequest) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         session.draws.append(draw)
         store.set_session(session)
+        if session.predictions_enabled:
+            prediction_engine.reset()  # 새 추첨 회차 -- 예측 게임도 새로 시작
+            department_names = list(draw.snapshot.get("departments", {}).keys())
+            prediction_engine.open_round(1, department_names)
+            await hub.broadcast(
+                {"type": "prediction_window", "round": 1, "state": "open", "candidates": department_names}
+            )
         public = public_draw_dict(draw)
         await hub.broadcast({"type": "commit_ready", "draw": public, "draw_index": len(session.draws) - 1})
         return public
@@ -362,7 +397,9 @@ async def _run_race_phase(draw: DrawResult, round_index: int, duration_seconds: 
         }
         if denom_sets is not None:
             payload["department_live_rate"] = race.department_live_rates(positions, denom_sets, line)
-        await hub.broadcast(payload)
+        # race_tick은 위치 데이터 용량이 크므로 Stage 화면에만 전송한다
+        # (모바일 250대에 프레임 데이터를 뿌리지 않는다는 원칙, 기획안 §4.7).
+        await hub.broadcast(payload, roles={"stage"})
         if ratio >= 1.0:
             break
         await asyncio.sleep(RACE_TICK_INTERVAL_SECONDS)
@@ -383,9 +420,51 @@ async def _announce_round(session: Session, draw: DrawResult, round_index: int) 
     )
 
 
+async def _leaderboard_payload() -> dict[str, Any]:
+    return {
+        "type": "prediction_leaderboard",
+        "top": [
+            {"participant_id": c.participant_id, "score": c.score}
+            for c in prediction_engine.leaderboard(10)
+        ],
+    }
+
+
+async def _lock_prediction_round(round_index: int, seed: str) -> None:
+    if prediction_engine.round_state.get(round_index) != "open":
+        return
+    prediction_engine.lock_round(round_index, seed=seed)
+    await hub.broadcast({"type": "prediction_window", "round": round_index, "state": "locked"})
+
+
+async def _score_and_open_next(draw: DrawResult, scored_round: int, next_round: int | None) -> None:
+    if scored_round in (1, 2):
+        hit_set = predictions.top_k_by_rate(
+            draw.department_pass_rate.get(scored_round, {}), 2 if scored_round == 1 else 1
+        )
+    else:
+        hit_set = set(draw.winners)
+    prediction_engine.score_round(scored_round, hit_set)
+    await hub.broadcast(await _leaderboard_payload())
+
+    if next_round is not None:
+        if next_round == 3:
+            candidates = draw.round_pass_ids[2]
+        else:
+            candidates = list(draw.snapshot.get("departments", {}).keys())
+        prediction_engine.open_round(next_round, candidates)
+        await hub.broadcast(
+            {"type": "prediction_window", "round": next_round, "state": "open", "candidates": candidates}
+        )
+
+
 async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: float) -> None:
     try:
-        segments = director.build_runbook(total_seconds=total_seconds, predictions_enabled=False)
+        session = store.get_session()
+        if session is None or session.session_id != session_id:
+            return
+        predictions_enabled = session.predictions_enabled
+        segments = director.build_runbook(total_seconds=total_seconds, predictions_enabled=predictions_enabled)
         for seg in segments:
             session = store.get_session()
             if session is None or session.session_id != session_id:
@@ -403,16 +482,24 @@ async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: f
                 }
             )
 
+            if predictions_enabled and seg.phase in RACE_ROUND_INDEX:
+                await _lock_prediction_round(RACE_ROUND_INDEX[seg.phase], draw.seed)
+
             if seg.phase in RACE_ROUND_INDEX:
                 await _run_race_phase(draw, RACE_ROUND_INDEX[seg.phase], seg.duration_seconds)
             elif seg.phase in SCORE_PHASE_ROUND:
-                await _announce_round(session, draw, SCORE_PHASE_ROUND[seg.phase])
+                round_index = SCORE_PHASE_ROUND[seg.phase]
+                await _announce_round(session, draw, round_index)
+                if predictions_enabled:
+                    await _score_and_open_next(draw, round_index, round_index + 1)
                 await asyncio.sleep(seg.duration_seconds)
             elif seg.phase == "final_announce":
                 async with state_lock:
                     fairness.reveal(draw)
                     store.set_session(session)
                 await hub.broadcast({"type": "revealed", "draw": public_draw_dict(draw)})
+                if predictions_enabled:
+                    await _score_and_open_next(draw, 3, None)
                 await asyncio.sleep(seg.duration_seconds)
             else:
                 await asyncio.sleep(seg.duration_seconds)
@@ -445,6 +532,132 @@ async def start_racing(payload: RacingStartRequest) -> dict[str, Any]:
     )
     active_race_tasks[session.session_id] = task
     return {"started": True, "total_seconds": session.total_seconds, "draw_index": draw_index}
+
+
+# ---------------------------------------------------------------------------
+# 참여형 예측 게임: QR 온보딩(부서->실명) + 확신도 배분 + 대상 선택
+# ---------------------------------------------------------------------------
+
+
+def _require_predictions_enabled(session: Session) -> None:
+    if not session.predictions_enabled:
+        raise HTTPException(status_code=400, detail="이 세션은 예측 게임이 활성화되어 있지 않습니다.")
+
+
+def _resolve_pid_from_token(token: str) -> str:
+    pid = predict_tokens.get(token)
+    if pid is None:
+        raise HTTPException(status_code=401, detail="유효하지 않은 참여 토큰입니다.")
+    return pid
+
+
+@app.get("/api/predict/departments")
+async def predict_departments() -> dict[str, Any]:
+    session = _require_session()
+    _require_predictions_enabled(session)
+    groups = departments_module.compute_department_groups(session.participants)
+    by_id = {p.id: p for p in session.participants}
+    return {
+        name: [
+            {"id": pid, "name": by_id[pid].name}
+            for pid in ids
+            if pid in by_id
+        ]
+        for name, ids in groups.items()
+    }
+
+
+class PredictJoinRequest(BaseModel):
+    participant_id: str
+    existing_token: str | None = None
+
+
+@app.post("/api/predict/join")
+async def predict_join(payload: PredictJoinRequest) -> dict[str, Any]:
+    session = _require_session()
+    _require_predictions_enabled(session)
+
+    if payload.existing_token and payload.existing_token in predict_tokens:
+        token = payload.existing_token
+        pid = predict_tokens[token]
+        card = prediction_engine.get_or_create_card(pid)
+        return {"token": token, "participant_id": pid, "card": card.to_dict()}
+
+    participant = next((p for p in session.participants if p.id == payload.participant_id), None)
+    if participant is None:
+        raise HTTPException(status_code=404, detail="명단에서 참가자를 찾을 수 없습니다.")
+
+    existing_token = next(
+        (tok for tok, pid in predict_tokens.items() if pid == payload.participant_id), None
+    )
+    if existing_token:
+        raise HTTPException(
+            status_code=409, detail="이미 다른 기기에서 참여 중인 참가자입니다. 관리자에게 문의하세요."
+        )
+
+    token = uuid.uuid4().hex
+    predict_tokens[token] = payload.participant_id
+    card = prediction_engine.get_or_create_card(payload.participant_id)
+    return {"token": token, "participant_id": payload.participant_id, "card": card.to_dict()}
+
+
+@app.get("/api/predict/me")
+async def predict_me(token: str) -> dict[str, Any]:
+    pid = _resolve_pid_from_token(token)
+    card = prediction_engine.get_or_create_card(pid)
+    return {
+        "card": card.to_dict(),
+        "round_state": prediction_engine.round_state,
+        "round_candidates": prediction_engine.round_candidates,
+    }
+
+
+class PredictAllocateRequest(BaseModel):
+    token: str
+    alloc: dict[int, int]
+
+
+@app.post("/api/predict/allocate")
+async def predict_allocate(payload: PredictAllocateRequest) -> dict[str, Any]:
+    pid = _resolve_pid_from_token(payload.token)
+    try:
+        card = prediction_engine.set_allocation(pid, payload.alloc)
+    except predictions.PredictionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return card.to_dict()
+
+
+class PredictChooseRequest(BaseModel):
+    token: str
+    round: int
+    target: str
+
+
+@app.post("/api/predict/choose")
+async def predict_choose(payload: PredictChooseRequest) -> dict[str, Any]:
+    pid = _resolve_pid_from_token(payload.token)
+    try:
+        card = prediction_engine.set_target(pid, payload.round, payload.target)
+    except predictions.PredictionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return card.to_dict()
+
+
+@app.get("/api/predict/leaderboard")
+async def predict_leaderboard(top_n: int = 10) -> dict[str, Any]:
+    session = store.get_session()
+    by_id = {p.id: p for p in session.participants} if session else {}
+    top = prediction_engine.leaderboard(top_n)
+    return {
+        "top": [
+            {
+                "participant_id": c.participant_id,
+                "name": by_id[c.participant_id].name if c.participant_id in by_id else c.participant_id,
+                "score": c.score,
+            }
+            for c in top
+        ]
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -500,8 +713,8 @@ async def mobile_page() -> FileResponse:
 
 
 @app.websocket("/ws")
-async def websocket_endpoint(websocket: WebSocket) -> None:
-    await hub.connect(websocket)
+async def websocket_endpoint(websocket: WebSocket, role: str = "unknown") -> None:
+    await hub.connect(websocket, role=role)
     try:
         while True:
             raw = await websocket.receive_text()

@@ -6,6 +6,7 @@ const rosterPreviewEl = document.getElementById("roster-preview");
 const drawCountEl = document.getElementById("draw-count");
 const modeSelectEl = document.getElementById("mode-select");
 const totalSecondsEl = document.getElementById("total-seconds");
+const predictionsEnabledEl = document.getElementById("predictions-enabled");
 const racingStatusEl = document.getElementById("racing-status");
 const sessionInfoEl = document.getElementById("session-info");
 const excludeIdsEl = document.getElementById("exclude-ids");
@@ -27,7 +28,7 @@ const ws = connectWS((data) => {
   if (["session_created", "session_updated", "commit_ready", "revealed", "reset"].includes(data.type)) {
     refreshSession();
   }
-});
+}, "admin");
 ws.addEventListener("open", () => {
   statusEl.textContent = "연결됨 (WS ready)";
 });
@@ -106,6 +107,7 @@ document.getElementById("btn-create-session").addEventListener("click", async ()
         draw_count: parseInt(drawCountEl.value, 10),
         mode: modeSelectEl.value,
         total_seconds: parseFloat(totalSecondsEl.value),
+        predictions_enabled: predictionsEnabledEl.checked,
       }),
     });
     await refreshSession();

@@ -31,7 +31,13 @@
 
     <div id="racing-view" class="view hidden">
       <div id="racing-phase-banner" class="phase-banner">대기 중</div>
-      <div id="department-bars" class="department-bars"></div>
+      <div class="racing-columns">
+        <div id="department-bars" class="department-bars"></div>
+        <div id="prediction-leaderboard" class="prediction-leaderboard hidden">
+          <h3>예측 리더보드</h3>
+          <ol id="prediction-leaderboard-list"></ol>
+        </div>
+      </div>
       <div id="racing-final" class="hidden">
         <div id="racing-reel" class="reel">-</div>
         <ol id="racing-winner-list" class="winner-list"></ol>

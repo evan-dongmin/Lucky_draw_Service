@@ -1,8 +1,9 @@
-function connectWS(onMessage) {
+function connectWS(onMessage, role) {
   const proto = location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${location.host}/ws`);
+  const roleParam = role ? `?role=${encodeURIComponent(role)}` : "";
+  const ws = new WebSocket(`${proto}//${location.host}/ws${roleParam}`);
   ws.addEventListener("open", () => {
-    console.log("[ws] connected");
+    console.log("[ws] connected", role);
   });
   ws.addEventListener("message", (event) => {
     const data = JSON.parse(event.data);
@@ -10,7 +11,7 @@ function connectWS(onMessage) {
   });
   ws.addEventListener("close", () => {
     console.log("[ws] disconnected, retrying in 1s");
-    setTimeout(() => connectWS(onMessage), 1000);
+    setTimeout(() => connectWS(onMessage, role), 1000);
   });
   return ws;
 }

@@ -68,6 +68,9 @@ class PredictionCard:
 
 class PredictionEngine:
     def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
         self.cards: dict[str, PredictionCard] = {}
         self.round_state: dict[int, RoundState] = {r: "pending" for r in ROUNDS}
         self.round_candidates: dict[int, list[str]] = {r: [] for r in ROUNDS}
