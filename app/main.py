@@ -784,6 +784,7 @@ class DemoStartRequest(BaseModel):
     draw_count: int = 3
     total_seconds: float = 300.0
     with_bots: bool = True
+    reserved_for_human: int = 5
 
 
 @app.post("/api/demo/start")
@@ -834,9 +835,13 @@ async def demo_start(payload: DemoStartRequest) -> dict[str, Any]:
 
         filled = 0
         if payload.with_bots:
+            # 앞쪽 N명은 봇으로 채우지 않고 남겨둔다 -- 안 그러면 전원이
+            # 봇에게 선점당해 실제 심사자/테스터가 /mobile에서 아무 이름도
+            # 고를 수 없게 된다("이미 다른 기기에서 참여 중" 오류).
+            reserved_ids = {p.id for p in session.participants[: max(payload.reserved_for_human, 0)]}
             joined_pids = set(predict_tokens.values())
             for participant in session.participants:
-                if participant.id in joined_pids:
+                if participant.id in joined_pids or participant.id in reserved_ids:
                     continue
                 token = uuid.uuid4().hex
                 predict_tokens[token] = participant.id
