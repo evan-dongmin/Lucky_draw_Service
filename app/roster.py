@@ -108,6 +108,22 @@ def parse_roster_text(text: str) -> list[Participant]:
     return participants
 
 
+def validate_roster(participants: list[Participant]) -> list[str]:
+    """명단 확정 전 경고를 반환한다 (차단하지 않음 -- 부서 미지정은
+    departments.py가 '미지정' 그룹으로 흡수하지만, 행사 전에 고쳐두는 편이 낫다)."""
+    warnings: list[str] = []
+    if not participants:
+        return ["참가자가 없습니다"]
+
+    blank_team_ids = [p.id for p in participants if not p.team.strip()]
+    if blank_team_ids:
+        shown = ", ".join(blank_team_ids[:10])
+        more = " 등" if len(blank_team_ids) > 10 else ""
+        warnings.append(f"부서가 비어 있는 참가자 {len(blank_team_ids)}명: {shown}{more}")
+
+    return warnings
+
+
 def parse_roster_bytes(data: bytes) -> list[Participant]:
     return parse_roster_text(decode_roster_bytes(data))
 

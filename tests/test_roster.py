@@ -1,11 +1,13 @@
 import pytest
 
+from app.models import Participant
 from app.roster import (
     RosterParseError,
     decode_roster_bytes,
     generate_sample_participants,
     parse_roster_bytes,
     parse_roster_text,
+    validate_roster,
 )
 
 
@@ -93,3 +95,22 @@ def test_generate_sample_participants_roundtrips_through_parser():
     parsed = parse_roster_text(csv_text)
     assert len(parsed) == 250
     assert [p.id for p in parsed] == [p.id for p in participants]
+
+
+def test_validate_roster_warns_on_blank_team():
+    participants = [
+        Participant(id="P1", name="홍길동", team="개발팀"),
+        Participant(id="P2", name="김철수", team=""),
+    ]
+    warnings = validate_roster(participants)
+    assert len(warnings) == 1
+    assert "P2" in warnings[0]
+
+
+def test_validate_roster_no_warning_when_all_teams_present():
+    participants = [Participant(id="P1", name="홍길동", team="개발팀")]
+    assert validate_roster(participants) == []
+
+
+def test_validate_roster_empty_list():
+    assert validate_roster([]) == ["참가자가 없습니다"]
