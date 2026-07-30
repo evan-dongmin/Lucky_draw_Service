@@ -159,6 +159,15 @@ document.getElementById("btn-start-racing").addEventListener("click", async () =
   }
 });
 
+document.getElementById("btn-bots-fill").addEventListener("click", async () => {
+  try {
+    const result = await fetchJSON("/api/predict/bots/fill", { method: "POST" });
+    alert(`데모 봇 ${result.filled}명이 참여했습니다.`);
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
 document.getElementById("btn-redraw").addEventListener("click", async () => {
   const excludeWinners = document.getElementById("redraw-exclude-winners").checked;
   try {

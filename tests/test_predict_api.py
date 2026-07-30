@@ -131,3 +131,48 @@ def test_invalid_token_rejected(client):
     _create_prediction_session(client)
     resp = client.get("/api/predict/me", params={"token": "not-a-real-token"})
     assert resp.status_code == 401
+
+
+def test_bots_fill_requires_predictions_enabled(client):
+    sample = client.get("/api/roster/sample", params={"count": 10}).json()
+    client.post(
+        "/api/session",
+        json={"participants": sample["participants"], "draw_count": 2, "mode": "roulette"},
+    )
+    resp = client.post("/api/predict/bots/fill")
+    assert resp.status_code == 400
+
+
+def test_bots_fill_joins_all_unjoined_participants_with_valid_alloc(client):
+    session = _create_prediction_session(client, count=15)
+    resp = client.post("/api/predict/bots/fill")
+    assert resp.status_code == 200
+    assert resp.json()["filled"] == 15
+
+    lb = client.get("/api/predict/leaderboard?top_n=15").json()["top"]
+    assert len(lb) == 15
+
+
+def test_bots_fill_does_not_overwrite_already_joined_participant(client):
+    session = _create_prediction_session(client, count=15)
+    pid = session["participants"][0]["id"]
+    token = client.post("/api/predict/join", json={"participant_id": pid}).json()["token"]
+    client.post("/api/predict/allocate", json={"token": token, "alloc": {1: 20, 2: 30, 3: 50}})
+
+    resp = client.post("/api/predict/bots/fill")
+    assert resp.status_code == 200
+    assert resp.json()["filled"] == 14  # 이미 참여한 1명은 제외
+
+    me = client.get("/api/predict/me", params={"token": token}).json()
+    assert me["card"]["alloc"] == {"1": 20, "2": 30, "3": 50}  # 덮어쓰이지 않음
+
+
+def test_bots_fill_chooses_targets_when_round_open(client):
+    _create_prediction_session(client, count=20)
+    client.post("/api/draw/commit")  # R1 선택창 개방
+    client.post("/api/predict/bots/fill")
+
+    lb = client.get("/api/predict/leaderboard?top_n=20").json()["top"]
+    assert len(lb) == 20
+    # 라운드가 채점되지 않았으니 점수는 아직 0이어야 한다(대상 선택만 확인 가능한 간접 지표)
+    assert all(entry["score"] == 0 for entry in lb)

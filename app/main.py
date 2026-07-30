@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import random
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -641,6 +642,42 @@ async def predict_choose(payload: PredictChooseRequest) -> dict[str, Any]:
     except predictions.PredictionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return card.to_dict()
+
+
+def _random_valid_alloc() -> dict[int, int]:
+    """확신도 100을 3라운드에 무작위로 배분(각 최소 10) -- 데모 봇 전용."""
+    remaining = predictions.TOTAL_ALLOC - predictions.MIN_ALLOC * 3  # 자유롭게 분배할 나머지
+    cut1 = random.randint(0, remaining)
+    cut2 = random.randint(0, remaining)
+    lo, hi = sorted([cut1, cut2])
+    extra = [lo, hi - lo, remaining - hi]
+    return {1: predictions.MIN_ALLOC + extra[0], 2: predictions.MIN_ALLOC + extra[1], 3: predictions.MIN_ALLOC + extra[2]}
+
+
+@app.post("/api/predict/bots/fill")
+async def predict_bots_fill() -> dict[str, Any]:
+    """데모 모드 전용: 아직 참여하지 않은 참가자를 무작위 확신도·대상으로
+    자동 참여시켜 예측 분포·리더보드 요동을 재현한다. 행사 당일에는 호출하지
+    않는다(admin.html에 "데모 전용"으로 표기)."""
+    session = _require_session()
+    _require_predictions_enabled(session)
+
+    joined_pids = set(predict_tokens.values())
+    filled = 0
+    for participant in session.participants:
+        if participant.id in joined_pids:
+            continue
+        token = uuid.uuid4().hex
+        predict_tokens[token] = participant.id
+        card = prediction_engine.get_or_create_card(participant.id)
+        card.alloc = _random_valid_alloc()
+        for round_index, state in prediction_engine.round_state.items():
+            if state == "open" and not card.locked[round_index]:
+                candidates = prediction_engine.round_candidates[round_index]
+                if candidates:
+                    prediction_engine.set_target(participant.id, round_index, random.choice(candidates))
+        filled += 1
+    return {"filled": filled}
 
 
 @app.get("/api/predict/leaderboard")
