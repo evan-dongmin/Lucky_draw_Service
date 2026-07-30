@@ -771,7 +771,15 @@ async def mc_pregenerate() -> dict[str, Any]:
 
 
 @app.get("/api/mc/line/{tag}")
-async def mc_line(tag: str) -> dict[str, Any]:
+async def mc_line(
+    tag: str,
+    team: str | None = None,
+    pass_count: int | None = None,
+    rank: int | None = None,
+) -> dict[str, Any]:
+    """상황별 멘트 조회. team/pass_count/rank는 호출측(Stage)이 실시간
+    이벤트(선두 교체·추월·라운드 통과 발표)에서 이미 들고 있는 값을 그대로
+    넘겨 자막에 채워 넣기 위한 선택적 오버라이드다."""
     session = store.get_session()
     params: dict[str, Any] = {}
     if session:
@@ -781,6 +789,12 @@ async def mc_line(tag: str) -> dict[str, Any]:
             latest = session.draws[-1]
             if latest.revealed:
                 params["winner_count"] = len(latest.winners)
+    if team is not None:
+        params["team"] = team
+    if pass_count is not None:
+        params["pass_count"] = pass_count
+    if rank is not None:
+        params["rank"] = rank
     text = mc_agent.pick_line(tag, **params)
     return {"tag": tag, "text": text}
 

@@ -48,13 +48,31 @@ function showView(name) {
   }
 }
 
-async function showMcLine(tag) {
+async function showMcLine(tag, params) {
   try {
-    const result = await fetchJSON(`/api/mc/line/${tag}`);
+    const qs = params
+      ? "?" +
+        Object.entries(params)
+          .filter(([, v]) => v !== undefined && v !== null)
+          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+          .join("&")
+      : "";
+    const result = await fetchJSON(`/api/mc/line/${tag}${qs}`);
     mcCaptionEl.textContent = result.text ? `"${result.text}"` : "";
   } catch (e) {
     mcCaptionEl.textContent = "";
   }
+}
+
+// 레이스 도중 이벤트(선두 교체·추월)마다 매번 호출하면 자막이 정신없이
+// 바뀌므로, 최소 간격을 두고 그 사이 이벤트는 걸러낸다.
+const MC_LIVE_COOLDOWN_MS = 4500;
+let lastMcLiveCallAt = 0;
+function tryShowLiveMcLine(tag, params) {
+  const now = Date.now();
+  if (now - lastMcLiveCallAt < MC_LIVE_COOLDOWN_MS) return;
+  lastMcLiveCallAt = now;
+  showMcLine(tag, params);
 }
 
 async function spinReel(el, pool, finalText, totalMs) {
@@ -97,6 +115,8 @@ function renderPredictionLeaderboard(top) {
     .join("");
 }
 
+let currentLeaderDept = null;
+
 function renderDepartmentBars(rates) {
   latestDepartmentRates = rates;
   const sorted = Object.entries(rates).sort((a, b) => b[1] - a[1]);
@@ -109,6 +129,15 @@ function renderDepartmentBars(rates) {
       </div>`
     )
     .join("");
+
+  // 선두 부서가 바뀌면(0%끼리의 무의미한 교체는 제외) MC가 반응하도록 한다.
+  if (sorted.length && sorted[0][1] > 0) {
+    const newLeader = sorted[0][0];
+    if (currentLeaderDept !== null && newLeader !== currentLeaderDept) {
+      tryShowLiveMcLine("department_rank_shift", { team: newLeader });
+    }
+    currentLeaderDept = newLeader;
+  }
 }
 
 function hashToUnit(str) {
@@ -174,6 +203,7 @@ function detectOvertakes(sortedIds, round) {
   if (previousTickRound === round && previousTickOrder.length) {
     const prevRank = new Map(previousTickOrder.map((pid, idx) => [pid, idx]));
     let badges = 0;
+    let mcFired = false;
     for (let i = 0; i < sortedIds.length && badges < 4; i++) {
       const pid = sortedIds[i];
       const prevIdx = prevRank.get(pid);
@@ -181,6 +211,11 @@ function detectOvertakes(sortedIds, round) {
       if (prevIdx - i >= 3) {
         spawnOvertakeBadge(pid);
         badges += 1;
+        if (!mcFired) {
+          // 쿨다운이 걸려 있으면 tryShowLiveMcLine이 조용히 무시한다
+          tryShowLiveMcLine("race_progress", { team: currentPidToGroup[pid] });
+          mcFired = true;
+        }
       }
     }
   }
@@ -288,6 +323,10 @@ function handleRacingEvent(data) {
     showView("racing");
     racingFinalEl.classList.add("hidden");
     startCountdown(data.duration_seconds, data.started_at, PHASE_LABELS[data.phase] || data.phase);
+    if (["race_r1", "race_r2", "race_r3"].includes(data.phase)) {
+      // 라운드가 바뀌면 이전 라운드의 선두 부서 정보를 들고 넘어가지 않도록 리셋
+      currentLeaderDept = null;
+    }
     if (data.phase === "race_r1") showMcLine("opening");
     if (data.phase === "race_r3") showMcLine("race_progress");
   } else if (data.type === "race_tick") {
@@ -296,7 +335,7 @@ function handleRacingEvent(data) {
       renderDepartmentBars(data.department_live_rate);
     }
   } else if (data.type === "round_revealed") {
-    showMcLine("round_pass_announce");
+    showMcLine("round_pass_announce", { pass_count: data.pass_ids ? data.pass_ids.length : undefined });
   } else if (data.type === "racing_complete") {
     if (countdownTimer) clearInterval(countdownTimer);
     phaseBannerEl.textContent = "진행 완료";
@@ -417,6 +456,8 @@ const ws = connectWS((data) => {
     previousTickPositions = {};
     previousTickOrder = [];
     previousTickRound = null;
+    currentLeaderDept = null;
+    lastMcLiveCallAt = 0;
     raceCtx.clearRect(0, 0, raceCanvas.width, raceCanvas.height);
     overtakeLayer.innerHTML = "";
     if (countdownTimer) clearInterval(countdownTimer);

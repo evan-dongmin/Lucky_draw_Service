@@ -142,6 +142,19 @@ def test_mc_line_with_session_fills_participant_count(client):
     assert "10" in resp.json()["text"] or resp.json()["text"]
 
 
+def test_mc_line_accepts_team_override_param(client):
+    resp = client.get("/api/mc/line/department_rank_shift", params={"team": "개발팀"})
+    assert resp.status_code == 200
+    assert "개발팀" in resp.json()["text"]
+
+
+def test_mc_line_accepts_pass_count_override_param(client):
+    resp = client.get("/api/mc/line/round_pass_announce", params={"pass_count": 42})
+    assert resp.status_code == 200
+    text = resp.json()["text"]
+    assert text  # 최소한 빈 문자열은 아니어야 함(플레이스홀더 없는 줄이 뽑혔을 수도 있음)
+
+
 def test_mc_pregenerate_without_api_key_reports_static_fallback(client, monkeypatch):
     monkeypatch.setattr("app.mc.config.ANTHROPIC_API_KEY", "")
     resp = client.post("/api/mc/pregenerate")
