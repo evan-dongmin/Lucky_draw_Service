@@ -40,6 +40,13 @@ def pass_line(pass_count: int, total: int) -> float:
     return (last_passer + first_non_passer) / 2
 
 
+def pace_exponent(participant_id: str, round_index: int) -> float:
+    """카트별 페이스 성향. 1보다 작으면 초반에 치고 나가고, 크면 후반에
+    몰아친다. 이 편차 때문에 중간 순위와 최종 순위가 달라져 추월이
+    자연스럽게 발생한다(결과 자체는 바뀌지 않는다)."""
+    return 0.55 + _pseudo_noise(f"{participant_id}:{round_index}:pace") * 1.15
+
+
 def position_at(
     rank_index: int,
     total: int,
@@ -47,14 +54,22 @@ def position_at(
     participant_id: str,
     round_index: int,
 ) -> float:
-    """경과 비율(0..1)에서의 트랙 위치. progress_ratio=1.0에서 정확히
-    target_position과 일치해 통과 판정이 항상 정확하다."""
+    """경과 비율(0..1)에서의 트랙 위치.
+
+    설계 원칙:
+    - 모든 카트는 출발선(0)에서 함께 출발한다.
+    - 진행률에 대해 단조 증가한다 -- 절대 뒤로 밀리지 않는다.
+    - progress_ratio=1.0에서 정확히 target_position과 일치해 통과 판정이
+      항상 정확하다(공정성 판정은 여기에만 의존한다).
+    - 카트마다 페이스 지수가 달라 레이스 중간에는 순위가 뒤섞이고,
+      끝에서 목표 순위로 수렴한다.
+
+    (이전 구현은 카트를 트랙 전역에 흩뿌린 상태에서 목표로 수렴시켰기 때문에
+     일부 카트가 뒤로 밀려 보였고 "함께 출발해 전진한다"는 감각이 없었다.)
+    """
     progress_ratio = min(max(progress_ratio, 0.0), 1.0)
-    noise = _pseudo_noise(f"{participant_id}:{round_index}") - 0.5  # -0.5..0.5
-    autonomous = 0.5 + noise * 0.9
-    weight = progress_ratio**2  # 후반부로 갈수록 목표 쪽으로 급격히 수렴
     target = target_position(rank_index, total)
-    return autonomous * (1 - weight) + target * weight
+    return target * (progress_ratio ** pace_exponent(participant_id, round_index))
 
 
 def compute_tick(ranking_ids: list[str], progress_ratio: float, round_index: int) -> dict[str, float]:

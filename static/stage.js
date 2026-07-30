@@ -146,12 +146,28 @@ function hashToUnit(str) {
   return (h % 10000) / 10000; // 0..1
 }
 
+// 해시로 색을 만들면 부서 수가 적을 때 비슷한 색조로 몰려 대형 스크린에서
+// 구분이 안 된다. 색조·명도가 모두 뚜렷이 갈리는 고정 팔레트를 부서명 정렬
+// 순서대로 배정해 항상 최대 대비를 보장한다(같은 명단이면 항상 같은 색).
+const TEAM_PALETTE = [
+  { base: "#ff5252", glow: "#ff8a80" },
+  { base: "#4f8cff", glow: "#82b1ff" },
+  { base: "#7cf29c", glow: "#b9f6ca" },
+  { base: "#ffd166", glow: "#ffe082" },
+  { base: "#c77dff", glow: "#e1bee7" },
+  { base: "#ff9f45", glow: "#ffcc80" },
+  { base: "#4dd0e1", glow: "#84ffff" },
+  { base: "#f06292", glow: "#f8bbd0" },
+];
+
 function colorForDepartment(name) {
-  if (departmentColorCache.has(name)) return departmentColorCache.get(name);
-  const hue = Math.floor(hashToUnit(name) * 360);
-  const color = `hsl(${hue}, 70%, 60%)`;
-  departmentColorCache.set(name, color);
-  return color;
+  const entry = departmentColorCache.get(name);
+  return entry ? entry.base : "#8b95a5";
+}
+
+function glowForDepartment(name) {
+  const entry = departmentColorCache.get(name);
+  return entry ? entry.glow : "#b0bac9";
 }
 
 function ensureGroupLookup(latest, drawKey) {
@@ -163,6 +179,26 @@ function ensureGroupLookup(latest, drawKey) {
     for (const id of ids) map[id] = group;
   }
   currentPidToGroup = map;
+
+  departmentColorCache.clear();
+  const groupNames = Object.keys(departments).sort();
+  groupNames.forEach((name, idx) => {
+    departmentColorCache.set(name, TEAM_PALETTE[idx % TEAM_PALETTE.length]);
+  });
+  renderTeamLegend(groupNames);
+}
+
+function renderTeamLegend(groupNames) {
+  const el = document.getElementById("team-legend");
+  if (!el) return;
+  el.innerHTML = groupNames
+    .map(
+      (name) =>
+        `<span class="legend-item"><span class="legend-swatch" style="background:${colorForDepartment(
+          name
+        )}"></span>${name}</span>`
+    )
+    .join("");
 }
 
 function laneFor(pid, laneCount) {
@@ -223,74 +259,273 @@ function detectOvertakes(sortedIds, round) {
   previousTickRound = round;
 }
 
-function renderTrack(tick) {
-  const positions = tick.positions;
+// ---------------------------------------------------------------------------
+// V1: 틱 버퍼 + 60fps 보간 렌더 루프
+//
+// 서버는 0.3초 간격으로만 위치를 보내므로(대역폭 절약), 틱마다 그리면 화면이
+// 초당 3.3회만 갱신되어 레이스가 아니라 "움직이는 차트"처럼 보인다. 마지막
+// 두 틱을 버퍼에 두고 그 사이를 requestAnimationFrame으로 보간하면, 서버
+// 변경이나 트래픽 증가 없이 부드러운 60fps 주행이 된다(한 틱만큼 뒤처져
+// 보여주는 표준 네트코드 방식 -- 관람용 화면에서는 체감되지 않는다).
+// ---------------------------------------------------------------------------
+
+const TRACK_PAD_X = 40;
+let prevTickState = null;
+let currTickState = null;
+let tickArrivalAt = 0;
+let tickIntervalEstimate = 300;
+let rafHandle = null;
+
+function pushTick(tick) {
+  const now = performance.now();
+  if (currTickState) {
+    const delta = now - tickArrivalAt;
+    if (delta > 40 && delta < 2000) {
+      // 실제 도착 간격으로 보간 구간 길이를 적응시킨다(지연·배속에 대응)
+      tickIntervalEstimate = tickIntervalEstimate * 0.7 + delta * 0.3;
+    }
+  }
+  // 라운드가 바뀌면 참가자 집합과 시작 위치가 모두 달라진다. 이전 라운드의
+  // 마지막 위치에서 보간하면 카트가 뒤로 미끄러지는 것처럼 보이므로,
+  // 라운드 경계에서는 보간 없이 새 위치에서 바로 시작한다.
+  const roundChanged = currTickState && currTickState.round !== tick.round;
+  prevTickState = roundChanged ? null : currTickState;
+  currTickState = tick;
+  tickArrivalAt = now;
+  if (rafHandle === null) rafHandle = requestAnimationFrame(renderLoop);
+}
+
+function stopRenderLoop() {
+  if (rafHandle !== null) {
+    cancelAnimationFrame(rafHandle);
+    rafHandle = null;
+  }
+  prevTickState = null;
+  currTickState = null;
+}
+
+function renderLoop() {
+  rafHandle = requestAnimationFrame(renderLoop);
+  if (!currTickState) return;
+
+  const alpha = prevTickState
+    ? Math.min(1, (performance.now() - tickArrivalAt) / tickIntervalEstimate)
+    : 1;
+
+  const positions = {};
+  const from = prevTickState ? prevTickState.positions : currTickState.positions;
+  const to = currTickState.positions;
+  for (const pid of Object.keys(to)) {
+    const a = from[pid] !== undefined ? from[pid] : to[pid];
+    positions[pid] = a + (to[pid] - a) * alpha;
+  }
+
+  drawFrame(positions, currTickState);
+}
+
+// ---------------------------------------------------------------------------
+// V2/V4/V5: 트랙 맵 · 카트 · 긴장 연출
+// ---------------------------------------------------------------------------
+
+function drawTrackSurface(ctx, W, H, trackTop, trackBottom, passX, scrollPhase) {
+  // 노면
+  ctx.fillStyle = "#171d26";
+  ctx.fillRect(0, trackTop, W, trackBottom - trackTop);
+
+  // 통과선 기준 위험(왼쪽)/안전(오른쪽) 구역 -- 누가 잘릴 위기인지 한눈에
+  const danger = ctx.createLinearGradient(0, 0, passX, 0);
+  danger.addColorStop(0, "rgba(179,38,30,0.28)");
+  danger.addColorStop(1, "rgba(179,38,30,0.05)");
+  ctx.fillStyle = danger;
+  ctx.fillRect(0, trackTop, passX, trackBottom - trackTop);
+
+  const safe = ctx.createLinearGradient(passX, 0, W, 0);
+  safe.addColorStop(0, "rgba(26,127,55,0.06)");
+  safe.addColorStop(1, "rgba(26,127,55,0.20)");
+  ctx.fillStyle = safe;
+  ctx.fillRect(passX, trackTop, W - passX, trackBottom - trackTop);
+
+  // 상하 커브(빨강/흰색 줄무늬) -- 스크롤시켜 속도감을 준다
+  const curbH = 8;
+  const stripe = 26;
+  for (let x = -stripe; x < W + stripe; x += stripe) {
+    const sx = x + ((scrollPhase * stripe * 2) % (stripe * 2));
+    const idx = Math.floor((sx + stripe * 4) / stripe) % 2;
+    ctx.fillStyle = idx === 0 ? "#c0392b" : "#ecf0f1";
+    ctx.fillRect(sx, trackTop - curbH, stripe, curbH);
+    ctx.fillRect(sx, trackBottom, stripe, curbH);
+  }
+
+  // 중앙 차선 파선 -- 스크롤로 전진감
+  ctx.strokeStyle = "rgba(255,255,255,0.16)";
+  ctx.lineWidth = 2;
+  ctx.setLineDash([22, 20]);
+  ctx.lineDashOffset = -(scrollPhase * 84) % 42;
+  const rows = 4;
+  for (let i = 1; i < rows; i++) {
+    const y = trackTop + ((trackBottom - trackTop) * i) / rows;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    ctx.lineTo(W, y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+  ctx.lineDashOffset = 0;
+
+  // 출발선
+  ctx.fillStyle = "rgba(255,255,255,0.75)";
+  ctx.fillRect(TRACK_PAD_X - 6, trackTop, 3, trackBottom - trackTop);
+}
+
+function drawFinishLine(ctx, x, trackTop, trackBottom) {
+  const cell = 11;
+  const cols = 2;
+  for (let row = 0; (trackTop + row * cell) < trackBottom; row++) {
+    for (let col = 0; col < cols; col++) {
+      ctx.fillStyle = (row + col) % 2 === 0 ? "#ffffff" : "#11161d";
+      ctx.fillRect(
+        x + col * cell,
+        trackTop + row * cell,
+        cell,
+        Math.min(cell, trackBottom - (trackTop + row * cell))
+      );
+    }
+  }
+  ctx.strokeStyle = "#ffd166";
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x - 1, trackTop);
+  ctx.lineTo(x - 1, trackBottom);
+  ctx.stroke();
+}
+
+function drawKart(ctx, x, y, size, color, glow, isLeader, atRisk, pulse) {
+  // 속도 트레일 (카트 수가 많으면 생략해 프레임을 지킨다)
+  if (size >= 4) {
+    for (let t = 1; t <= 3; t++) {
+      ctx.globalAlpha = 0.16 / t;
+      ctx.fillStyle = glow;
+      ctx.fillRect(x - size * (1.6 + t * 1.5), y - size * 0.35, size * 1.6, size * 0.7);
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  if (isLeader) {
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = 14;
+  } else if (atRisk) {
+    ctx.shadowColor = "#ff5252";
+    ctx.shadowBlur = 6 + pulse * 8;
+  }
+
+  // 차체
+  ctx.fillStyle = color;
+  ctx.fillRect(x - size * 1.5, y - size * 0.6, size * 2.6, size * 1.2);
+  // 노즈(진행 방향)
+  ctx.beginPath();
+  ctx.moveTo(x + size * 1.1, y - size * 0.6);
+  ctx.lineTo(x + size * 1.9, y);
+  ctx.lineTo(x + size * 1.1, y + size * 0.6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.shadowBlur = 0;
+
+  if (isLeader) {
+    ctx.strokeStyle = "#fff";
+    ctx.lineWidth = 1.5;
+    ctx.strokeRect(x - size * 1.5, y - size * 0.6, size * 2.6, size * 1.2);
+  }
+}
+
+function drawFrame(positions, tick) {
   const ids = Object.keys(positions);
   if (!ids.length) return;
   const W = raceCanvas.width;
   const H = raceCanvas.height;
+  const now = performance.now();
+  const pulse = (Math.sin(now / 140) + 1) / 2;
 
   raceCtx.clearRect(0, 0, W, H);
-  raceCtx.fillStyle = "#0f1720";
+  raceCtx.fillStyle = "#0b0e14";
   raceCtx.fillRect(0, 0, W, H);
-  raceCtx.strokeStyle = "rgba(255,255,255,0.04)";
-  raceCtx.lineWidth = 1;
-  for (let y = 20; y < H; y += 24) {
-    raceCtx.beginPath();
-    raceCtx.moveTo(0, y);
-    raceCtx.lineTo(W, y);
-    raceCtx.stroke();
-  }
 
   const sorted = [...ids].sort((a, b) => positions[b] - positions[a]);
-  const leaderX = 30 + positions[sorted[0]] * (W - 60);
+  const leaderPos = positions[sorted[0]];
+  const leaderX = TRACK_PAD_X + leaderPos * (W - TRACK_PAD_X * 2);
   const camera = computeCamera(leaderX, tick.round, W, H);
+
+  const trackTop = 46;
+  const trackBottom = H - 30;
+  const passX = TRACK_PAD_X + tick.pass_line * (W - TRACK_PAD_X * 2);
 
   raceCtx.save();
   raceCtx.translate(camera.offsetX, camera.offsetY);
   raceCtx.scale(camera.scale, camera.scale);
 
-  const lineX = 30 + tick.pass_line * (W - 60);
-  raceCtx.strokeStyle = "#ffd166";
-  raceCtx.lineWidth = 2 / camera.scale;
-  raceCtx.setLineDash([6 / camera.scale, 6 / camera.scale]);
-  raceCtx.beginPath();
-  raceCtx.moveTo(lineX, 0);
-  raceCtx.lineTo(lineX, H);
-  raceCtx.stroke();
-  raceCtx.setLineDash([]);
+  drawTrackSurface(raceCtx, W, H, trackTop, trackBottom, passX, leaderPos);
+  drawFinishLine(raceCtx, passX, trackTop, trackBottom);
 
-  const laneCount = Math.max(6, Math.min(40, ids.length));
+  const laneCount = Math.max(6, Math.min(36, ids.length));
   lastLaneCount = laneCount;
-  const laneHeight = (H - 40) / laneCount;
-  const radius = ids.length > 80 ? 2.5 : ids.length > 20 ? 4 : 7;
+  const laneHeight = (trackBottom - trackTop) / laneCount;
+  const size = ids.length > 120 ? 3 : ids.length > 40 ? 4.5 : ids.length > 12 ? 7 : 10;
 
   for (let i = sorted.length - 1; i >= 0; i--) {
     const pid = sorted[i];
     const p = positions[pid];
-    const x = 30 + p * (W - 60);
+    const x = TRACK_PAD_X + p * (W - TRACK_PAD_X * 2);
     const lane = laneFor(pid, laneCount);
-    const y = 20 + lane * laneHeight + jitterFor(pid) * laneHeight * 0.6 + laneHeight / 2;
+    const y =
+      trackTop + lane * laneHeight + jitterFor(pid) * laneHeight * 0.5 + laneHeight / 2;
     const group = currentPidToGroup[pid];
-    const color = group ? colorForDepartment(group) : "#8b95a5";
     const isLeader = i === 0;
+    // 통과선 바로 뒤에서 아슬아슬하게 밀린 카트 -- 여기가 가장 긴장되는 지점
+    const atRisk = !isLeader && p < tick.pass_line && tick.pass_line - p < 0.06;
 
-    raceCtx.globalAlpha = isLeader ? 1 : 0.85;
-    raceCtx.fillStyle = color;
-    raceCtx.beginPath();
-    raceCtx.arc(x, y, isLeader ? radius * 1.6 : radius, 0, Math.PI * 2);
-    raceCtx.fill();
-    if (isLeader) {
-      raceCtx.strokeStyle = "#fff";
-      raceCtx.lineWidth = 1.5 / camera.scale;
-      raceCtx.stroke();
-    }
+    drawKart(
+      raceCtx,
+      x,
+      y,
+      size,
+      group ? colorForDepartment(group) : "#8b95a5",
+      group ? glowForDepartment(group) : "#b0bac9",
+      isLeader,
+      atRisk,
+      pulse
+    );
   }
   raceCtx.globalAlpha = 1;
   raceCtx.restore();
 
+  drawHud(raceCtx, W, positions, tick, sorted);
+}
+
+function drawHud(ctx, W, positions, tick, sorted) {
+  // 상단: 진행률 게이지 + 실시간 통과 인원
+  const passing = sorted.filter((pid) => positions[pid] >= tick.pass_line).length;
+  ctx.fillStyle = "rgba(255,255,255,0.08)";
+  ctx.fillRect(TRACK_PAD_X, 18, W - TRACK_PAD_X * 2, 6);
+  ctx.fillStyle = "#4f8cff";
+  ctx.fillRect(TRACK_PAD_X, 18, (W - TRACK_PAD_X * 2) * tick.progress_ratio, 6);
+
+  ctx.font = "bold 16px 'Malgun Gothic', sans-serif";
+  ctx.fillStyle = "#7cf29c";
+  ctx.textAlign = "left";
+  ctx.fillText(`통과권 ${passing}대`, TRACK_PAD_X, 40);
+
+  ctx.textAlign = "right";
+  ctx.fillStyle = "#8b95a5";
+  ctx.fillText(`${Math.round(tick.progress_ratio * 100)}%`, W - TRACK_PAD_X, 40);
+  ctx.textAlign = "left";
+}
+
+function renderTrack(tick) {
+  pushTick(tick);
+  const sorted = Object.keys(tick.positions).sort(
+    (a, b) => tick.positions[b] - tick.positions[a]
+  );
   detectOvertakes(sorted, tick.round);
-  previousTickPositions = positions;
+  previousTickPositions = tick.positions;
 }
 
 function startCountdown(durationSeconds, startedAtIso, phaseLabel) {
@@ -339,6 +574,11 @@ function handleRacingEvent(data) {
   } else if (data.type === "racing_complete") {
     if (countdownTimer) clearInterval(countdownTimer);
     phaseBannerEl.textContent = "진행 완료";
+    // 마지막 프레임(최종 위치)을 화면에 남긴 채 루프만 정지한다
+    if (rafHandle !== null) {
+      cancelAnimationFrame(rafHandle);
+      rafHandle = null;
+    }
   }
 }
 
@@ -458,8 +698,11 @@ const ws = connectWS((data) => {
     previousTickRound = null;
     currentLeaderDept = null;
     lastMcLiveCallAt = 0;
+    stopRenderLoop();
     raceCtx.clearRect(0, 0, raceCanvas.width, raceCanvas.height);
     overtakeLayer.innerHTML = "";
+    const legendEl = document.getElementById("team-legend");
+    if (legendEl) legendEl.innerHTML = "";
     if (countdownTimer) clearInterval(countdownTimer);
   }
   if (data.type === "camera_mode") {

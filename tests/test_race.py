@@ -31,12 +31,31 @@ def test_position_at_full_progress_matches_target_exactly(rank_index, total):
     assert pos == pytest.approx(target_position(rank_index, total))
 
 
-def test_position_at_progress_zero_ignores_target_uses_autonomous_noise():
-    pos_a = position_at(0, 250, progress_ratio=0.0, participant_id="A", round_index=1)
-    pos_b = position_at(249, 250, progress_ratio=0.0, participant_id="B", round_index=1)
-    # 시작 시점엔 순위와 무관하게 노이즈 기반이라 값 범위가 목표값과 다를 수 있다
-    assert 0.0 <= pos_a <= 1.0
-    assert 0.0 <= pos_b <= 1.0
+def test_all_karts_start_at_the_starting_line():
+    """모든 카트는 출발선(0)에서 함께 출발해야 한다. 예전 구현은 트랙 전역에
+    흩뿌린 상태로 시작해 '함께 출발해 전진한다'는 감각이 없었다."""
+    for rank in (0, 40, 249):
+        pos = position_at(rank, 250, progress_ratio=0.0, participant_id=f"P{rank}", round_index=1)
+        assert pos == pytest.approx(0.0)
+
+
+@pytest.mark.parametrize("rank_index", [0, 17, 120, 249])
+def test_position_is_monotonically_increasing_never_moves_backward(rank_index):
+    """진행률이 늘면 위치도 반드시 늘어야 한다(뒤로 밀리면 레이스가 깨져 보인다)."""
+    prev = -1.0
+    for step in range(0, 101):
+        pos = position_at(rank_index, 250, step / 100, f"P{rank_index}", round_index=1)
+        assert pos >= prev - 1e-12, f"위치가 뒤로 감: step={step}"
+        prev = pos
+
+
+def test_mid_race_order_differs_from_final_order_so_overtaking_happens():
+    """페이스 지수 편차 때문에 레이스 중간 순위와 최종 순위가 달라야 한다
+    (달라야 추월 장면이 생긴다)."""
+    ids = [f"P{i:03d}" for i in range(40)]
+    mid = sorted(ids, key=lambda p: -position_at(ids.index(p), 40, 0.35, p, 1))
+    final = sorted(ids, key=lambda p: -position_at(ids.index(p), 40, 1.0, p, 1))
+    assert mid != final, "중간 순위가 최종 순위와 같으면 추월이 전혀 없다"
 
 
 def test_compute_tick_is_pure_function_of_inputs():

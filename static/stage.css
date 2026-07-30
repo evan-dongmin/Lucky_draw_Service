@@ -128,6 +128,29 @@ h1 {
   transition: width 0.25s ease-out;
 }
 
+.team-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 0.5rem 1.1rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.95rem;
+  color: #c7cedb;
+}
+
+.legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.legend-swatch {
+  width: 0.85rem;
+  height: 0.85rem;
+  border-radius: 0.2rem;
+  display: inline-block;
+}
+
 .track-wrap {
   position: relative;
   width: 100%;
