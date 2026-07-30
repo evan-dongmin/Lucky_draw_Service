@@ -117,3 +117,45 @@ async def test_predictions_disabled_produces_no_prediction_events(monkeypatch):
     prediction_events = [m for m in messages if m["type"].startswith("prediction_")]
     assert prediction_events == []
     assert [m["type"] for m in messages].count("racing_complete") == 1
+
+
+@pytest.mark.asyncio
+async def test_racing_completes_with_zero_mobile_participation(monkeypatch):
+    """장애 리허설: 모바일 참여자가 한 명도 없어도(전원 미접속/이탈) 레이싱과
+    추첨은 정상 완주해야 한다 -- 예측 게임은 완전히 가산적 계층이다."""
+    participants = generate_sample_participants(25, seed=9)
+    draw = fairness.compute_draw("empty-pred-race", participants, draw_count=2, seed="empty-pred-seed")
+    session = Session(
+        session_id="empty-pred-race",
+        participants=participants,
+        draw_count=2,
+        mode="racing",
+        total_seconds=300.0,
+        predictions_enabled=True,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    session.draws.append(draw)
+    main_module.store.set_session(session)
+    main_module.prediction_engine.reset()
+    main_module.predict_tokens.clear()
+    department_names = list(draw.snapshot["departments"].keys())
+    main_module.prediction_engine.open_round(1, department_names)
+    # 의도적으로 아무도 join/allocate/choose 하지 않음 (cards가 완전히 빈 상태)
+
+    monkeypatch.setattr(main_module.director, "build_runbook", lambda **kwargs: list(TINY_SEGMENTS))
+    monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.01)
+
+    messages = []
+
+    async def fake_broadcast(message, sender=None, roles=None):
+        messages.append(message)
+
+    monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
+
+    await main_module.run_racing_sequence("empty-pred-race", 0, 300.0)
+
+    types_seen = [m["type"] for m in messages]
+    assert types_seen.count("racing_complete") == 1
+    assert draw.revealed is True
+    assert len(draw.winners) == 2
+    assert main_module.prediction_engine.cards == {}  # 참여자가 없었으므로 카드도 없음
