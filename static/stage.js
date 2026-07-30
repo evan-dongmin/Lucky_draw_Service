@@ -222,6 +222,18 @@ function render(session) {
   }
 }
 
+document.getElementById("btn-demo-start").addEventListener("click", async (event) => {
+  event.target.disabled = true;
+  event.target.textContent = "데모 준비 중...";
+  try {
+    await fetchJSON("/api/demo/start", { method: "POST", body: JSON.stringify({}) });
+  } catch (e) {
+    alert(e.message);
+    event.target.disabled = false;
+    event.target.textContent = "🚀 데모로 체험하기";
+  }
+});
+
 async function refresh() {
   try {
     const session = await fetchJSON("/api/session");

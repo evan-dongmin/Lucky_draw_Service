@@ -149,3 +149,24 @@ h1 {
   font-size: 1rem;
   padding-left: 1.2rem;
 }
+
+.qr-image {
+  width: 160px;
+  height: 160px;
+  background: #fff;
+  padding: 0.5rem;
+  border-radius: 0.5rem;
+  margin-top: 1rem;
+}
+
+#btn-demo-start {
+  margin-top: 1.5rem;
+  padding: 1rem 2rem;
+  font-size: 1.2rem;
+  border-radius: 0.75rem;
+  border: none;
+  background: linear-gradient(90deg, #4f8cff, #7cf29c);
+  color: #0b0e14;
+  font-weight: 700;
+  cursor: pointer;
+}

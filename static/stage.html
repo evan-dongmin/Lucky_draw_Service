@@ -11,17 +11,21 @@
 
     <div id="idle-view" class="view">
       <p id="ws-status">연결 대기 중...</p>
+      <button id="btn-demo-start">🚀 데모로 체험하기</button>
     </div>
 
     <div id="waiting-view" class="view hidden">
       <p class="sub">참가자 <span id="participant-count">-</span>명 · 부서 <span id="department-count">-</span>개</p>
       <p class="hint">커밋 공개를 기다리는 중...</p>
+      <img class="qr-image" src="/api/qrcode" alt="모바일 참여 QR" />
     </div>
 
     <div id="committed-view" class="view hidden">
       <p class="sub">이 값이 오늘 추첨의 봉인입니다</p>
       <div id="commit-badge" class="commit-badge"></div>
       <p class="hint">추첨 시작을 기다리는 중...</p>
+      <img class="qr-image" src="/api/qrcode" alt="모바일 참여 QR" />
+      <p class="hint">모바일로 QR을 찍고 예측 게임에 참여해보세요</p>
     </div>
 
     <div id="drawing-view" class="view hidden">

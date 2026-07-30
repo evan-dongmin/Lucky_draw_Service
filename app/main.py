@@ -7,8 +7,8 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, HTTPException, UploadFile, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request, UploadFile, WebSocket, WebSocketDisconnect
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -758,6 +758,99 @@ async def mc_line(tag: str) -> dict[str, Any]:
                 params["winner_count"] = len(latest.winners)
     text = mc_agent.pick_line(tag, **params)
     return {"tag": tag, "text": text}
+
+
+# ---------------------------------------------------------------------------
+# 데모 모드 (심사자/원클릭 체험용) + 참여 QR 코드
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/qrcode")
+async def qrcode_image(request: Request) -> Response:
+    """모바일 참여 화면(/mobile) 접속용 QR 코드. Stage 화면 온보딩 구간에 표시된다."""
+    import io
+
+    import qrcode
+
+    url = str(request.base_url) + "mobile"
+    img = qrcode.make(url)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return Response(content=buf.getvalue(), media_type="image/png")
+
+
+class DemoStartRequest(BaseModel):
+    participant_count: int = 250
+    draw_count: int = 3
+    total_seconds: float = 300.0
+    with_bots: bool = True
+
+
+@app.post("/api/demo/start")
+async def demo_start(payload: DemoStartRequest) -> dict[str, Any]:
+    """원클릭 데모: 샘플 명단 생성 -> 레이싱+예측 세션 생성 -> 커밋 ->
+    (선택) 예측 봇으로 채우기 -> 레이스 자동 시작까지 한 번에 수행한다.
+    심사자가 배포 주소에 접속해 버튼 하나로 전체 흐름을 체험하기 위함."""
+    async with state_lock:
+        store.clear()
+        prediction_engine.reset()
+        predict_tokens.clear()
+        if prediction_snapshot_path.exists():
+            prediction_snapshot_path.unlink()
+
+        participants = roster.generate_sample_participants(count=payload.participant_count)
+        session = Session(
+            session_id=uuid.uuid4().hex[:12],
+            participants=participants,
+            draw_count=payload.draw_count,
+            mode="racing",
+            total_seconds=payload.total_seconds,
+            predictions_enabled=True,
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        store.set_session(session)
+        await hub.broadcast({"type": "session_created", "session": public_session_dict(session)})
+
+        try:
+            draw = fairness.compute_draw(
+                session_id=session.session_id,
+                participants=session.participants,
+                draw_count=session.draw_count,
+                excluded_ids=session.excluded_ids,
+            )
+        except fairness.FairnessError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        session.draws.append(draw)
+        store.set_session(session)
+
+        department_names = list(draw.snapshot.get("departments", {}).keys())
+        prediction_engine.open_round(1, department_names)
+        save_prediction_snapshot()
+        await hub.broadcast(
+            {"type": "prediction_window", "round": 1, "state": "open", "candidates": department_names}
+        )
+        public = public_draw_dict(draw)
+        await hub.broadcast({"type": "commit_ready", "draw": public, "draw_index": 0})
+
+        filled = 0
+        if payload.with_bots:
+            joined_pids = set(predict_tokens.values())
+            for participant in session.participants:
+                if participant.id in joined_pids:
+                    continue
+                token = uuid.uuid4().hex
+                predict_tokens[token] = participant.id
+                card = prediction_engine.get_or_create_card(participant.id)
+                card.alloc = _random_valid_alloc()
+                if prediction_engine.round_state.get(1) == "open":
+                    prediction_engine.set_target(participant.id, 1, random.choice(department_names))
+                filled += 1
+            save_prediction_snapshot()
+
+    task = asyncio.create_task(run_racing_sequence(session.session_id, 0, session.total_seconds))
+    active_race_tasks[session.session_id] = task
+
+    return {"session_id": session.session_id, "bots_filled": filled, "total_seconds": session.total_seconds}
 
 
 # ---------------------------------------------------------------------------
