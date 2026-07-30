@@ -399,41 +399,147 @@ function drawFinishLine(ctx, x, trackTop, trackBottom) {
   ctx.stroke();
 }
 
-function drawKart(ctx, x, y, size, color, glow, isLeader, atRisk, pulse) {
-  // 속도 트레일 (카트 수가 많으면 생략해 프레임을 지킨다)
-  if (size >= 4) {
+// ---------------------------------------------------------------------------
+// 카트 스프라이트: 팀 색상마다 오프스크린 캔버스에 "한 번만" 그려두고 매
+// 프레임에는 drawImage로 복사만 한다(2D 게임의 표준 스프라이트 기법).
+// 250대를 매 프레임 세부 묘사로 다시 그리면 프레임이 무너지지만, 복사는
+// 250회여도 부담이 없다. 실제 크기는 레인 높이에 맞춰 스케일된다.
+// ---------------------------------------------------------------------------
+
+const kartSpriteCache = new Map();
+const SPRITE_W = 96; // 2배 슈퍼샘플 -- 축소해 그리면 가장자리가 매끄럽다
+const SPRITE_H = 60;
+
+function roundRectPath(g, x, y, w, h, r) {
+  const rr = Math.min(r, w / 2, h / 2);
+  g.beginPath();
+  g.moveTo(x + rr, y);
+  g.arcTo(x + w, y, x + w, y + h, rr);
+  g.arcTo(x + w, y + h, x, y + h, rr);
+  g.arcTo(x, y + h, x, y, rr);
+  g.arcTo(x, y, x + w, y, rr);
+  g.closePath();
+}
+
+function buildKartSprite(color, glow) {
+  const c = document.createElement("canvas");
+  c.width = SPRITE_W;
+  c.height = SPRITE_H;
+  const g = c.getContext("2d");
+  const W = SPRITE_W;
+  const H = SPRITE_H;
+  const cy = H / 2;
+
+  // 노면 그림자
+  g.fillStyle = "rgba(0,0,0,0.30)";
+  g.beginPath();
+  g.ellipse(W * 0.52, cy + H * 0.30, W * 0.33, H * 0.12, 0, 0, Math.PI * 2);
+  g.fill();
+
+  // 바퀴 (뒤가 크고 앞이 작다 -- 카트 특유의 실루엣)
+  g.fillStyle = "#0d1117";
+  roundRectPath(g, W * 0.17, cy - H * 0.44, W * 0.21, H * 0.22, 4); g.fill();
+  roundRectPath(g, W * 0.17, cy + H * 0.22, W * 0.21, H * 0.22, 4); g.fill();
+  roundRectPath(g, W * 0.66, cy - H * 0.40, W * 0.17, H * 0.19, 3); g.fill();
+  roundRectPath(g, W * 0.66, cy + H * 0.21, W * 0.17, H * 0.19, 3); g.fill();
+
+  // 리어 윙(스포일러)
+  g.fillStyle = glow;
+  roundRectPath(g, W * 0.10, cy - H * 0.26, W * 0.07, H * 0.52, 3);
+  g.fill();
+
+  // 사이드 포드
+  g.fillStyle = color;
+  roundRectPath(g, W * 0.28, cy - H * 0.32, W * 0.34, H * 0.64, 5);
+  g.fill();
+
+  // 메인 섀시 (뒤에서 앞으로 좁아진다)
+  g.beginPath();
+  g.moveTo(W * 0.20, cy - H * 0.19);
+  g.lineTo(W * 0.72, cy - H * 0.15);
+  g.lineTo(W * 0.90, cy - H * 0.07);
+  g.lineTo(W * 0.90, cy + H * 0.07);
+  g.lineTo(W * 0.72, cy + H * 0.15);
+  g.lineTo(W * 0.20, cy + H * 0.19);
+  g.closePath();
+  g.fillStyle = color;
+  g.fill();
+
+  // 상단 하이라이트 (입체감)
+  g.fillStyle = "rgba(255,255,255,0.22)";
+  roundRectPath(g, W * 0.30, cy - H * 0.28, W * 0.30, H * 0.10, 4);
+  g.fill();
+
+  // 콕핏
+  g.fillStyle = "rgba(0,0,0,0.55)";
+  g.beginPath();
+  g.ellipse(W * 0.47, cy, W * 0.09, H * 0.17, 0, 0, Math.PI * 2);
+  g.fill();
+
+  // 드라이버 헬멧
+  g.fillStyle = glow;
+  g.beginPath();
+  g.arc(W * 0.47, cy, H * 0.11, 0, Math.PI * 2);
+  g.fill();
+  g.fillStyle = "rgba(0,0,0,0.45)"; // 바이저
+  g.beginPath();
+  g.ellipse(W * 0.50, cy, H * 0.045, H * 0.07, 0, 0, Math.PI * 2);
+  g.fill();
+
+  // 프론트 노즈콘
+  g.fillStyle = glow;
+  g.beginPath();
+  g.moveTo(W * 0.88, cy - H * 0.06);
+  g.lineTo(W * 0.98, cy);
+  g.lineTo(W * 0.88, cy + H * 0.06);
+  g.closePath();
+  g.fill();
+
+  return c;
+}
+
+function kartSpriteFor(color, glow) {
+  const key = color + "|" + glow;
+  let sprite = kartSpriteCache.get(key);
+  if (!sprite) {
+    sprite = buildKartSprite(color, glow);
+    kartSpriteCache.set(key, sprite);
+  }
+  return sprite;
+}
+
+function drawKart(ctx, x, y, h, color, glow, isLeader, atRisk, pulse) {
+  const w = h * (SPRITE_W / SPRITE_H);
+
+  // 배기 연기 / 속도 자국 -- 카트가 충분히 클 때만(작으면 뭉개져 지저분하다)
+  if (h >= 9) {
     for (let t = 1; t <= 3; t++) {
-      ctx.globalAlpha = 0.16 / t;
+      ctx.globalAlpha = 0.14 / t;
       ctx.fillStyle = glow;
-      ctx.fillRect(x - size * (1.6 + t * 1.5), y - size * 0.35, size * 1.6, size * 0.7);
+      ctx.beginPath();
+      ctx.arc(x - w * (0.5 + t * 0.26), y, h * (0.16 + t * 0.05), 0, Math.PI * 2);
+      ctx.fill();
     }
     ctx.globalAlpha = 1;
   }
 
   if (isLeader) {
     ctx.shadowColor = glow;
-    ctx.shadowBlur = 14;
+    ctx.shadowBlur = 16;
   } else if (atRisk) {
     ctx.shadowColor = "#ff5252";
-    ctx.shadowBlur = 6 + pulse * 8;
+    ctx.shadowBlur = 5 + pulse * 9;
   }
 
-  // 차체
-  ctx.fillStyle = color;
-  ctx.fillRect(x - size * 1.5, y - size * 0.6, size * 2.6, size * 1.2);
-  // 노즈(진행 방향)
-  ctx.beginPath();
-  ctx.moveTo(x + size * 1.1, y - size * 0.6);
-  ctx.lineTo(x + size * 1.9, y);
-  ctx.lineTo(x + size * 1.1, y + size * 0.6);
-  ctx.closePath();
-  ctx.fill();
+  ctx.drawImage(kartSpriteFor(color, glow), x - w / 2, y - h / 2, w, h);
   ctx.shadowBlur = 0;
 
-  if (isLeader) {
-    ctx.strokeStyle = "#fff";
-    ctx.lineWidth = 1.5;
-    ctx.strokeRect(x - size * 1.5, y - size * 0.6, size * 2.6, size * 1.2);
+  // 선두 왕관 -- 카트가 클 때만(결선에서 확실히 보인다)
+  if (isLeader && h >= 14) {
+    ctx.font = `${Math.round(h * 0.8)}px serif`;
+    ctx.textAlign = "center";
+    ctx.fillText("👑", x, y - h * 0.75);
+    ctx.textAlign = "left";
   }
 }
 
@@ -468,7 +574,10 @@ function drawFrame(positions, tick) {
   const laneCount = Math.max(6, Math.min(36, ids.length));
   lastLaneCount = laneCount;
   const laneHeight = (trackBottom - trackTop) / laneCount;
-  const size = ids.length > 120 ? 3 : ids.length > 40 ? 4.5 : ids.length > 12 ? 7 : 10;
+  // 카트 크기는 레인 높이에서 유도한다 -- 결선(카트 5~10대)에서는 레인이
+  // 넓어져 스프라이트 디테일(바퀴·헬멧·스포일러)이 크게 보이고, R1(250대)
+  // 에서는 자동으로 작아져 서로 겹치지 않는다.
+  const kartH = Math.max(5, Math.min(46, laneHeight * 0.82));
 
   for (let i = sorted.length - 1; i >= 0; i--) {
     const pid = sorted[i];
@@ -486,7 +595,7 @@ function drawFrame(positions, tick) {
       raceCtx,
       x,
       y,
-      size,
+      kartH,
       group ? colorForDepartment(group) : "#8b95a5",
       group ? glowForDepartment(group) : "#b0bac9",
       isLeader,
