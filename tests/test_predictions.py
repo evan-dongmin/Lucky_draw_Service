@@ -211,6 +211,43 @@ def test_round_weight_progression_allows_late_comeback():
     assert engine.cards["P1"].gain[3] > engine.cards["P1"].gain[1]
 
 
+def test_engine_to_dict_load_dict_round_trip_preserves_full_state():
+    """서버 재시작 복구 시나리오: 스냅샷 -> 새 인스턴스로 복원해도
+    카드·점수·라운드 상태가 완전히 동일해야 한다(재계산 없이 그대로 복원)."""
+    engine = PredictionEngine()
+    engine.set_allocation("P1", _default_alloc(20, 30, 50))
+    engine.open_round(1, ["A", "B"])
+    engine.set_target("P1", 1, "A")
+    engine.lock_round(1, seed="restore-seed")
+    engine.score_round(1, hit_set={"A"})
+    engine.open_round(2, ["X", "Y"])
+
+    snapshot = engine.to_dict()
+
+    restored = PredictionEngine()
+    restored.load_dict(snapshot)
+
+    assert restored.cards["P1"].to_dict() == engine.cards["P1"].to_dict()
+    assert restored.round_state == engine.round_state
+    assert restored.round_candidates == engine.round_candidates
+    assert restored.round_share == engine.round_share
+
+
+def test_load_dict_restores_in_place_keeping_same_instance():
+    """모듈 싱글턴 패턴에서 다른 코드가 들고 있는 참조가 깨지지 않아야 한다."""
+    engine = PredictionEngine()
+    engine.set_allocation("P1", _default_alloc())
+    reference = engine  # 다른 모듈이 들고 있을 법한 참조
+
+    snapshot = engine.to_dict()
+    engine.reset()
+    assert "P1" not in engine.cards
+
+    engine.load_dict(snapshot)
+    assert reference is engine  # 동일 인스턴스
+    assert "P1" in reference.cards
+
+
 def test_leaderboard_sorted_descending_with_stable_tiebreak():
     engine = PredictionEngine()
     engine.set_allocation("P3", _default_alloc())

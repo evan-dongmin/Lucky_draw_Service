@@ -168,3 +168,35 @@ class PredictionEngine:
     def leaderboard(self, top_n: int = 10) -> list[PredictionCard]:
         ordered = sorted(self.cards.values(), key=lambda c: (-c.score, c.participant_id))
         return ordered[:top_n]
+
+    # -- 영속화(장애 복구용) ---------------------------------------------
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "cards": {pid: card.to_dict() for pid, card in self.cards.items()},
+            "round_state": {str(r): s for r, s in self.round_state.items()},
+            "round_candidates": {str(r): c for r, c in self.round_candidates.items()},
+            "round_share": {str(r): s for r, s in self.round_share.items()},
+        }
+
+    def load_dict(self, data: dict[str, Any]) -> None:
+        """저장된 스냅샷으로 현재 인스턴스를 제자리에서 복원한다(참조 유지).
+        채점 결과(gain/score)까지 그대로 담겨 있으므로 재계산 없이 그대로
+        복원되며, 상태머신(round_state/round_candidates)도 함께 복원되어
+        진행 중이던 선택 창이 서버 재시작 후에도 유지된다."""
+        self.reset()
+        for pid, card_data in data.get("cards", {}).items():
+            card = PredictionCard(participant_id=pid)
+            card.alloc = {int(k): v for k, v in card_data["alloc"].items()}
+            card.target = {int(k): v for k, v in card_data["target"].items()}
+            card.is_auto = {int(k): v for k, v in card_data["is_auto"].items()}
+            card.locked = {int(k): v for k, v in card_data["locked"].items()}
+            card.gain = {int(k): v for k, v in card_data.get("gain", {}).items()}
+            card.score = card_data["score"]
+            self.cards[pid] = card
+        for r, s in data.get("round_state", {}).items():
+            self.round_state[int(r)] = s
+        for r, c in data.get("round_candidates", {}).items():
+            self.round_candidates[int(r)] = c
+        for r, s in data.get("round_share", {}).items():
+            self.round_share[int(r)] = s

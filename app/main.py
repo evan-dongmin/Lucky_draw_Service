@@ -14,7 +14,7 @@ from pydantic import BaseModel
 
 from app import departments as departments_module
 from app import director, fairness, predictions, race, roster
-from app.config import STATIC_DIR
+from app.config import PREDICTION_SNAPSHOT_PATH, STATIC_DIR
 from app.mc import MCAgent
 from app.models import DrawResult, Participant, Session
 from app.predictions import PredictionEngine
@@ -33,6 +33,7 @@ async def lifespan(_: FastAPI):
     session = store.load_snapshot()
     if session:
         logger.info("세션 스냅샷 복원: %s", session.session_id)
+    load_prediction_snapshot()
     mc_agent.load_cache()
     yield
 
@@ -77,6 +78,26 @@ hub = ConnectionHub()
 active_race_tasks: dict[str, asyncio.Task] = {}
 prediction_engine = PredictionEngine()
 predict_tokens: dict[str, str] = {}  # 기기 토큰 -> participant_id (예측 게임 온보딩용)
+prediction_snapshot_path = PREDICTION_SNAPSHOT_PATH
+
+
+def save_prediction_snapshot() -> None:
+    """예측 게임 상태(카드·점수·선택창·토큰)를 디스크에 저장한다.
+    Session과 마찬가지로 서버가 재시작돼도 채점 결과가 사라지지 않도록
+    (재계산이 아니라 그대로 복원) 매 변경 시점마다 호출한다."""
+    payload = {"engine": prediction_engine.to_dict(), "tokens": dict(predict_tokens)}
+    prediction_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = prediction_snapshot_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(prediction_snapshot_path)
+
+
+def load_prediction_snapshot() -> None:
+    if not prediction_snapshot_path.exists():
+        return
+    data = json.loads(prediction_snapshot_path.read_text(encoding="utf-8"))
+    prediction_engine.load_dict(data.get("engine", {}))
+    predict_tokens.update(data.get("tokens", {}))
 
 RACE_ROUND_INDEX = {"race_r1": 1, "race_r2": 2, "race_r3": 3}
 SCORE_PHASE_ROUND = {"score_r1_select_r2": 1, "score_r2_select_r3": 2}
@@ -214,6 +235,8 @@ async def create_session(payload: CreateSessionRequest) -> dict[str, Any]:
         store.set_session(session)
         prediction_engine.reset()  # 새 세션 -- 예측 카드/토큰 초기화
         predict_tokens.clear()
+        if prediction_snapshot_path.exists():
+            prediction_snapshot_path.unlink()
         await hub.broadcast({"type": "session_created", "session": public_session_dict(session)})
         return public_session_dict(session)
 
@@ -244,6 +267,8 @@ async def reset_session() -> dict[str, Any]:
         store.clear()
         prediction_engine.reset()
         predict_tokens.clear()
+        if prediction_snapshot_path.exists():
+            prediction_snapshot_path.unlink()
         for session_id, task in list(active_race_tasks.items()):
             if not task.done():
                 task.cancel()
@@ -275,6 +300,7 @@ async def commit_draw() -> dict[str, Any]:
         if session.predictions_enabled:
             department_names = list(draw.snapshot.get("departments", {}).keys())
             prediction_engine.open_round(1, department_names)
+            save_prediction_snapshot()
             await hub.broadcast(
                 {"type": "prediction_window", "round": 1, "state": "open", "candidates": department_names}
             )
@@ -329,6 +355,7 @@ async def redraw(payload: RedrawRequest) -> dict[str, Any]:
             prediction_engine.reset()  # 새 추첨 회차 -- 예측 게임도 새로 시작
             department_names = list(draw.snapshot.get("departments", {}).keys())
             prediction_engine.open_round(1, department_names)
+            save_prediction_snapshot()
             await hub.broadcast(
                 {"type": "prediction_window", "round": 1, "state": "open", "candidates": department_names}
             )
@@ -435,6 +462,7 @@ async def _lock_prediction_round(round_index: int, seed: str) -> None:
     if prediction_engine.round_state.get(round_index) != "open":
         return
     prediction_engine.lock_round(round_index, seed=seed)
+    save_prediction_snapshot()
     await hub.broadcast({"type": "prediction_window", "round": round_index, "state": "locked"})
 
 
@@ -446,7 +474,6 @@ async def _score_and_open_next(draw: DrawResult, scored_round: int, next_round: 
     else:
         hit_set = set(draw.winners)
     prediction_engine.score_round(scored_round, hit_set)
-    await hub.broadcast(await _leaderboard_payload())
 
     if next_round is not None:
         if next_round == 3:
@@ -454,6 +481,11 @@ async def _score_and_open_next(draw: DrawResult, scored_round: int, next_round: 
         else:
             candidates = list(draw.snapshot.get("departments", {}).keys())
         prediction_engine.open_round(next_round, candidates)
+
+    save_prediction_snapshot()
+    await hub.broadcast(await _leaderboard_payload())
+
+    if next_round is not None:
         await hub.broadcast(
             {"type": "prediction_window", "round": next_round, "state": "open", "candidates": candidates}
         )
@@ -599,6 +631,7 @@ async def predict_join(payload: PredictJoinRequest) -> dict[str, Any]:
     token = uuid.uuid4().hex
     predict_tokens[token] = payload.participant_id
     card = prediction_engine.get_or_create_card(payload.participant_id)
+    save_prediction_snapshot()
     return {"token": token, "participant_id": payload.participant_id, "card": card.to_dict()}
 
 
@@ -625,6 +658,7 @@ async def predict_allocate(payload: PredictAllocateRequest) -> dict[str, Any]:
         card = prediction_engine.set_allocation(pid, payload.alloc)
     except predictions.PredictionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    save_prediction_snapshot()
     return card.to_dict()
 
 
@@ -641,6 +675,7 @@ async def predict_choose(payload: PredictChooseRequest) -> dict[str, Any]:
         card = prediction_engine.set_target(pid, payload.round, payload.target)
     except predictions.PredictionError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    save_prediction_snapshot()
     return card.to_dict()
 
 
@@ -677,6 +712,7 @@ async def predict_bots_fill() -> dict[str, Any]:
                 if candidates:
                     prediction_engine.set_target(participant.id, round_index, random.choice(candidates))
         filled += 1
+    save_prediction_snapshot()
     return {"filled": filled}
 
 
