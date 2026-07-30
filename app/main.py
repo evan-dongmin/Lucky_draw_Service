@@ -78,6 +78,7 @@ hub = ConnectionHub()
 active_race_tasks: dict[str, asyncio.Task] = {}
 prediction_engine = PredictionEngine()
 predict_tokens: dict[str, str] = {}  # 기기 토큰 -> participant_id (예측 게임 온보딩용)
+fast_forward_requests: set[str] = set()  # 조기 종료가 요청된 session_id 집합 (레이스 구간 전용)
 prediction_snapshot_path = PREDICTION_SNAPSHOT_PATH
 
 
@@ -269,6 +270,7 @@ async def reset_session() -> dict[str, Any]:
         predict_tokens.clear()
         if prediction_snapshot_path.exists():
             prediction_snapshot_path.unlink()
+        fast_forward_requests.clear()
         for session_id, task in list(active_race_tasks.items()):
             if not task.done():
                 task.cancel()
@@ -402,7 +404,9 @@ def _department_denom_sets(
     return None
 
 
-async def _run_race_phase(draw: DrawResult, round_index: int, duration_seconds: float) -> None:
+async def _run_race_phase(
+    draw: DrawResult, round_index: int, duration_seconds: float, session_id: str
+) -> None:
     population = draw.ranking if round_index == 1 else draw.round_pass_ids[round_index - 1]
     pass_count = len(draw.round_pass_ids[round_index])
     total = len(population)
@@ -415,6 +419,13 @@ async def _run_race_phase(draw: DrawResult, round_index: int, duration_seconds: 
     while True:
         elapsed = loop.time() - start
         ratio = min(elapsed / duration_seconds, 1.0) if duration_seconds > 0 else 1.0
+        if session_id in fast_forward_requests:
+            # 비상 조기 종료: 다음 틱에서 곧바로 최종 위치(ratio=1.0)로 점프한다.
+            # 통과 판정은 position_at()이 ratio=1.0에서 목표값과 정확히 일치하도록
+            # 설계되어 있으므로(test_race.py의 100회 반복 검증), 결과 정합성은
+            # 그대로 유지된다 -- 시간만 절약될 뿐이다.
+            fast_forward_requests.discard(session_id)
+            ratio = 1.0
         positions = race.compute_tick(population, ratio, round_index)
         payload: dict[str, Any] = {
             "type": "race_tick",
@@ -519,7 +530,7 @@ async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: f
                 await _lock_prediction_round(RACE_ROUND_INDEX[seg.phase], draw.seed)
 
             if seg.phase in RACE_ROUND_INDEX:
-                await _run_race_phase(draw, RACE_ROUND_INDEX[seg.phase], seg.duration_seconds)
+                await _run_race_phase(draw, RACE_ROUND_INDEX[seg.phase], seg.duration_seconds, session_id)
             elif seg.phase in SCORE_PHASE_ROUND:
                 round_index = SCORE_PHASE_ROUND[seg.phase]
                 await _announce_round(session, draw, round_index)
@@ -565,6 +576,20 @@ async def start_racing(payload: RacingStartRequest) -> dict[str, Any]:
     )
     active_race_tasks[session.session_id] = task
     return {"started": True, "total_seconds": session.total_seconds, "draw_index": draw_index}
+
+
+@app.post("/api/racing/fast-forward")
+async def racing_fast_forward() -> dict[str, Any]:
+    """비상용: 현재 진행 중인 레이스 구간(race_r1/r2/r3)만 조기 종료한다.
+    선택창이 포함된 구간(score_rX_select_rY)은 30초 하한 원칙을 지키기 위해
+    이 기능의 대상이 아니다."""
+    session = _require_session()
+    if session.mode != "racing":
+        raise HTTPException(status_code=400, detail="레이싱 모드 세션이 아닙니다.")
+    if session.session_id not in active_race_tasks or active_race_tasks[session.session_id].done():
+        raise HTTPException(status_code=400, detail="진행 중인 레이스가 없습니다.")
+    fast_forward_requests.add(session.session_id)
+    return {"requested": True}
 
 
 # ---------------------------------------------------------------------------

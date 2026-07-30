@@ -159,6 +159,22 @@ document.getElementById("btn-start-racing").addEventListener("click", async () =
   }
 });
 
+document.getElementById("btn-fast-forward").addEventListener("click", async () => {
+  try {
+    await fetchJSON("/api/racing/fast-forward", { method: "POST", body: JSON.stringify({}) });
+  } catch (e) {
+    alert(e.message);
+  }
+});
+
+for (const btn of document.querySelectorAll(".camera-btn")) {
+  btn.addEventListener("click", () => {
+    sendWS(ws, { type: "camera_mode", mode: btn.dataset.mode });
+    for (const b of document.querySelectorAll(".camera-btn")) b.classList.remove("selected");
+    btn.classList.add("selected");
+  });
+}
+
 document.getElementById("btn-bots-fill").addEventListener("click", async () => {
   try {
     const result = await fetchJSON("/api/predict/bots/fill", { method: "POST" });

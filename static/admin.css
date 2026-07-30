@@ -62,6 +62,11 @@ button.danger {
   border-color: #b3261e;
 }
 
+.camera-btn.selected {
+  background: #4f8cff;
+  border-color: #4f8cff;
+}
+
 input[type="number"] {
   width: 5rem;
   padding: 0.4rem;

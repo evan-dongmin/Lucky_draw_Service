@@ -67,6 +67,15 @@ P002,김철수,영업팀"></textarea>
       <div id="racing-status" class="commit-box"></div>
 
       <div class="row">
+        <label>무대 카메라</label>
+        <button class="camera-btn" data-mode="auto">자동(라운드별)</button>
+        <button class="camera-btn" data-mode="wide">광각</button>
+        <button class="camera-btn" data-mode="medium">중간 줌</button>
+        <button class="camera-btn" data-mode="close">클로즈업</button>
+        <button id="btn-fast-forward">⏩ 이 라운드 조기 종료(비상)</button>
+      </div>
+
+      <div class="row">
         <label><input type="checkbox" id="redraw-exclude-winners" checked /> 이전 당첨자 제외하고 재추첨</label>
         <button id="btn-redraw">재추첨</button>
         <button id="btn-reset" class="danger">전체 초기화</button>
