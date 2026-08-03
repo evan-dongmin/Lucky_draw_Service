@@ -603,8 +603,22 @@ async def _score_and_open_next(
         odds_payload = gambling_engine.resolve_round(scored_round, hit_set)
         if next_candidates is not None:
             gambling_engine.open_round(next_round, next_candidates)
+
+        # 라운드 보상(사용자 요청): 통과한 개인 + 그 라운드 최고 통과율
+        # 부서("우승팀") 소속 통과자에게 추가 지급. 이미 fairness.py가
+        # 계산해둔 결과를 읽어서 지급할 뿐이라 추첨 계산에는 관여하지 않는다.
+        if scored_round in (1, 2):
+            passed_ids = set(draw.round_pass_ids[scored_round])
+            rates = draw.department_pass_rate.get(scored_round, {})
+            winning_dept = next(iter(predictions.top_k_by_rate(rates, 1)), None) if rates else None
+            departments = draw.snapshot.get("departments", {})
+            winning_ids = set(departments.get(winning_dept, [])) if winning_dept else set()
+            rewards = gambling_engine.award_round_rewards(passed_ids, winning_ids)
+        else:
+            rewards = gambling_engine.award_final_rewards(set(draw.winners))
+
         save_gambling_snapshot()
-        await hub.broadcast({"type": "gambling_result", **odds_payload})
+        await hub.broadcast({"type": "gambling_result", "rewards": rewards, **odds_payload})
         await hub.broadcast(await _gambling_leaderboard_payload())
     else:
         prediction_engine.score_round(scored_round, hit_set)
@@ -1045,6 +1059,68 @@ async def bet_leaderboard(top_n: int = 10) -> dict[str, Any]:
             }
             for c in top
         ]
+    }
+
+
+class TokenOnlyRequest(BaseModel):
+    token: str
+
+
+@app.post("/api/bet/upgrade/personal")
+async def bet_upgrade_personal(payload: TokenOnlyRequest) -> dict[str, Any]:
+    """사이버머니로 내 카트의 코스메틱 업그레이드(글로우 강도)를 산다.
+    레이스 결과에는 어떤 영향도 주지 않는다 -- app/gambling.py 모듈
+    docstring 참조."""
+    session = _require_session()
+    _require_gambling_mode(session)
+    pid = _resolve_pid_from_token(payload.token)
+    try:
+        card = gambling_engine.purchase_personal_upgrade(pid)
+    except gambling.GamblingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    save_gambling_snapshot()
+    return card.to_dict()
+
+
+class TeamUpgradeContributeRequest(BaseModel):
+    token: str
+    amount: int
+
+
+@app.post("/api/bet/upgrade/team")
+async def bet_upgrade_team(payload: TeamUpgradeContributeRequest) -> dict[str, Any]:
+    """소속 부서의 공동 업그레이드 풀에 사이버머니를 기여한다(십시일반).
+    임계값을 넘을 때마다 그 부서 전원의 시각 효과 레벨이 오른다."""
+    session = _require_session()
+    _require_gambling_mode(session)
+    pid = _resolve_pid_from_token(payload.token)
+    groups = departments_module.compute_department_groups(session.participants)
+    department = departments_module.group_of(groups, pid)
+    if department is None:
+        raise HTTPException(status_code=400, detail="소속 부서를 찾을 수 없습니다.")
+    try:
+        card = gambling_engine.contribute_team_upgrade(pid, department, payload.amount)
+    except gambling.GamblingError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    save_gambling_snapshot()
+    return {**card.to_dict(), "department": department, "team_pool": gambling_engine.team_upgrade_pool[department]}
+
+
+@app.get("/api/bet/upgrades")
+async def bet_upgrades() -> dict[str, Any]:
+    """전체 팀/개인 업그레이드 현황(공개, 토큰 불필요) -- Stage가 폴링해
+    카트 글로우 크기에 반영한다. 대부분은 레벨 0이므로 개인 레벨은 0보다
+    큰 것만 담아 payload를 작게 유지한다."""
+    pools = gambling_engine.team_upgrade_pool
+    personal_levels = {
+        pid: card.personal_upgrade_level
+        for pid, card in gambling_engine.cards.items()
+        if card.personal_upgrade_level > 0
+    }
+    return {
+        "team_pool": dict(pools),
+        "team_level": {dept: gambling_engine.team_upgrade_level(dept) for dept in pools},
+        "personal_level": personal_levels,
     }
 
 

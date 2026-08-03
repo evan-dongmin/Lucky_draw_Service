@@ -173,3 +173,94 @@ def test_bots_fill_places_bets_in_gambling_mode(client):
     assert len(lb) == 15
     # 봇들은 R1이 열려 있는 동안 채워지므로 최소 한 명은 잔액이 시작값과 달라야 한다
     assert any(entry["balance"] != STARTING_BALANCE for entry in lb)
+
+
+# ---------------------------------------------------------------------------
+# 업그레이드 상점(순수 코스메틱) API
+# ---------------------------------------------------------------------------
+
+
+def test_personal_upgrade_purchase_succeeds_and_deducts_balance(client):
+    session = _create_gambling_session(client)
+    pid = session["participants"][0]["id"]
+    token = client.post("/api/predict/join", json={"participant_id": pid}).json()["token"]
+
+    resp = client.post("/api/bet/upgrade/personal", json={"token": token})
+    assert resp.status_code == 200
+    card = resp.json()
+    assert card["personal_upgrade_level"] == 1
+    assert card["balance"] < STARTING_BALANCE
+
+
+def test_personal_upgrade_rejected_in_confidence_mode(client):
+    sample = client.get("/api/roster/sample", params={"count": 10}).json()
+    resp = client.post(
+        "/api/session",
+        json={
+            "participants": sample["participants"],
+            "draw_count": 2,
+            "mode": "racing",
+            "predictions_enabled": True,
+            "prediction_mode": "confidence",
+        },
+    )
+    pid = resp.json()["participants"][0]["id"]
+    token = client.post("/api/predict/join", json={"participant_id": pid}).json()["token"]
+
+    resp2 = client.post("/api/bet/upgrade/personal", json={"token": token})
+    assert resp2.status_code == 400
+
+
+def test_personal_upgrade_rejected_beyond_max_level(client):
+    session = _create_gambling_session(client)
+    pid = session["participants"][0]["id"]
+    token = client.post("/api/predict/join", json={"participant_id": pid}).json()["token"]
+
+    # 최대 레벨까지 반복 구매(테스트 편의를 위해 충분한 횟수 시도)
+    for _ in range(10):
+        resp = client.post("/api/bet/upgrade/personal", json={"token": token})
+        if resp.status_code != 200:
+            break
+    assert resp.status_code == 400
+
+
+def test_team_upgrade_contribution_pools_and_reflected_in_upgrades_endpoint(client):
+    session = _create_gambling_session(client, count=10)
+    p1, p2 = session["participants"][0]["id"], session["participants"][1]["id"]
+    dept = session["participants"][0]["team"]
+    # 같은 부서 참가자 둘을 찾아 함께 기여하도록 보장
+    same_dept = [p["id"] for p in session["participants"] if p["team"] == dept][:2]
+    tokens = [
+        client.post("/api/predict/join", json={"participant_id": pid}).json()["token"] for pid in same_dept
+    ]
+
+    for token in tokens:
+        resp = client.post("/api/bet/upgrade/team", json={"token": token, "amount": 300})
+        assert resp.status_code == 200
+
+    upgrades = client.get("/api/bet/upgrades").json()
+    assert upgrades["team_pool"][dept] == 600
+    assert upgrades["team_level"][dept] == 1  # TEAM_UPGRADE_THRESHOLD=500 기준
+
+
+def test_team_upgrade_rejects_amount_over_balance(client):
+    session = _create_gambling_session(client)
+    pid = session["participants"][0]["id"]
+    token = client.post("/api/predict/join", json={"participant_id": pid}).json()["token"]
+
+    resp = client.post("/api/bet/upgrade/team", json={"token": token, "amount": STARTING_BALANCE + 100})
+    assert resp.status_code == 400
+
+
+def test_bet_upgrades_endpoint_includes_personal_levels_only_above_zero(client):
+    session = _create_gambling_session(client, count=5)
+    pid1 = session["participants"][0]["id"]
+    pid2 = session["participants"][1]["id"]
+    token1 = client.post("/api/predict/join", json={"participant_id": pid1}).json()["token"]
+    client.post("/api/predict/join", json={"participant_id": pid2})  # 업그레이드 안 함
+
+    client.post("/api/bet/upgrade/personal", json={"token": token1})
+
+    upgrades = client.get("/api/bet/upgrades").json()
+    assert upgrades["personal_level"][pid1] == 1
+    assert pid2 not in upgrades["personal_level"]

@@ -1,6 +1,18 @@
 import pytest
 
-from app.gambling import ROUND_BONUS_CHIPS, STARTING_BALANCE, GamblingEngine, GamblingError
+from app.gambling import (
+    FINAL_WIN_REWARD,
+    FINISH_REWARD,
+    MAX_PERSONAL_UPGRADE_LEVEL,
+    MAX_TEAM_UPGRADE_LEVEL,
+    PERSONAL_UPGRADE_COST,
+    ROUND_BONUS_CHIPS,
+    STARTING_BALANCE,
+    TEAM_UPGRADE_THRESHOLD,
+    TEAM_WIN_REWARD,
+    GamblingEngine,
+    GamblingError,
+)
 
 
 def test_new_card_starts_with_starting_balance():
@@ -238,3 +250,159 @@ def test_load_dict_restores_in_place_keeping_same_instance():
     assert reference is engine
     assert "P1" in reference.cards
     assert reference.cards["P1"].balance == STARTING_BALANCE - 50
+
+
+# ---------------------------------------------------------------------------
+# 라운드 보상: 통과한 개인 + 우승 부서 소속 통과자 + 최종 당첨자
+# ---------------------------------------------------------------------------
+
+
+def test_award_round_rewards_grants_finish_bonus_only_to_existing_cards():
+    engine = GamblingEngine()
+    engine.get_or_create_card("P1")
+    engine.get_or_create_card("P2")
+    # P3는 카드가 없다 -- 한 번도 참여하지 않은 참가자(유령 리더보드 항목 방지)
+
+    granted = engine.award_round_rewards(passed_ids={"P1", "P2", "P3"})
+
+    assert granted == {"P1": FINISH_REWARD, "P2": FINISH_REWARD}
+    assert engine.cards["P1"].balance == STARTING_BALANCE + FINISH_REWARD
+    assert "P3" not in engine.cards
+
+
+def test_award_round_rewards_adds_team_win_bonus_on_top_of_finish_bonus():
+    engine = GamblingEngine()
+    engine.get_or_create_card("P1")  # 우승팀 소속 통과자
+    engine.get_or_create_card("P2")  # 통과했지만 우승팀 아님
+
+    granted = engine.award_round_rewards(passed_ids={"P1", "P2"}, winning_ids={"P1"})
+
+    assert granted["P1"] == FINISH_REWARD + TEAM_WIN_REWARD
+    assert granted["P2"] == FINISH_REWARD
+    assert engine.cards["P1"].balance == STARTING_BALANCE + FINISH_REWARD + TEAM_WIN_REWARD
+
+
+def test_team_win_bonus_not_granted_to_winning_team_member_who_did_not_pass():
+    """우승 부서 소속이라도 그 라운드를 통과하지 못했으면(탈락) 보상 대상이 아니다."""
+    engine = GamblingEngine()
+    engine.get_or_create_card("P1")
+
+    granted = engine.award_round_rewards(passed_ids=set(), winning_ids={"P1"})
+
+    assert granted == {}
+    assert engine.cards["P1"].balance == STARTING_BALANCE
+
+
+def test_award_final_rewards_grants_only_to_winners_with_existing_cards():
+    engine = GamblingEngine()
+    engine.get_or_create_card("P1")
+
+    granted = engine.award_final_rewards(winner_ids={"P1", "P2"})
+
+    assert granted == {"P1": FINAL_WIN_REWARD}
+    assert engine.cards["P1"].balance == STARTING_BALANCE + FINAL_WIN_REWARD
+
+
+# ---------------------------------------------------------------------------
+# 업그레이드 상점(순수 코스메틱)
+# ---------------------------------------------------------------------------
+
+
+def test_purchase_personal_upgrade_deducts_cost_and_increments_level():
+    engine = GamblingEngine()
+    engine.get_or_create_card("P1")
+
+    card = engine.purchase_personal_upgrade("P1")
+
+    assert card.personal_upgrade_level == 1
+    assert card.balance == STARTING_BALANCE - PERSONAL_UPGRADE_COST[0]
+
+
+def test_purchase_personal_upgrade_cost_increases_per_level():
+    engine = GamblingEngine()
+    card = engine.get_or_create_card("P1")
+    card.balance = 10_000
+
+    engine.purchase_personal_upgrade("P1")
+    balance_after_first = engine.cards["P1"].balance
+    engine.purchase_personal_upgrade("P1")
+
+    spent_second = balance_after_first - engine.cards["P1"].balance
+    assert spent_second == PERSONAL_UPGRADE_COST[1]
+    assert spent_second > PERSONAL_UPGRADE_COST[0]
+
+
+def test_purchase_personal_upgrade_rejects_insufficient_balance():
+    engine = GamblingEngine()
+    engine.get_or_create_card("P1")  # 시작 잔액 500 < 첫 레벨 비용 아님 -> 충분
+
+    card = engine.get_or_create_card("P1")
+    card.balance = 10
+    with pytest.raises(GamblingError):
+        engine.purchase_personal_upgrade("P1")
+
+
+def test_purchase_personal_upgrade_rejects_beyond_max_level():
+    engine = GamblingEngine()
+    card = engine.get_or_create_card("P1")
+    card.balance = 100_000
+    for _ in range(MAX_PERSONAL_UPGRADE_LEVEL):
+        engine.purchase_personal_upgrade("P1")
+    assert engine.cards["P1"].personal_upgrade_level == MAX_PERSONAL_UPGRADE_LEVEL
+
+    with pytest.raises(GamblingError):
+        engine.purchase_personal_upgrade("P1")
+
+
+def test_contribute_team_upgrade_pools_across_multiple_participants():
+    engine = GamblingEngine()
+    for pid in ["P1", "P2"]:
+        card = engine.get_or_create_card(pid)
+        card.balance = 1000
+
+    engine.contribute_team_upgrade("P1", "개발팀", 300)
+    engine.contribute_team_upgrade("P2", "개발팀", 300)
+
+    assert engine.team_upgrade_pool["개발팀"] == 600
+    assert engine.cards["P1"].balance == 700
+    assert engine.cards["P1"].team_upgrade_contributed == 300
+    assert engine.team_upgrade_level("개발팀") == 600 // TEAM_UPGRADE_THRESHOLD
+
+
+def test_team_upgrade_level_caps_at_max():
+    engine = GamblingEngine()
+    card = engine.get_or_create_card("P1")
+    card.balance = 100_000
+    engine.contribute_team_upgrade("P1", "개발팀", TEAM_UPGRADE_THRESHOLD * (MAX_TEAM_UPGRADE_LEVEL + 5))
+
+    assert engine.team_upgrade_level("개발팀") == MAX_TEAM_UPGRADE_LEVEL
+
+
+def test_contribute_team_upgrade_rejects_amount_over_balance():
+    engine = GamblingEngine()
+    engine.get_or_create_card("P1")
+    with pytest.raises(GamblingError):
+        engine.contribute_team_upgrade("P1", "개발팀", STARTING_BALANCE + 1)
+
+
+def test_contribute_team_upgrade_rejects_non_positive_amount():
+    engine = GamblingEngine()
+    engine.get_or_create_card("P1")
+    with pytest.raises(GamblingError):
+        engine.contribute_team_upgrade("P1", "개발팀", 0)
+
+
+def test_upgrade_state_round_trips_through_snapshot():
+    engine = GamblingEngine()
+    card = engine.get_or_create_card("P1")
+    card.balance = 10_000
+    engine.purchase_personal_upgrade("P1")
+    engine.contribute_team_upgrade("P1", "개발팀", 300)
+
+    snapshot = engine.to_dict()
+    restored = GamblingEngine()
+    restored.load_dict(snapshot)
+
+    assert restored.cards["P1"].personal_upgrade_level == 1
+    assert restored.cards["P1"].team_upgrade_contributed == 300
+    assert restored.team_upgrade_pool == {"개발팀": 300}

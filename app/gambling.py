@@ -25,6 +25,15 @@
 지급해, 초반에 전 재산을 잃어도 남은 라운드에서 완전히 게임에서 밀려나지
 않게 한다(기획안 §4의 "누구도 수학적으로 탈락하지 않는다" 철학을 그대로
 갬블링에도 적용한 것).
+
+업그레이드 상점(순수 연출용): 사용자 요청으로 "라운드 통과/우승 보상 ->
+업그레이드 구매"라는 소비 선택지를 추가했다. **"능력치 향상"이라는 표현을
+그대로 구현하면 안 된다** -- 이 프로젝트의 핵심 신뢰 장치는 추첨 결과가
+커밋 시점의 시드로 완전히 고정된다는 것이고(`/verify`에서 누구나 재계산
+가능), 사이버머니로 실제 순위/통과 여부를 바꿀 수 있다면 그 장치가
+깨진다. 그래서 "업그레이드"는 카트의 시각 효과(글로우 강도·오라 크기)만
+바꾸는 **코스메틱 전용**이다 -- 레이스 계산에는 어떤 값도 넘기지 않는다
+(팀 특수능력·개인 캐릭터 선택과 동일한 원칙).
 """
 
 from __future__ import annotations
@@ -35,6 +44,23 @@ from typing import Any
 STARTING_BALANCE = 500
 ROUND_BONUS_CHIPS = 80  # 라운드 2·3 개방 시 전원에게 지급(완전 파산 방지)
 ROUNDS = (1, 2, 3)
+
+# 라운드 보상(사용자 요청: "우승한 팀"과 "결승선 통과한 개인"에게 사이버머니
+# 지급) -- 이미 fairness.py가 계산해둔 결과를 읽어서 지급할 뿐이므로 추첨
+# 계산 자체에는 관여하지 않는다.
+FINISH_REWARD = 40  # 그 라운드 통과선을 넘은 개인 전원
+TEAM_WIN_REWARD = 60  # 그 라운드 최고 통과율 부서 소속 통과자에게 추가 지급
+FINAL_WIN_REWARD = 300  # 결선(R3) 최종 당첨자에게 지급
+
+# 개인 카트 업그레이드: 레벨업마다 비용이 오른다(순수 코스메틱 -- 글로우
+# 강도만 바뀐다).
+PERSONAL_UPGRADE_COST = [100, 200, 300]
+MAX_PERSONAL_UPGRADE_LEVEL = len(PERSONAL_UPGRADE_COST)
+
+# 팀 업그레이드: 부서 소속 참가자들이 십시일반으로 판돈을 모으면(공동
+# 투자) 이 임계값마다 팀 전체의 시각 효과 레벨이 오른다.
+TEAM_UPGRADE_THRESHOLD = 500
+MAX_TEAM_UPGRADE_LEVEL = 3
 
 RoundState = str  # "pending" | "open" | "locked"
 
@@ -53,6 +79,8 @@ class BetCard:
     locked: dict[int, bool] = field(default_factory=lambda: {r: False for r in ROUNDS})
     net: dict[int, int] = field(default_factory=dict)  # 라운드별 순손익(표시용, 정산 후 채워짐)
     payout: dict[int, int] = field(default_factory=dict)  # 라운드별 실제 지급액(내부용, 잔액 재계산 멱등성 보장)
+    personal_upgrade_level: int = 0  # 0..MAX_PERSONAL_UPGRADE_LEVEL, 코스메틱 전용
+    team_upgrade_contributed: int = 0  # 이 참가자가 팀 업그레이드 풀에 낸 누적액(표시용)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -65,6 +93,8 @@ class BetCard:
             "locked": {str(r): v for r, v in self.locked.items()},
             "net": {str(r): v for r, v in self.net.items()},
             "payout": {str(r): v for r, v in self.payout.items()},
+            "personal_upgrade_level": self.personal_upgrade_level,
+            "team_upgrade_contributed": self.team_upgrade_contributed,
         }
 
 
@@ -78,6 +108,7 @@ class GamblingEngine:
         self.round_candidates: dict[int, list[str]] = {r: [] for r in ROUNDS}
         self.round_pool: dict[int, dict[str, int]] = {r: {} for r in ROUNDS}
         self.round_resolved: dict[int, bool] = {r: False for r in ROUNDS}
+        self.team_upgrade_pool: dict[str, int] = {}  # department -> 누적 투자액
 
     # -- 카드 관리 ------------------------------------------------------
 
@@ -172,6 +203,65 @@ class GamblingEngine:
 
         return self._odds_payload(round_index)
 
+    # -- 라운드 보상: 통과한 개인 + 우승 부서 소속 통과자 + 최종 당첨자 -----
+
+    def award_round_rewards(
+        self, passed_ids: set[str], winning_ids: set[str] | None = None
+    ) -> dict[str, int]:
+        """이미 fairness.py가 계산해둔 결과(통과자·우승 부서 소속)를 읽어서
+        지급할 뿐, 추첨 계산 자체에는 관여하지 않는다. 카드가 없는(한 번도
+        참여하지 않은) 참가자에게는 카드를 새로 만들지 않는다 -- 리더보드에
+        아무 행동도 안 한 유령 항목이 뜨는 것을 막기 위함."""
+        granted: dict[str, int] = {}
+        for pid in passed_ids:
+            card = self.cards.get(pid)
+            if card is None:
+                continue
+            amount = FINISH_REWARD
+            if winning_ids and pid in winning_ids:
+                amount += TEAM_WIN_REWARD
+            card.balance += amount
+            granted[pid] = amount
+        return granted
+
+    def award_final_rewards(self, winner_ids: set[str]) -> dict[str, int]:
+        granted: dict[str, int] = {}
+        for pid in winner_ids:
+            card = self.cards.get(pid)
+            if card is None:
+                continue
+            card.balance += FINAL_WIN_REWARD
+            granted[pid] = FINAL_WIN_REWARD
+        return granted
+
+    # -- 업그레이드 상점(순수 코스메틱) -------------------------------------
+
+    def purchase_personal_upgrade(self, participant_id: str) -> BetCard:
+        card = self.get_or_create_card(participant_id)
+        if card.personal_upgrade_level >= MAX_PERSONAL_UPGRADE_LEVEL:
+            raise GamblingError("이미 최대 레벨입니다")
+        cost = PERSONAL_UPGRADE_COST[card.personal_upgrade_level]
+        if cost > card.balance:
+            raise GamblingError(f"보유 사이버머니({card.balance})로는 부족합니다 (필요 {cost})")
+        card.balance -= cost
+        card.personal_upgrade_level += 1
+        return card
+
+    def contribute_team_upgrade(self, participant_id: str, department: str, amount: int) -> BetCard:
+        if amount <= 0:
+            raise GamblingError("기여 금액은 0보다 커야 합니다")
+        card = self.get_or_create_card(participant_id)
+        if amount > card.balance:
+            raise GamblingError(f"보유 사이버머니({card.balance})보다 많이 낼 수 없습니다")
+        card.balance -= amount
+        card.team_upgrade_contributed += amount
+        self.team_upgrade_pool[department] = self.team_upgrade_pool.get(department, 0) + amount
+        return card
+
+    def team_upgrade_level(self, department: str) -> int:
+        pool = self.team_upgrade_pool.get(department, 0)
+        return min(MAX_TEAM_UPGRADE_LEVEL, pool // TEAM_UPGRADE_THRESHOLD)
+
     # -- 실시간 배당률/판돈 조회 --------------------------------------------
 
     def live_odds(self, round_index: int) -> dict[str, Any]:
@@ -204,6 +294,7 @@ class GamblingEngine:
             "round_candidates": {str(r): c for r, c in self.round_candidates.items()},
             "round_pool": {str(r): dict(p) for r, p in self.round_pool.items()},
             "round_resolved": {str(r): v for r, v in self.round_resolved.items()},
+            "team_upgrade_pool": dict(self.team_upgrade_pool),
         }
 
     def load_dict(self, data: dict[str, Any]) -> None:
@@ -221,6 +312,8 @@ class GamblingEngine:
             card.locked = {int(k): v for k, v in card_data["locked"].items()}
             card.net = {int(k): v for k, v in card_data.get("net", {}).items()}
             card.payout = {int(k): v for k, v in card_data.get("payout", {}).items()}
+            card.personal_upgrade_level = card_data.get("personal_upgrade_level", 0)
+            card.team_upgrade_contributed = card_data.get("team_upgrade_contributed", 0)
             self.cards[pid] = card
         for r, s in data.get("round_state", {}).items():
             self.round_state[int(r)] = s
@@ -230,3 +323,4 @@ class GamblingEngine:
             self.round_pool[int(r)] = dict(p)
         for r, v in data.get("round_resolved", {}).items():
             self.round_resolved[int(r)] = v
+        self.team_upgrade_pool = dict(data.get("team_upgrade_pool", {}))
