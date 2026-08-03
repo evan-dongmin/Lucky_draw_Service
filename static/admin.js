@@ -6,7 +6,34 @@ const rosterPreviewEl = document.getElementById("roster-preview");
 const drawCountEl = document.getElementById("draw-count");
 const modeSelectEl = document.getElementById("mode-select");
 const totalSecondsEl = document.getElementById("total-seconds");
+const totalSecondsHintEl = document.getElementById("total-seconds-hint");
 const predictionsEnabledEl = document.getElementById("predictions-enabled");
+
+// Director의 하한(app/director.py MIN_TOTAL_SECONDS_WITH/WITHOUT_PREDICTIONS)과
+// 반드시 같은 값을 유지해야 한다. 서버가 최종 검증을 하지만, 그 전에 화면에서
+// 미리 알려줘야 "레이스 시작"을 눌렀다가 뒤늦게 400을 보는 일이 없다.
+const MIN_SECONDS_WITH_PREDICTIONS = 150;
+const MIN_SECONDS_WITHOUT_PREDICTIONS = 60;
+
+function updateTotalSecondsHint() {
+  if (modeSelectEl.value !== "racing") {
+    totalSecondsHintEl.textContent = "";
+    return;
+  }
+  const floor = predictionsEnabledEl.checked
+    ? MIN_SECONDS_WITH_PREDICTIONS
+    : MIN_SECONDS_WITHOUT_PREDICTIONS;
+  totalSecondsEl.min = String(floor);
+  const value = parseFloat(totalSecondsEl.value) || 0;
+  totalSecondsHintEl.textContent =
+    value < floor
+      ? `⚠ 레이싱 모드 최소 ${floor}초 필요 (예측 게임 ${predictionsEnabledEl.checked ? "켜짐" : "꺼짐"}) -- 이 값으로는 레이스 시작이 거부됩니다.`
+      : `레이싱 모드 최소 ${floor}초 (예측 게임 ${predictionsEnabledEl.checked ? "켜짐" : "꺼짐"})`;
+}
+modeSelectEl.addEventListener("change", updateTotalSecondsHint);
+predictionsEnabledEl.addEventListener("change", updateTotalSecondsHint);
+totalSecondsEl.addEventListener("input", updateTotalSecondsHint);
+updateTotalSecondsHint();
 const racingStatusEl = document.getElementById("racing-status");
 const sessionInfoEl = document.getElementById("session-info");
 const excludeIdsEl = document.getElementById("exclude-ids");
