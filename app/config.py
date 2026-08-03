@@ -6,6 +6,7 @@ STATIC_DIR = BASE_DIR / "static"
 DATA_DIR = BASE_DIR / "data"
 SNAPSHOT_PATH = DATA_DIR / "session_snapshot.json"
 PREDICTION_SNAPSHOT_PATH = DATA_DIR / "prediction_snapshot.json"
+GAMBLING_SNAPSHOT_PATH = DATA_DIR / "gambling_snapshot.json"
 
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))

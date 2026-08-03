@@ -98,6 +98,10 @@ class Session:
     mode: str = "roulette"
     total_seconds: float = 300.0
     predictions_enabled: bool = False
+    # "confidence"(무손실 확신도 배분) | "gambling"(승인된 사이버머니 갬블링).
+    # predictions_enabled가 False면 어느 쪽도 쓰이지 않는다. 두 모드는 동시에
+    # 참가자에게 강요하지 않는다 -- 세션당 하나만 활성화된다.
+    prediction_mode: str = "confidence"
     created_at: str = ""
     draws: list[DrawResult] = field(default_factory=list)
     round_plans: list[RoundPlan] = field(default_factory=list)
@@ -111,6 +115,7 @@ class Session:
             "mode": self.mode,
             "total_seconds": self.total_seconds,
             "predictions_enabled": self.predictions_enabled,
+            "prediction_mode": self.prediction_mode,
             "created_at": self.created_at,
             "draws": [d.to_dict() for d in self.draws],
             "round_plans": [r.to_dict() for r in self.round_plans],
@@ -126,6 +131,7 @@ class Session:
             mode=data.get("mode", "roulette"),
             total_seconds=data.get("total_seconds", 300.0),
             predictions_enabled=data.get("predictions_enabled", False),
+            prediction_mode=data.get("prediction_mode", "confidence"),
             created_at=data.get("created_at", ""),
             draws=[DrawResult.from_dict(d) for d in data.get("draws", [])],
             round_plans=[RoundPlan.from_dict(r) for r in data.get("round_plans", [])],

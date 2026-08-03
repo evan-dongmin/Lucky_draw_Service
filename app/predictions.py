@@ -117,6 +117,26 @@ class PredictionEngine:
         card.is_auto[round_index] = False
         return card
 
+    def live_distribution(self, round_index: int) -> dict[str, float]:
+        """선택 창이 아직 열려 있는 동안(잠기기 전) 지금까지의 선택 분포를
+        읽기 전용으로 계산한다. score_round와 같은 규칙(명시적으로 고른
+        사람만 집계, 자동배정은 제외)을 쓰므로, 창이 닫히는 순간의 값이
+        score_round가 계산할 분포와 정확히 일치한다. 상태를 바꾸지 않는
+        순수 조회 함수라 몇 번을 호출해도 안전하다(스테이지/모바일 화면이
+        선택이 있을 때마다 실시간으로 조회해 "표가 몰립니다" 연출에 쓴다)."""
+        explicit_targets = [
+            card.target[round_index]
+            for card in self.cards.values()
+            if card.target[round_index] is not None and not card.is_auto[round_index]
+        ]
+        if not explicit_targets:
+            return {}
+        total = len(explicit_targets)
+        counts: dict[str, float] = {}
+        for t in explicit_targets:
+            counts[t] = counts.get(t, 0) + 1
+        return {k: v / total for k, v in counts.items()}
+
     def lock_round(self, round_index: int, seed: str) -> None:
         """선택 창을 잠근다. 미선택 참가자는 시드 파생 값으로 자동 배정한다."""
         candidates = self.round_candidates[round_index]

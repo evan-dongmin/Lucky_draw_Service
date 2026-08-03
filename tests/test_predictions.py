@@ -113,6 +113,38 @@ def test_allocation_locked_round_value_preserved_when_reallocating_others():
         engine.set_allocation("P1", {1: 25, 2: 35, 3: 40})  # 잠긴 라운드 값 변경 시도
 
 
+def test_live_distribution_empty_when_nobody_has_chosen():
+    engine = PredictionEngine()
+    engine.open_round(1, ["개발팀", "영업팀"])
+    assert engine.live_distribution(1) == {}
+
+
+def test_live_distribution_reflects_explicit_choices_before_lock():
+    engine = PredictionEngine()
+    engine.open_round(1, ["개발팀", "영업팀"])
+    engine.set_target("P1", 1, "개발팀")
+    engine.set_target("P2", 1, "개발팀")
+    engine.set_target("P3", 1, "영업팀")
+
+    dist = engine.live_distribution(1)
+    assert dist["개발팀"] == pytest.approx(2 / 3)
+    assert dist["영업팀"] == pytest.approx(1 / 3)
+
+
+def test_live_distribution_excludes_autopicked_cards_and_matches_post_lock_share():
+    engine = PredictionEngine()
+    engine.open_round(1, ["개발팀", "영업팀"])
+    engine.set_target("P1", 1, "개발팀")
+    engine.get_or_create_card("P2")  # 선택하지 않음 -> 잠금 시 자동배정될 예정
+
+    before_lock = engine.live_distribution(1)
+    assert before_lock == {"개발팀": 1.0}
+
+    engine.lock_round(1, seed="seed")
+    share = engine.score_round(1, hit_set={"개발팀"})
+    assert share == before_lock  # 창이 닫히는 순간 값과 채점 시 분포가 일치해야 함
+
+
 def test_score_round_awards_gain_only_to_hitters():
     engine = PredictionEngine()
     engine.set_allocation("P1", _default_alloc(20, 30, 50))
