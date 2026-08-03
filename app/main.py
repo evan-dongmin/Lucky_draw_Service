@@ -12,9 +12,14 @@ from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app import departments as departments_module
+from app import characters, departments as departments_module
 from app import director, fairness, gambling, predictions, race, roster
-from app.config import GAMBLING_SNAPSHOT_PATH, PREDICTION_SNAPSHOT_PATH, STATIC_DIR
+from app.config import (
+    CHARACTER_SNAPSHOT_PATH,
+    GAMBLING_SNAPSHOT_PATH,
+    PREDICTION_SNAPSHOT_PATH,
+    STATIC_DIR,
+)
 from app.gambling import GamblingEngine
 from app.mc import MCAgent
 from app.models import DrawResult, Participant, Session
@@ -36,6 +41,7 @@ async def lifespan(_: FastAPI):
         logger.info("세션 스냅샷 복원: %s", session.session_id)
     load_prediction_snapshot()
     load_gambling_snapshot()
+    load_character_snapshot()
     mc_agent.load_cache()
     yield
 
@@ -82,8 +88,10 @@ prediction_engine = PredictionEngine()
 gambling_engine = GamblingEngine()
 predict_tokens: dict[str, str] = {}  # 기기 토큰 -> participant_id (예측/베팅 게임 공용 온보딩)
 fast_forward_requests: set[str] = set()  # 조기 종료가 요청된 session_id 집합 (레이스 구간 전용)
+character_choices: dict[str, str] = {}  # participant_id -> character_id (선택 안 하면 부서 기반 폴백)
 prediction_snapshot_path = PREDICTION_SNAPSHOT_PATH
 gambling_snapshot_path = GAMBLING_SNAPSHOT_PATH
+character_snapshot_path = CHARACTER_SNAPSHOT_PATH
 
 
 def save_prediction_snapshot() -> None:
@@ -124,6 +132,21 @@ def load_gambling_snapshot() -> None:
     data = json.loads(gambling_snapshot_path.read_text(encoding="utf-8"))
     gambling_engine.load_dict(data.get("engine", {}))
     predict_tokens.update(data.get("tokens", {}))
+
+
+def save_character_snapshot() -> None:
+    payload = {"choices": dict(character_choices)}
+    character_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = character_snapshot_path.with_suffix(".tmp")
+    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_path.replace(character_snapshot_path)
+
+
+def load_character_snapshot() -> None:
+    if not character_snapshot_path.exists():
+        return
+    data = json.loads(character_snapshot_path.read_text(encoding="utf-8"))
+    character_choices.update(data.get("choices", {}))
 
 RACE_ROUND_INDEX = {"race_r1": 1, "race_r2": 2, "race_r3": 3}
 SCORE_PHASE_ROUND = {"score_r1_select_r2": 1, "score_r2_select_r3": 2}
@@ -248,16 +271,20 @@ class CreateSessionRequest(BaseModel):
 
 
 def _reset_prediction_and_gambling_state() -> None:
-    """새 세션·재추첨·초기화 시 예측/베팅 두 엔진과 스냅샷 파일을 모두
-    정리한다. 세션당 한 모드만 쓰이지만, 이전 세션이 다른 모드였을 수
-    있으므로 둘 다 확실히 비워야 다음 세션에서 낡은 상태가 새지 않는다."""
+    """새 세션·재추첨·초기화 시 예측/베팅 두 엔진과 캐릭터 선택, 스냅샷
+    파일을 모두 정리한다. 세션당 한 예측 모드만 쓰이지만, 이전 세션이
+    다른 모드였을 수 있으므로 전부 확실히 비워야 다음 세션에서 낡은
+    상태가 새지 않는다."""
     prediction_engine.reset()
     gambling_engine.reset()
     predict_tokens.clear()
+    character_choices.clear()
     if prediction_snapshot_path.exists():
         prediction_snapshot_path.unlink()
     if gambling_snapshot_path.exists():
         gambling_snapshot_path.unlink()
+    if character_snapshot_path.exists():
+        character_snapshot_path.unlink()
 
 
 @app.post("/api/session")
@@ -709,6 +736,11 @@ def _require_predictions_enabled(session: Session) -> None:
         raise HTTPException(status_code=400, detail="이 세션은 예측 게임이 활성화되어 있지 않습니다.")
 
 
+def _require_racing_mode(session: Session) -> None:
+    if session.mode != "racing":
+        raise HTTPException(status_code=400, detail="레이싱 모드 세션이 아닙니다.")
+
+
 def _resolve_pid_from_token(token: str) -> str:
     pid = predict_tokens.get(token)
     if pid is None:
@@ -718,8 +750,11 @@ def _resolve_pid_from_token(token: str) -> str:
 
 @app.get("/api/predict/departments")
 async def predict_departments() -> dict[str, Any]:
+    """부서->참가자 목록. 모바일 온보딩(부서->실명 선택)에 쓰이며, 캐릭터
+    선택만 하는 경우에도 필요하므로 예측/베팅 게임이 꺼져 있어도(레이싱
+    모드이기만 하면) 조회 가능하다."""
     session = _require_session()
-    _require_predictions_enabled(session)
+    _require_racing_mode(session)
     groups = departments_module.compute_department_groups(session.participants)
     by_id = {p.id: p for p in session.participants}
     return {
@@ -750,15 +785,25 @@ def _save_active_snapshot(session: Session) -> None:
 
 @app.post("/api/predict/join")
 async def predict_join(payload: PredictJoinRequest) -> dict[str, Any]:
+    """참가자 신원 확인(부서->실명 선택 후 발급되는 기기 토큰). 예측/베팅
+    게임과 캐릭터 선택이 공유하는 단일 온보딩 단계다 -- 예측 게임이 꺼져
+    있는 순수 레이싱 세션에서도 캐릭터를 고르려면 이 토큰이 필요하므로
+    레이싱 모드이기만 하면 참여할 수 있다."""
     session = _require_session()
-    _require_predictions_enabled(session)
+    _require_racing_mode(session)
     engine = _active_engine(session)
 
     if payload.existing_token and payload.existing_token in predict_tokens:
         token = payload.existing_token
         pid = predict_tokens[token]
-        card = engine.get_or_create_card(pid)
-        return {"token": token, "participant_id": pid, "mode": session.prediction_mode, "card": card.to_dict()}
+        card = engine.get_or_create_card(pid) if session.predictions_enabled else None
+        return {
+            "token": token,
+            "participant_id": pid,
+            "mode": session.prediction_mode,
+            "predictions_enabled": session.predictions_enabled,
+            "card": card.to_dict() if card else None,
+        }
 
     participant = next((p for p in session.participants if p.id == payload.participant_id), None)
     if participant is None:
@@ -774,13 +819,16 @@ async def predict_join(payload: PredictJoinRequest) -> dict[str, Any]:
 
     token = uuid.uuid4().hex
     predict_tokens[token] = payload.participant_id
-    card = engine.get_or_create_card(payload.participant_id)
-    _save_active_snapshot(session)
+    card = None
+    if session.predictions_enabled:
+        card = engine.get_or_create_card(payload.participant_id)
+        _save_active_snapshot(session)
     return {
         "token": token,
         "participant_id": payload.participant_id,
         "mode": session.prediction_mode,
-        "card": card.to_dict(),
+        "predictions_enabled": session.predictions_enabled,
+        "card": card.to_dict() if card else None,
     }
 
 
@@ -797,10 +845,15 @@ def _live_stats(session: Session, round_index: int) -> dict[str, Any]:
 async def predict_me(token: str) -> dict[str, Any]:
     session = _require_session()
     pid = _resolve_pid_from_token(token)
+    if not session.predictions_enabled:
+        # 예측/베팅 게임이 꺼진 순수 레이싱 세션 -- 카드를 만들 필요가
+        # 없다(만들어봐야 라운드가 영원히 열리지 않는 죽은 데이터가 된다).
+        return {"predictions_enabled": False, "mode": None, "card": None}
     engine = _active_engine(session)
     card = engine.get_or_create_card(pid)
     open_rounds = [r for r, s in engine.round_state.items() if s == "open"]
     return {
+        "predictions_enabled": True,
         "mode": session.prediction_mode,
         "card": card.to_dict(),
         "round_state": engine.round_state,
@@ -993,6 +1046,46 @@ async def bet_leaderboard(top_n: int = 10) -> dict[str, Any]:
             for c in top
         ]
     }
+
+
+# ---------------------------------------------------------------------------
+# 캐릭터/카트 선택: 참가자가 자기 카트의 특수능력을 직접 고른다(순수 연출).
+# 고르지 않은 참가자는 부서 기반 자동 배정으로 폴백한다(static/stage.js).
+# 예측/베팅 게임과 무관하게, 레이싱 세션이기만 하면 선택할 수 있다.
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/character/roster")
+async def character_roster() -> dict[str, Any]:
+    return {"roster": characters.CHARACTER_ROSTER}
+
+
+class CharacterChooseRequest(BaseModel):
+    token: str
+    character_id: str
+
+
+@app.post("/api/character/choose")
+async def character_choose(payload: CharacterChooseRequest) -> dict[str, Any]:
+    pid = _resolve_pid_from_token(payload.token)
+    if payload.character_id not in characters.CHARACTER_IDS:
+        raise HTTPException(status_code=400, detail="알 수 없는 캐릭터입니다.")
+    character_choices[pid] = payload.character_id
+    save_character_snapshot()
+    return {"participant_id": pid, "character_id": payload.character_id}
+
+
+@app.get("/api/character/me")
+async def character_me(token: str) -> dict[str, Any]:
+    pid = _resolve_pid_from_token(token)
+    return {"participant_id": pid, "character_id": character_choices.get(pid)}
+
+
+@app.get("/api/character/choices")
+async def character_choices_endpoint() -> dict[str, Any]:
+    """전원의 선택 현황(공개, 토큰 불필요) -- Stage 화면이 폴링해 추월
+    이펙트·MC 해설에 참가자별 선택을 반영하는 데 쓴다."""
+    return {"choices": dict(character_choices)}
 
 
 # ---------------------------------------------------------------------------

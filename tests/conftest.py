@@ -13,21 +13,26 @@ def _isolated_store(tmp_path):
     original_session_path = store.snapshot_path
     original_prediction_path = main_module.prediction_snapshot_path
     original_gambling_path = main_module.gambling_snapshot_path
+    original_character_path = main_module.character_snapshot_path
     store.snapshot_path = tmp_path / "session_snapshot.json"
     main_module.prediction_snapshot_path = tmp_path / "prediction_snapshot.json"
     main_module.gambling_snapshot_path = tmp_path / "gambling_snapshot.json"
+    main_module.character_snapshot_path = tmp_path / "character_choices.json"
     store.session = None
     main_module.prediction_engine.reset()
     main_module.gambling_engine.reset()
     main_module.predict_tokens.clear()
+    main_module.character_choices.clear()
     yield
     store.session = None
     store.snapshot_path = original_session_path
     main_module.prediction_snapshot_path = original_prediction_path
     main_module.gambling_snapshot_path = original_gambling_path
+    main_module.character_snapshot_path = original_character_path
     main_module.prediction_engine.reset()
     main_module.gambling_engine.reset()
     main_module.predict_tokens.clear()
+    main_module.character_choices.clear()
 
 
 @pytest.fixture
