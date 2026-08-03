@@ -207,3 +207,14 @@ def test_racing_start_succeeds_and_rejects_concurrent_start(client):
 
     resp2 = client.post("/api/racing/start", json={})
     assert resp2.status_code == 409
+
+
+def test_racing_start_rejects_total_seconds_below_director_floor(client):
+    # predictions_enabled 기본값(False)이어도 선택창 없이 60초 미만은 허용되지
+    # 않는다. 과거에는 이 검증이 없어 레이스가 백그라운드 태스크 안에서
+    # 조용히 실패하고(로그에만 DirectorError) 무대 화면이 커밋 상태에서
+    # 영원히 멈춘 것처럼 보이는 사고로 이어졌다 -- 여기서는 즉시 400이어야 한다.
+    _create_racing_session(client, total_seconds=10.0)
+    client.post("/api/draw/commit")
+    resp = client.post("/api/racing/start", json={})
+    assert resp.status_code == 400

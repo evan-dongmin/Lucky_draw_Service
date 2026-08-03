@@ -2,105 +2,286 @@
   box-sizing: border-box;
 }
 
-body {
+html, body {
   margin: 0;
-  background: #0b0e14;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #05070c;
   color: #f5f7fa;
   font-family: "Pretendard", "Malgun Gothic", sans-serif;
-  min-height: 100vh;
-  display: flex;
-  align-items: center;
-  justify-content: center;
 }
 
-#stage-root {
-  text-align: center;
-  width: 100%;
-  max-width: 900px;
-  padding: 2rem;
-}
-
-h1 {
-  font-size: 3.5rem;
-  margin-bottom: 1.5rem;
+#stage-shell {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .hidden {
-  display: none;
+  display: none !important;
 }
 
-#ws-status,
-.sub {
-  font-size: 1.5rem;
-  color: #8b95a5;
+/* ---------------------------------------------------------------------
+   배경 씬: 레이스 캔버스 + 이펙트 캔버스가 화면 전체를 채운다
+--------------------------------------------------------------------- */
+
+#scene {
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(ellipse at 50% 20%, #10151f 0%, #05070c 70%);
 }
 
-.hint {
-  font-size: 1.1rem;
-  color: #5b6577;
-  margin-top: 1rem;
+#race-canvas,
+#fx-canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
 }
 
-.commit-badge {
-  font-family: "Consolas", monospace;
-  font-size: 1.1rem;
-  word-break: break-all;
-  background: #171c26;
-  border: 1px solid #2a3242;
-  border-radius: 0.75rem;
-  padding: 1.25rem;
-  margin: 1rem auto;
-  max-width: 700px;
+#fx-canvas {
+  pointer-events: none;
+}
+
+.overtake-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.overtake-badge {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  font-size: 1.6rem;
+  animation: overtake-pop 0.7s ease-out forwards;
+  filter: drop-shadow(0 0 6px #ffd166);
+  z-index: 5;
+}
+
+@keyframes overtake-pop {
+  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.6); }
+  30% { opacity: 1; transform: translate(-50%, -50%) scale(1.3); }
+  100% { opacity: 0; transform: translate(-50%, -70%) scale(1); }
+}
+
+/* ---------------------------------------------------------------------
+   글래스모피즘 공통 패널
+--------------------------------------------------------------------- */
+
+.glass {
+  background: rgba(15, 20, 30, 0.62);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 0.9rem;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+}
+
+/* ---------------------------------------------------------------------
+   상단 HUD
+--------------------------------------------------------------------- */
+
+#hud-top {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 1.5rem;
+  background: linear-gradient(180deg, rgba(5, 7, 12, 0.92) 0%, rgba(5, 7, 12, 0) 100%);
+  z-index: 30;
+  font-size: 1.05rem;
+}
+
+.hud-brand {
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.hud-brand b {
   color: #ffd166;
 }
-
-.reel {
-  font-size: 3rem;
-  font-weight: 700;
-  min-height: 4.5rem;
-  padding: 1rem;
-  background: #171c26;
-  border-radius: 1rem;
-  border: 2px solid #2a3242;
-  margin-bottom: 1.5rem;
+.hud-brand .flag {
+  margin-right: 0.3rem;
 }
 
-.winner-list {
-  list-style: decimal;
-  font-size: 1.6rem;
-  text-align: left;
-  max-width: 500px;
-  margin: 0 auto;
-  color: #7cf29c;
+.hud-center {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
 }
 
-.mc-caption {
-  margin-top: 2rem;
-  min-height: 1.6rem;
+.round-pill {
+  background: linear-gradient(90deg, #ff5252, #ff8a80);
+  color: #1a0d0d;
+  font-weight: 800;
+  padding: 0.28rem 0.9rem;
+  border-radius: 999px;
+  font-size: 0.95rem;
+  letter-spacing: 0.04em;
+}
+
+.phase-label {
+  font-weight: 600;
+  color: #cfd7e5;
+}
+
+.hud-right {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+}
+
+.phase-timer {
+  font-family: "Consolas", monospace;
+  font-variant-numeric: tabular-nums;
   font-size: 1.3rem;
-  color: #ffd166;
-  font-style: italic;
-}
-
-.phase-banner {
-  font-size: 1.6rem;
   font-weight: 700;
-  margin-bottom: 1.5rem;
-  color: #7cd4f2;
-}
-
-.phase-banner .countdown {
-  font-family: "Consolas", monospace;
   color: #ffd166;
-  margin-left: 0.75rem;
+  min-width: 4.2rem;
+  text-align: right;
 }
 
-.department-bars {
+.phase-timer.urgent {
+  color: #ff5252;
+  animation: pulse-urgent 0.5s ease-in-out infinite;
+}
+
+@keyframes pulse-urgent {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(1.12); }
+}
+
+.icon-btn {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #f5f7fa;
+  border-radius: 0.6rem;
+  width: 2.4rem;
+  height: 2.4rem;
+  font-size: 1.1rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+.icon-btn:hover {
+  background: rgba(255, 255, 255, 0.14);
+}
+.icon-btn.active {
+  background: rgba(124, 242, 156, 0.22);
+  border-color: rgba(124, 242, 156, 0.5);
+}
+
+/* ---------------------------------------------------------------------
+   좌/우 사이드 패널
+--------------------------------------------------------------------- */
+
+.side-panel {
+  position: absolute;
+  padding: 0.9rem 1rem 1.1rem;
+  z-index: 20;
+  max-height: calc(100vh - 11rem);
+  overflow: hidden;
+}
+
+.side-panel h3 {
+  margin: 0 0 0.6rem;
+  font-size: 0.85rem;
+  letter-spacing: 0.08em;
+  color: #8b95a5;
+  text-transform: uppercase;
+}
+
+#position-tower {
+  top: 5rem;
+  left: 1.5rem;
+  width: 15.5rem;
+}
+
+#side-right {
+  position: absolute;
+  top: 5rem;
+  right: 1.5rem;
+  width: 15.5rem;
   display: flex;
   flex-direction: column;
-  gap: 0.6rem;
-  max-width: 600px;
-  margin: 0 auto;
+  gap: 0.9rem;
+  z-index: 20;
+}
+#side-right .side-panel {
+  position: static;
+  width: 100%;
+  max-height: none;
+}
+
+#position-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.92rem;
+  overflow-y: auto;
+  max-height: calc(100vh - 14rem);
+}
+
+.pos-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.22rem 0.4rem;
+  border-radius: 0.4rem;
+  transition: background 0.2s, transform 0.2s;
+}
+.pos-row.pos-leader {
+  background: rgba(255, 209, 102, 0.14);
+}
+.pos-row.pos-risk {
+  background: rgba(255, 82, 82, 0.14);
+}
+.pos-row .pos-rank {
+  width: 1.4rem;
+  font-weight: 700;
+  color: #8b95a5;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.pos-row .pos-swatch {
+  width: 0.6rem;
+  height: 0.6rem;
+  border-radius: 0.15rem;
+  flex-shrink: 0;
+}
+.pos-row .pos-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pos-row .pos-delta {
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+  width: 1.6rem;
+  text-align: right;
+}
+.pos-delta.up { color: #7cf29c; }
+.pos-delta.down { color: #ff5252; }
+
+#department-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
 }
 
 .dept-bar-row {
@@ -110,15 +291,14 @@ h1 {
 .dept-bar-label {
   display: flex;
   justify-content: space-between;
-  font-size: 1rem;
+  font-size: 0.88rem;
   margin-bottom: 0.2rem;
 }
 
 .dept-bar-track {
-  background: #171c26;
-  border: 1px solid #2a3242;
+  background: rgba(255, 255, 255, 0.06);
   border-radius: 0.4rem;
-  height: 1.4rem;
+  height: 1.1rem;
   overflow: hidden;
 }
 
@@ -128,107 +308,371 @@ h1 {
   transition: width 0.25s ease-out;
 }
 
+#prediction-leaderboard-list {
+  font-size: 0.88rem;
+  padding-left: 1.1rem;
+  margin: 0;
+}
+
+/* ---------------------------------------------------------------------
+   팀 레전드 (하단, MC 바 위)
+--------------------------------------------------------------------- */
+
 .team-legend {
+  position: absolute;
+  bottom: 6.4rem;
+  left: 50%;
+  transform: translateX(-50%);
   display: flex;
   flex-wrap: wrap;
   justify-content: center;
-  gap: 0.5rem 1.1rem;
-  margin-bottom: 0.75rem;
-  font-size: 0.95rem;
+  gap: 0.4rem 1rem;
+  font-size: 0.85rem;
   color: #c7cedb;
+  z-index: 20;
+  max-width: 90vw;
 }
 
 .legend-item {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.32rem;
+  background: rgba(0, 0, 0, 0.3);
+  padding: 0.15rem 0.55rem;
+  border-radius: 999px;
 }
 
 .legend-swatch {
-  width: 0.85rem;
-  height: 0.85rem;
-  border-radius: 0.2rem;
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 0.18rem;
   display: inline-block;
 }
 
-.track-wrap {
-  position: relative;
-  width: 100%;
-  max-width: 960px;
-  margin: 0 auto 1.5rem;
-}
+/* ---------------------------------------------------------------------
+   하단 MC 바 (로어서드)
+--------------------------------------------------------------------- */
 
-#race-canvas {
-  width: 100%;
-  height: auto;
-  aspect-ratio: 960 / 440;
-  background: #0f1720;
-  border: 2px solid #2a3242;
+.mc-bar {
+  position: absolute;
+  left: 1.5rem;
+  right: 1.5rem;
+  bottom: 1.2rem;
+  z-index: 25;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  padding: 0.7rem 1.2rem;
+  background: rgba(10, 13, 20, 0.7);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border: 1px solid rgba(255, 209, 102, 0.25);
   border-radius: 1rem;
-  display: block;
+  min-height: 3.6rem;
 }
 
-.overtake-layer {
+.mc-avatar {
+  width: 2.6rem;
+  height: 2.6rem;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #ffd166, #ff9f45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.3rem;
+  flex-shrink: 0;
+}
+
+.mc-body {
+  flex: 1;
+  min-width: 0;
+}
+
+.mc-name {
+  font-size: 0.72rem;
+  color: #ffd166;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.mc-caption {
+  font-size: 1.15rem;
+  font-style: italic;
+  color: #f5f7fa;
+  min-height: 1.5rem;
+}
+
+/* ---------------------------------------------------------------------
+   전체화면 오버레이(대기/커밋/룰렛/포디움 공용)
+--------------------------------------------------------------------- */
+
+.overlay {
   position: absolute;
   inset: 0;
-  pointer-events: none;
-  overflow: hidden;
-  border-radius: 1rem;
-}
-
-.overtake-badge {
-  position: absolute;
-  transform: translate(-50%, -50%);
-  font-size: 1.4rem;
-  animation: overtake-pop 0.7s ease-out forwards;
-  filter: drop-shadow(0 0 6px #ffd166);
-}
-
-@keyframes overtake-pop {
-  0% { opacity: 0; transform: translate(-50%, -50%) scale(0.6); }
-  30% { opacity: 1; transform: translate(-50%, -50%) scale(1.3); }
-  100% { opacity: 0; transform: translate(-50%, -70%) scale(1); }
-}
-
-.racing-columns {
+  z-index: 40;
   display: flex;
+  flex-direction: column;
+  align-items: center;
   justify-content: center;
-  gap: 3rem;
-  flex-wrap: wrap;
+  text-align: center;
+  padding: 2rem;
+  background: radial-gradient(ellipse at 50% 40%, rgba(20, 26, 38, 0.92) 0%, rgba(5, 7, 12, 0.97) 75%);
 }
 
-.prediction-leaderboard {
-  text-align: left;
-  min-width: 260px;
+.overlay-transparent {
+  background: transparent;
+  pointer-events: none;
 }
 
-.prediction-leaderboard h3 {
+.title-xl {
+  font-size: clamp(2.4rem, 6vw, 4.2rem);
+  margin: 0 0 1rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+}
+.title-xl b {
   color: #ffd166;
+  -webkit-text-stroke: 0;
+}
+
+.eyebrow {
+  font-size: 1.2rem;
+  color: #8b95a5;
   margin-bottom: 0.5rem;
 }
 
-.prediction-leaderboard ol {
-  font-size: 1rem;
-  padding-left: 1.2rem;
+.lead {
+  font-size: 1.5rem;
+  color: #c7cedb;
+  margin: 0.3rem 0;
+}
+
+.hint {
+  font-size: 1.05rem;
+  color: #5b6577;
+  margin-top: 1.1rem;
+}
+
+.commit-badge {
+  font-family: "Consolas", monospace;
+  font-size: 1.15rem;
+  word-break: break-all;
+  background: rgba(23, 28, 38, 0.85);
+  border: 1px solid #2a3242;
+  border-radius: 0.75rem;
+  padding: 1.25rem 1.6rem;
+  margin: 1rem auto;
+  max-width: 700px;
+  color: #ffd166;
 }
 
 .qr-image {
-  width: 160px;
-  height: 160px;
+  width: 176px;
+  height: 176px;
   background: #fff;
   padding: 0.5rem;
-  border-radius: 0.5rem;
-  margin-top: 1rem;
+  border-radius: 0.6rem;
+  margin-top: 1.2rem;
 }
 
-#btn-demo-start {
-  margin-top: 1.5rem;
-  padding: 1rem 2rem;
-  font-size: 1.2rem;
-  border-radius: 0.75rem;
+.cta {
+  margin-top: 1.6rem;
+  padding: 1.1rem 2.4rem;
+  font-size: 1.3rem;
+  border-radius: 0.9rem;
   border: none;
   background: linear-gradient(90deg, #4f8cff, #7cf29c);
   color: #0b0e14;
-  font-weight: 700;
+  font-weight: 800;
   cursor: pointer;
+  box-shadow: 0 10px 32px rgba(79, 140, 255, 0.35);
+}
+.cta:hover {
+  filter: brightness(1.06);
+}
+.cta:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.reel {
+  font-size: 3.4rem;
+  font-weight: 700;
+  min-height: 5rem;
+  padding: 1.1rem 1.8rem;
+  background: rgba(23, 28, 38, 0.85);
+  border-radius: 1rem;
+  border: 2px solid #2a3242;
+  margin-bottom: 1.6rem;
+}
+
+.winner-list {
+  list-style: decimal;
+  font-size: 1.7rem;
+  text-align: left;
+  max-width: 560px;
+  margin: 0 auto;
+  color: #7cf29c;
+}
+
+/* ---------------------------------------------------------------------
+   F1 스타트 라이트
+--------------------------------------------------------------------- */
+
+.lights-rig {
+  display: flex;
+  gap: 1.4rem;
+  padding: 1.6rem 2.4rem;
+  background: rgba(8, 10, 15, 0.55);
+  border-radius: 1.2rem;
+}
+
+.light {
+  width: clamp(2.6rem, 5vw, 4rem);
+  height: clamp(2.6rem, 5vw, 4rem);
+  border-radius: 50%;
+  background: #2a1414;
+  border: 3px solid #4a2020;
+  transition: background 0.15s, box-shadow 0.15s;
+}
+
+.light.on {
+  background: #ff2b2b;
+  border-color: #ff6b6b;
+  box-shadow: 0 0 34px 10px rgba(255, 43, 43, 0.85);
+}
+
+.light.go {
+  background: #2fd35a;
+  border-color: #7cf29c;
+  box-shadow: 0 0 46px 16px rgba(47, 211, 90, 0.9);
+}
+
+.lights-caption {
+  margin-top: 1.6rem;
+  font-size: 1.6rem;
+  font-weight: 700;
+  color: #ffd166;
+  letter-spacing: 0.05em;
+}
+
+/* ---------------------------------------------------------------------
+   대형 배너(FINAL PUSH / 라운드 발표 / 포토피니시)
+--------------------------------------------------------------------- */
+
+.overlay-banner {
+  position: absolute;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  text-align: center;
+}
+
+#banner-text {
+  font-size: clamp(2.6rem, 8vw, 6rem);
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  color: #fff;
+  text-shadow: 0 0 40px rgba(255, 209, 102, 0.7), 0 4px 24px rgba(0, 0, 0, 0.6);
+  animation: banner-in 0.45s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+#banner-sub {
+  margin-top: 0.6rem;
+  font-size: clamp(1.1rem, 2.4vw, 1.7rem);
+  color: #ffd166;
+  font-weight: 600;
+}
+
+@keyframes banner-in {
+  0% { opacity: 0; transform: scale(0.7) translateY(20px); }
+  60% { opacity: 1; transform: scale(1.06); }
+  100% { opacity: 1; transform: scale(1); }
+}
+
+/* ---------------------------------------------------------------------
+   최종 시상대
+--------------------------------------------------------------------- */
+
+.podium-stage {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 1.2rem;
+  margin: 1.5rem 0;
+}
+
+.podium-slot {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  animation: podium-rise 0.6s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+
+.podium-slot .podium-name {
+  font-size: 1.2rem;
+  font-weight: 700;
+  max-width: 12rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.podium-slot .podium-block {
+  width: 9rem;
+  border-radius: 0.6rem 0.6rem 0 0;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  padding-top: 0.6rem;
+  font-size: 2.2rem;
+  font-weight: 900;
+}
+
+.podium-slot[data-rank="1"] .podium-block {
+  height: 11rem;
+  background: linear-gradient(180deg, #ffd166, #b8860b);
+  color: #1a0d0d;
+}
+.podium-slot[data-rank="2"] .podium-block {
+  height: 8rem;
+  background: linear-gradient(180deg, #d8dee8, #8b95a5);
+  color: #0b0e14;
+}
+.podium-slot[data-rank="3"] .podium-block {
+  height: 6rem;
+  background: linear-gradient(180deg, #e0a672, #8a5a34);
+  color: #1a0d0d;
+}
+
+@keyframes podium-rise {
+  0% { opacity: 0; transform: translateY(40px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+.podium-rest {
+  list-style: decimal;
+  font-size: 1.3rem;
+  color: #7cf29c;
+  max-width: 640px;
+  margin: 0.5rem auto 0;
+  text-align: left;
+  columns: 2;
+}
+
+/* ---------------------------------------------------------------------
+   반응형: 화면이 좁으면 사이드 패널을 숨겨 트랙에 집중시킨다
+--------------------------------------------------------------------- */
+
+@media (max-width: 900px) {
+  #position-tower,
+  #side-right {
+    display: none;
+  }
 }

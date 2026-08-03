@@ -570,6 +570,17 @@ async def start_racing(payload: RacingStartRequest) -> dict[str, Any]:
     if session.session_id in active_race_tasks and not active_race_tasks[session.session_id].done():
         raise HTTPException(status_code=409, detail="이미 레이스가 진행 중입니다.")
 
+    # run_racing_sequence는 백그라운드 태스크라서 director.DirectorError가 나도
+    # 로그에만 남고 응답에는 드러나지 않는다 -- 총 시간이 선택창 하한(30초 x2)
+    # 보다 짧으면 커밋 화면에서 영원히 멈춘 것처럼 보이는 사고로 이어진다.
+    # 여기서 미리 같은 검증을 돌려 잘못된 총 시간을 즉시 400으로 되돌려준다.
+    try:
+        director.build_runbook(
+            total_seconds=session.total_seconds, predictions_enabled=session.predictions_enabled
+        )
+    except director.DirectorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     draw_index = payload.draw_index if payload.draw_index is not None else len(session.draws) - 1
     task = asyncio.create_task(
         run_racing_sequence(session.session_id, draw_index, session.total_seconds)
@@ -834,6 +845,11 @@ async def demo_start(payload: DemoStartRequest) -> dict[str, Any]:
     """원클릭 데모: 샘플 명단 생성 -> 레이싱+예측 세션 생성 -> 커밋 ->
     (선택) 예측 봇으로 채우기 -> 레이스 자동 시작까지 한 번에 수행한다.
     심사자가 배포 주소에 접속해 버튼 하나로 전체 흐름을 체험하기 위함."""
+    try:
+        director.build_runbook(total_seconds=payload.total_seconds, predictions_enabled=True)
+    except director.DirectorError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     async with state_lock:
         store.clear()
         prediction_engine.reset()

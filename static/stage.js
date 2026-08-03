@@ -1,10 +1,15 @@
-const views = {
-  idle: document.getElementById("idle-view"),
-  waiting: document.getElementById("waiting-view"),
-  committed: document.getElementById("committed-view"),
-  drawing: document.getElementById("drawing-view"),
-  racing: document.getElementById("racing-view"),
+// ---------------------------------------------------------------------------
+// 엘리먼트 참조
+// ---------------------------------------------------------------------------
+
+const overlays = {
+  idle: document.getElementById("overlay-idle"),
+  waiting: document.getElementById("overlay-waiting"),
+  committed: document.getElementById("overlay-committed"),
+  roulette: document.getElementById("overlay-roulette"),
+  podium: document.getElementById("overlay-podium"),
 };
+const bodyEl = document.body;
 const statusEl = document.getElementById("ws-status");
 const participantCountEl = document.getElementById("participant-count");
 const departmentCountEl = document.getElementById("department-count");
@@ -12,16 +17,29 @@ const commitBadgeEl = document.getElementById("commit-badge");
 const reelEl = document.getElementById("reel");
 const winnerListEl = document.getElementById("winner-list");
 const mcCaptionEl = document.getElementById("mc-caption");
-const phaseBannerEl = document.getElementById("racing-phase-banner");
+const roundPillEl = document.getElementById("round-pill");
+const phaseLabelEl = document.getElementById("phase-label");
+const phaseTimerEl = document.getElementById("phase-timer");
 const departmentBarsEl = document.getElementById("department-bars");
-const racingFinalEl = document.getElementById("racing-final");
-const racingReelEl = document.getElementById("racing-reel");
-const racingWinnerListEl = document.getElementById("racing-winner-list");
+const positionListEl = document.getElementById("position-list");
 const predictionLeaderboardEl = document.getElementById("prediction-leaderboard");
 const predictionLeaderboardListEl = document.getElementById("prediction-leaderboard-list");
 const raceCanvas = document.getElementById("race-canvas");
 const raceCtx = raceCanvas.getContext("2d");
+const fxCanvas = document.getElementById("fx-canvas");
 const overtakeLayer = document.getElementById("overtake-layer");
+const overlayLightsEl = document.getElementById("overlay-lights");
+const lightsCaptionEl = document.getElementById("lights-caption");
+const overlayBannerEl = document.getElementById("overlay-banner");
+const bannerTextEl = document.getElementById("banner-text");
+const bannerSubEl = document.getElementById("banner-sub");
+const podiumStageEl = document.getElementById("podium-stage");
+const podiumRestEl = document.getElementById("podium-rest");
+const btnSound = document.getElementById("btn-sound");
+const btnVoice = document.getElementById("btn-voice");
+const btnFullscreen = document.getElementById("btn-fullscreen");
+
+FX.attach(fxCanvas, document.getElementById("scene"));
 
 let lastPredictionWindow = null;
 
@@ -31,22 +49,113 @@ let lastFinalShownFor = null;
 let racingStarted = false;
 let countdownTimer = null;
 let latestDepartmentRates = {};
+let currentPhase = null;
 
-// -- R1~R3: 트랙 렌더러 / 카메라 / 추월 연출 상태 --------------------------
-const departmentColorCache = new Map();
-let currentPidToGroup = {};
-let currentDrawKeyForGroups = null;
-let previousTickPositions = {};
-let previousTickOrder = [];
-let previousTickRound = null;
-let lastLaneCount = 20;
-let cameraMode = "auto"; // "auto" | "wide" | "medium" | "close" (admin에서 override 가능)
+// -- 오버레이 스위칭 --------------------------------------------------------
 
-function showView(name) {
-  for (const key of Object.keys(views)) {
-    views[key].classList.toggle("hidden", key !== name);
+function showOverlay(name) {
+  for (const key of Object.keys(overlays)) {
+    overlays[key].classList.toggle("hidden", key !== name);
+  }
+  bodyEl.dataset.mode = name || "racing";
+}
+
+function hideAllOverlays() {
+  for (const key of Object.keys(overlays)) overlays[key].classList.add("hidden");
+  bodyEl.dataset.mode = "racing";
+}
+
+// ---------------------------------------------------------------------------
+// 사운드/음성/전체화면 컨트롤
+// ---------------------------------------------------------------------------
+
+let soundOn = true;
+let voiceOn = true;
+let audioUnlocked = false;
+const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
+let koVoice = null;
+
+function pickKoreanVoice() {
+  if (!ttsSupported) return;
+  const voices = window.speechSynthesis.getVoices();
+  koVoice = voices.find((v) => v.lang && v.lang.toLowerCase().startsWith("ko")) || null;
+}
+if (ttsSupported) {
+  pickKoreanVoice();
+  window.speechSynthesis.onvoiceschanged = pickKoreanVoice;
+}
+
+function speak(text) {
+  if (!ttsSupported || !voiceOn || !text) return;
+  try {
+    window.speechSynthesis.cancel();
+    const utter = new SpeechSynthesisUtterance(text);
+    utter.lang = "ko-KR";
+    if (koVoice) utter.voice = koVoice;
+    utter.rate = 1.05;
+    utter.pitch = 1.02;
+    utter.onstart = () => SFX.duck();
+    utter.onend = () => SFX.unduck();
+    utter.onerror = () => SFX.unduck();
+    window.speechSynthesis.speak(utter);
+  } catch (e) {
+    /* TTS 실패해도 자막은 이미 표시됨 -- 진행에 영향 없음 */
   }
 }
+
+function unlockAudioOnce() {
+  if (audioUnlocked) return;
+  audioUnlocked = true;
+  SFX.unlock();
+  updateControlButtons();
+}
+window.addEventListener("pointerdown", unlockAudioOnce, { once: true });
+window.addEventListener("keydown", unlockAudioOnce, { once: true });
+
+function updateControlButtons() {
+  btnSound.textContent = soundOn ? "🔊" : "🔇";
+  btnSound.classList.toggle("active", soundOn);
+  btnVoice.textContent = voiceOn ? "🎙" : "🚫";
+  btnVoice.classList.toggle("active", voiceOn && ttsSupported);
+  if (!ttsSupported) {
+    btnVoice.disabled = true;
+    btnVoice.title = "이 브라우저는 음성 합성을 지원하지 않습니다";
+  }
+}
+updateControlButtons();
+
+btnSound.addEventListener("click", () => {
+  unlockAudioOnce();
+  soundOn = !soundOn;
+  SFX.setEnabled(soundOn);
+  updateControlButtons();
+});
+
+btnVoice.addEventListener("click", () => {
+  voiceOn = !voiceOn;
+  if (!voiceOn && ttsSupported) window.speechSynthesis.cancel();
+  updateControlButtons();
+});
+
+function toggleFullscreen() {
+  if (!document.fullscreenElement) {
+    document.documentElement.requestFullscreen?.().catch(() => {});
+  } else {
+    document.exitFullscreen?.().catch(() => {});
+  }
+}
+btnFullscreen.addEventListener("click", toggleFullscreen);
+
+window.addEventListener("keydown", (e) => {
+  if (e.target && ["INPUT", "TEXTAREA"].includes(e.target.tagName)) return;
+  if (e.key === "f" || e.key === "F") toggleFullscreen();
+  if (e.key === "s" || e.key === "S") btnSound.click();
+  if (e.key === "v" || e.key === "V") btnVoice.click();
+});
+
+// ---------------------------------------------------------------------------
+// MC 자막 + 음성
+// ---------------------------------------------------------------------------
 
 async function showMcLine(tag, params) {
   try {
@@ -58,9 +167,16 @@ async function showMcLine(tag, params) {
           .join("&")
       : "";
     const result = await fetchJSON(`/api/mc/line/${tag}${qs}`);
-    mcCaptionEl.textContent = result.text ? `"${result.text}"` : "";
+    if (result.text) {
+      mcCaptionEl.textContent = `"${result.text}"`;
+      speak(result.text);
+    } else {
+      mcCaptionEl.textContent = "";
+    }
+    return result.text;
   } catch (e) {
     mcCaptionEl.textContent = "";
+    return "";
   }
 }
 
@@ -75,10 +191,62 @@ function tryShowLiveMcLine(tag, params) {
   showMcLine(tag, params);
 }
 
+// ---------------------------------------------------------------------------
+// 배너(FINAL LAP / 라운드 발표 / 포토 피니시)
+// ---------------------------------------------------------------------------
+
+let bannerHideTimer = null;
+function showBanner(text, sub = "", ms = 1800) {
+  if (bannerHideTimer) clearTimeout(bannerHideTimer);
+  bannerTextEl.textContent = text;
+  bannerSubEl.textContent = sub;
+  overlayBannerEl.classList.remove("hidden");
+  bannerHideTimer = setTimeout(() => {
+    overlayBannerEl.classList.add("hidden");
+  }, ms);
+}
+
+// ---------------------------------------------------------------------------
+// F1 스타트 라이트 시퀀스
+// ---------------------------------------------------------------------------
+
+const lightEls = Array.from(document.querySelectorAll(".light"));
+const shownLightsForRound = new Set();
+
+async function runStartLights(roundIndex) {
+  const key = `${currentDrawKeyForGroups}:${roundIndex}`;
+  if (shownLightsForRound.has(key)) return;
+  shownLightsForRound.add(key);
+
+  overlayLightsEl.classList.remove("hidden");
+  lightsCaptionEl.textContent = `ROUND ${roundIndex} -- GET READY`;
+  for (const el of lightEls) el.classList.remove("on", "go");
+
+  for (let i = 0; i < lightEls.length; i++) {
+    await delay(300);
+    lightEls[i].classList.add("on");
+    SFX.startLight(i);
+  }
+  await delay(550);
+  for (const el of lightEls) el.classList.remove("on");
+  for (const el of lightEls) el.classList.add("go");
+  lightsCaptionEl.textContent = "GO!!";
+  SFX.lightsOut();
+  FX.screenFlash("rgba(255,255,255,0.9)", 260);
+  FX.screenShake(9, 320);
+  await delay(500);
+  overlayLightsEl.classList.add("hidden");
+}
+
+// ---------------------------------------------------------------------------
+// 룰렛 시퀀스
+// ---------------------------------------------------------------------------
+
 async function spinReel(el, pool, finalText, totalMs) {
   const start = Date.now();
   while (Date.now() - start < totalMs) {
     el.textContent = pool[Math.floor(Math.random() * pool.length)];
+    SFX.tick(false);
     const elapsed = Date.now() - start;
     const interval = 40 + Math.pow(elapsed / totalMs, 2) * 260;
     await delay(interval);
@@ -91,16 +259,21 @@ async function playRouletteSequence(draw) {
   const nameById = Object.fromEntries(
     draw.snapshot.participants.map((p) => [p.id, participantLabel(p)])
   );
-  showView("drawing");
+  showOverlay("roulette");
   winnerListEl.innerHTML = "";
   for (const winnerId of draw.winners) {
+    SFX.drumroll(1.6);
     await spinReel(reelEl, pool, nameById[winnerId] || winnerId, 1800);
+    SFX.pop();
+    FX.burst(window.innerWidth / 2, window.innerHeight * 0.35, "#ffd166", 26);
     const li = document.createElement("li");
     li.textContent = nameById[winnerId] || winnerId;
     winnerListEl.appendChild(li);
     await delay(500);
   }
   reelEl.textContent = "🎊 추첨 완료!";
+  SFX.fanfare();
+  FX.confetti(160);
 }
 
 // ---------------------------------------------------------------------------
@@ -125,7 +298,7 @@ function renderDepartmentBars(rates) {
       ([name, rate]) => `
       <div class="dept-bar-row">
         <div class="dept-bar-label"><span>${name}</span><span>${(rate * 100).toFixed(0)}%</span></div>
-        <div class="dept-bar-track"><div class="dept-bar-fill" style="width:${(rate * 100).toFixed(1)}%"></div></div>
+        <div class="dept-bar-track"><div class="dept-bar-fill" style="width:${(rate * 100).toFixed(1)}%; background:${colorForDepartment(name)}"></div></div>
       </div>`
     )
     .join("");
@@ -135,6 +308,7 @@ function renderDepartmentBars(rates) {
     const newLeader = sorted[0][0];
     if (currentLeaderDept !== null && newLeader !== currentLeaderDept) {
       tryShowLiveMcLine("department_rank_shift", { team: newLeader });
+      FX.ring(window.innerWidth / 2, 90, colorForDepartment(newLeader), 140);
     }
     currentLeaderDept = newLeader;
   }
@@ -159,6 +333,18 @@ const TEAM_PALETTE = [
   { base: "#4dd0e1", glow: "#84ffff" },
   { base: "#f06292", glow: "#f8bbd0" },
 ];
+
+const departmentColorCache = new Map();
+let currentPidToGroup = {};
+let currentDrawKeyForGroups = null;
+let previousTickPositions = {};
+let previousTickOrder = [];
+let previousTickRound = null;
+let lastLaneCount = 20;
+let cameraMode = "auto"; // "auto" | "wide" | "medium" | "close" (admin에서 override 가능)
+let roundParticipantsTotal = 0;
+let finalLapShownForRound = null;
+let photoFinishShownForRound = null;
 
 function colorForDepartment(name) {
   const entry = departmentColorCache.get(name);
@@ -246,6 +432,7 @@ function detectOvertakes(sortedIds, round) {
       if (prevIdx === undefined) continue;
       if (prevIdx - i >= 3) {
         spawnOvertakeBadge(pid);
+        SFX.whoosh();
         badges += 1;
         if (!mcFired) {
           // 쿨다운이 걸려 있으면 tryShowLiveMcLine이 조용히 무시한다
@@ -260,16 +447,61 @@ function detectOvertakes(sortedIds, round) {
 }
 
 // ---------------------------------------------------------------------------
-// V1: 틱 버퍼 + 60fps 보간 렌더 루프
-//
-// 서버는 0.3초 간격으로만 위치를 보내므로(대역폭 절약), 틱마다 그리면 화면이
-// 초당 3.3회만 갱신되어 레이스가 아니라 "움직이는 차트"처럼 보인다. 마지막
-// 두 틱을 버퍼에 두고 그 사이를 requestAnimationFrame으로 보간하면, 서버
-// 변경이나 트래픽 증가 없이 부드러운 60fps 주행이 된다(한 틱만큼 뒤처져
-// 보여주는 표준 네트코드 방식 -- 관람용 화면에서는 체감되지 않는다).
+// 실시간 포지션 타워 (좌측 패널)
 // ---------------------------------------------------------------------------
 
-const TRACK_PAD_X = 40;
+let prevRankById = new Map();
+
+function renderPositionTower(sortedIds, positions, passLine) {
+  const shown = sortedIds.slice(0, 14);
+  positionListEl.innerHTML = shown
+    .map((pid, i) => {
+      const group = currentPidToGroup[pid];
+      const swatch = group ? colorForDepartment(group) : "#8b95a5";
+      const prevRank = prevRankById.get(pid);
+      let deltaHtml = "";
+      if (prevRank !== undefined && prevRank !== i) {
+        const diff = prevRank - i;
+        deltaHtml = `<span class="pos-delta ${diff > 0 ? "up" : "down"}">${diff > 0 ? "▲" : "▼"}${Math.abs(diff)}</span>`;
+      }
+      const isLeader = i === 0;
+      const atRisk = !isLeader && positions[pid] < passLine && passLine - positions[pid] < 0.06;
+      const rowClass = isLeader ? "pos-leader" : atRisk ? "pos-risk" : "";
+      const label = pid.length > 14 ? pid.slice(0, 14) + "…" : pid;
+      return `<li class="pos-row ${rowClass}">
+        <span class="pos-rank">${i + 1}</span>
+        <span class="pos-swatch" style="background:${swatch}"></span>
+        <span class="pos-name">${group ? `${label} · ${group}` : label}</span>
+        ${deltaHtml}
+      </li>`;
+    })
+    .join("");
+  prevRankById = new Map(sortedIds.map((pid, i) => [pid, i]));
+}
+
+// ---------------------------------------------------------------------------
+// 캔버스 리사이즈 (풀스크린 대응, devicePixelRatio 보정)
+// ---------------------------------------------------------------------------
+
+function resizeCanvases() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const w = window.innerWidth;
+  const h = window.innerHeight;
+  raceCanvas.width = Math.round(w * dpr);
+  raceCanvas.height = Math.round(h * dpr);
+  raceCanvas.style.width = w + "px";
+  raceCanvas.style.height = h + "px";
+  raceCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  FX.resize(w, h, dpr);
+}
+resizeCanvases();
+window.addEventListener("resize", resizeCanvases);
+
+// ---------------------------------------------------------------------------
+// V1: 틱 버퍼 + 60fps 보간 렌더 루프
+// ---------------------------------------------------------------------------
+
+const TRACK_PAD_X = 60;
 let prevTickState = null;
 let currTickState = null;
 let tickArrivalAt = 0;
@@ -281,13 +513,9 @@ function pushTick(tick) {
   if (currTickState) {
     const delta = now - tickArrivalAt;
     if (delta > 40 && delta < 2000) {
-      // 실제 도착 간격으로 보간 구간 길이를 적응시킨다(지연·배속에 대응)
       tickIntervalEstimate = tickIntervalEstimate * 0.7 + delta * 0.3;
     }
   }
-  // 라운드가 바뀌면 참가자 집합과 시작 위치가 모두 달라진다. 이전 라운드의
-  // 마지막 위치에서 보간하면 카트가 뒤로 미끄러지는 것처럼 보이므로,
-  // 라운드 경계에서는 보간 없이 새 위치에서 바로 시작한다.
   const roundChanged = currTickState && currTickState.round !== tick.round;
   prevTickState = roundChanged ? null : currTickState;
   currTickState = tick;
@@ -302,6 +530,8 @@ function stopRenderLoop() {
   }
   prevTickState = null;
   currTickState = null;
+  SFX.stopEngine();
+  FX.setSpeedLines(0);
 }
 
 function renderLoop() {
@@ -328,11 +558,9 @@ function renderLoop() {
 // ---------------------------------------------------------------------------
 
 function drawTrackSurface(ctx, W, H, trackTop, trackBottom, passX, scrollPhase) {
-  // 노면
   ctx.fillStyle = "#171d26";
   ctx.fillRect(0, trackTop, W, trackBottom - trackTop);
 
-  // 통과선 기준 위험(왼쪽)/안전(오른쪽) 구역 -- 누가 잘릴 위기인지 한눈에
   const danger = ctx.createLinearGradient(0, 0, passX, 0);
   danger.addColorStop(0, "rgba(179,38,30,0.28)");
   danger.addColorStop(1, "rgba(179,38,30,0.05)");
@@ -345,7 +573,6 @@ function drawTrackSurface(ctx, W, H, trackTop, trackBottom, passX, scrollPhase) 
   ctx.fillStyle = safe;
   ctx.fillRect(passX, trackTop, W - passX, trackBottom - trackTop);
 
-  // 상하 커브(빨강/흰색 줄무늬) -- 스크롤시켜 속도감을 준다
   const curbH = 8;
   const stripe = 26;
   for (let x = -stripe; x < W + stripe; x += stripe) {
@@ -356,7 +583,6 @@ function drawTrackSurface(ctx, W, H, trackTop, trackBottom, passX, scrollPhase) 
     ctx.fillRect(sx, trackBottom, stripe, curbH);
   }
 
-  // 중앙 차선 파선 -- 스크롤로 전진감
   ctx.strokeStyle = "rgba(255,255,255,0.16)";
   ctx.lineWidth = 2;
   ctx.setLineDash([22, 20]);
@@ -372,7 +598,6 @@ function drawTrackSurface(ctx, W, H, trackTop, trackBottom, passX, scrollPhase) 
   ctx.setLineDash([]);
   ctx.lineDashOffset = 0;
 
-  // 출발선
   ctx.fillStyle = "rgba(255,255,255,0.75)";
   ctx.fillRect(TRACK_PAD_X - 6, trackTop, 3, trackBottom - trackTop);
 }
@@ -400,14 +625,11 @@ function drawFinishLine(ctx, x, trackTop, trackBottom) {
 }
 
 // ---------------------------------------------------------------------------
-// 카트 스프라이트: 팀 색상마다 오프스크린 캔버스에 "한 번만" 그려두고 매
-// 프레임에는 drawImage로 복사만 한다(2D 게임의 표준 스프라이트 기법).
-// 250대를 매 프레임 세부 묘사로 다시 그리면 프레임이 무너지지만, 복사는
-// 250회여도 부담이 없다. 실제 크기는 레인 높이에 맞춰 스케일된다.
+// 카트 스프라이트 캐시
 // ---------------------------------------------------------------------------
 
 const kartSpriteCache = new Map();
-const SPRITE_W = 96; // 2배 슈퍼샘플 -- 축소해 그리면 가장자리가 매끄럽다
+const SPRITE_W = 96;
 const SPRITE_H = 60;
 
 function roundRectPath(g, x, y, w, h, r) {
@@ -430,30 +652,25 @@ function buildKartSprite(color, glow) {
   const H = SPRITE_H;
   const cy = H / 2;
 
-  // 노면 그림자
   g.fillStyle = "rgba(0,0,0,0.30)";
   g.beginPath();
   g.ellipse(W * 0.52, cy + H * 0.30, W * 0.33, H * 0.12, 0, 0, Math.PI * 2);
   g.fill();
 
-  // 바퀴 (뒤가 크고 앞이 작다 -- 카트 특유의 실루엣)
   g.fillStyle = "#0d1117";
   roundRectPath(g, W * 0.17, cy - H * 0.44, W * 0.21, H * 0.22, 4); g.fill();
   roundRectPath(g, W * 0.17, cy + H * 0.22, W * 0.21, H * 0.22, 4); g.fill();
   roundRectPath(g, W * 0.66, cy - H * 0.40, W * 0.17, H * 0.19, 3); g.fill();
   roundRectPath(g, W * 0.66, cy + H * 0.21, W * 0.17, H * 0.19, 3); g.fill();
 
-  // 리어 윙(스포일러)
   g.fillStyle = glow;
   roundRectPath(g, W * 0.10, cy - H * 0.26, W * 0.07, H * 0.52, 3);
   g.fill();
 
-  // 사이드 포드
   g.fillStyle = color;
   roundRectPath(g, W * 0.28, cy - H * 0.32, W * 0.34, H * 0.64, 5);
   g.fill();
 
-  // 메인 섀시 (뒤에서 앞으로 좁아진다)
   g.beginPath();
   g.moveTo(W * 0.20, cy - H * 0.19);
   g.lineTo(W * 0.72, cy - H * 0.15);
@@ -465,28 +682,24 @@ function buildKartSprite(color, glow) {
   g.fillStyle = color;
   g.fill();
 
-  // 상단 하이라이트 (입체감)
   g.fillStyle = "rgba(255,255,255,0.22)";
   roundRectPath(g, W * 0.30, cy - H * 0.28, W * 0.30, H * 0.10, 4);
   g.fill();
 
-  // 콕핏
   g.fillStyle = "rgba(0,0,0,0.55)";
   g.beginPath();
   g.ellipse(W * 0.47, cy, W * 0.09, H * 0.17, 0, 0, Math.PI * 2);
   g.fill();
 
-  // 드라이버 헬멧
   g.fillStyle = glow;
   g.beginPath();
   g.arc(W * 0.47, cy, H * 0.11, 0, Math.PI * 2);
   g.fill();
-  g.fillStyle = "rgba(0,0,0,0.45)"; // 바이저
+  g.fillStyle = "rgba(0,0,0,0.45)";
   g.beginPath();
   g.ellipse(W * 0.50, cy, H * 0.045, H * 0.07, 0, 0, Math.PI * 2);
   g.fill();
 
-  // 프론트 노즈콘
   g.fillStyle = glow;
   g.beginPath();
   g.moveTo(W * 0.88, cy - H * 0.06);
@@ -511,7 +724,6 @@ function kartSpriteFor(color, glow) {
 function drawKart(ctx, x, y, h, color, glow, isLeader, atRisk, pulse) {
   const w = h * (SPRITE_W / SPRITE_H);
 
-  // 배기 연기 / 속도 자국 -- 카트가 충분히 클 때만(작으면 뭉개져 지저분하다)
   if (h >= 9) {
     for (let t = 1; t <= 3; t++) {
       ctx.globalAlpha = 0.14 / t;
@@ -534,7 +746,6 @@ function drawKart(ctx, x, y, h, color, glow, isLeader, atRisk, pulse) {
   ctx.drawImage(kartSpriteFor(color, glow), x - w / 2, y - h / 2, w, h);
   ctx.shadowBlur = 0;
 
-  // 선두 왕관 -- 카트가 클 때만(결선에서 확실히 보인다)
   if (isLeader && h >= 14) {
     ctx.font = `${Math.round(h * 0.8)}px serif`;
     ctx.textAlign = "center";
@@ -546,13 +757,13 @@ function drawKart(ctx, x, y, h, color, glow, isLeader, atRisk, pulse) {
 function drawFrame(positions, tick) {
   const ids = Object.keys(positions);
   if (!ids.length) return;
-  const W = raceCanvas.width;
-  const H = raceCanvas.height;
+  const W = window.innerWidth;
+  const H = window.innerHeight;
   const now = performance.now();
   const pulse = (Math.sin(now / 140) + 1) / 2;
 
   raceCtx.clearRect(0, 0, W, H);
-  raceCtx.fillStyle = "#0b0e14";
+  raceCtx.fillStyle = "#05070c";
   raceCtx.fillRect(0, 0, W, H);
 
   const sorted = [...ids].sort((a, b) => positions[b] - positions[a]);
@@ -560,8 +771,8 @@ function drawFrame(positions, tick) {
   const leaderX = TRACK_PAD_X + leaderPos * (W - TRACK_PAD_X * 2);
   const camera = computeCamera(leaderX, tick.round, W, H);
 
-  const trackTop = 46;
-  const trackBottom = H - 30;
+  const trackTop = H * 0.14;
+  const trackBottom = H * 0.86;
   const passX = TRACK_PAD_X + tick.pass_line * (W - TRACK_PAD_X * 2);
 
   raceCtx.save();
@@ -574,11 +785,9 @@ function drawFrame(positions, tick) {
   const laneCount = Math.max(6, Math.min(36, ids.length));
   lastLaneCount = laneCount;
   const laneHeight = (trackBottom - trackTop) / laneCount;
-  // 카트 크기는 레인 높이에서 유도한다 -- 결선(카트 5~10대)에서는 레인이
-  // 넓어져 스프라이트 디테일(바퀴·헬멧·스포일러)이 크게 보이고, R1(250대)
-  // 에서는 자동으로 작아져 서로 겹치지 않는다.
-  const kartH = Math.max(5, Math.min(46, laneHeight * 0.82));
+  const kartH = Math.max(5, Math.min(64, laneHeight * 0.82));
 
+  let riskCount = 0;
   for (let i = sorted.length - 1; i >= 0; i--) {
     const pid = sorted[i];
     const p = positions[pid];
@@ -588,8 +797,8 @@ function drawFrame(positions, tick) {
       trackTop + lane * laneHeight + jitterFor(pid) * laneHeight * 0.5 + laneHeight / 2;
     const group = currentPidToGroup[pid];
     const isLeader = i === 0;
-    // 통과선 바로 뒤에서 아슬아슬하게 밀린 카트 -- 여기가 가장 긴장되는 지점
     const atRisk = !isLeader && p < tick.pass_line && tick.pass_line - p < 0.06;
+    if (atRisk) riskCount += 1;
 
     drawKart(
       raceCtx,
@@ -606,25 +815,57 @@ function drawFrame(positions, tick) {
   raceCtx.globalAlpha = 1;
   raceCtx.restore();
 
-  drawHud(raceCtx, W, positions, tick, sorted);
+  drawHud(raceCtx, W, H, positions, tick, sorted);
+  renderPositionTower(sorted, positions, tick.pass_line);
+
+  // 속도 연출: 진행률 + 근접 경쟁 강도에 비례해 속도선/엔진 피치를 올린다
+  FX.setSpeedLines(Math.min(1, tick.progress_ratio * 1.1));
+  SFX.setRpm(Math.min(1, tick.progress_ratio * 1.05 + riskCount * 0.03));
+
+  // 클로즈콜: 통과선 근처에 여러 대가 몰려 있으면 긴장 멘트 + 심장박동
+  if (riskCount >= 3) {
+    tryShowLiveMcLine("close_call");
+  }
+
+  // 파이널 랩: 라운드당 한 번, 진행률 85% 지점에서
+  if (tick.progress_ratio >= 0.85 && finalLapShownForRound !== tick.round) {
+    finalLapShownForRound = tick.round;
+    showBanner("FINAL LAP", "마지막 스퍼트!", 1500);
+    showMcLine("final_lap");
+    SFX.heartbeat();
+  }
+
+  // 포토 피니시: 결선(R3)에서 선두 두 대가 초박빙으로 들어올 때
+  if (
+    tick.round === 3 &&
+    tick.progress_ratio >= 0.97 &&
+    sorted.length >= 2 &&
+    photoFinishShownForRound !== tick.round &&
+    Math.abs(positions[sorted[0]] - positions[sorted[1]]) < 0.012
+  ) {
+    photoFinishShownForRound = tick.round;
+    showBanner("PHOTO FINISH", "", 1600);
+    showMcLine("photo_finish");
+    FX.screenFlash("rgba(255,255,255,0.6)", 200);
+  }
 }
 
-function drawHud(ctx, W, positions, tick, sorted) {
-  // 상단: 진행률 게이지 + 실시간 통과 인원
+function drawHud(ctx, W, H, positions, tick, sorted) {
   const passing = sorted.filter((pid) => positions[pid] >= tick.pass_line).length;
+  const barY = H * 0.06;
   ctx.fillStyle = "rgba(255,255,255,0.08)";
-  ctx.fillRect(TRACK_PAD_X, 18, W - TRACK_PAD_X * 2, 6);
+  ctx.fillRect(TRACK_PAD_X, barY, W - TRACK_PAD_X * 2, 6);
   ctx.fillStyle = "#4f8cff";
-  ctx.fillRect(TRACK_PAD_X, 18, (W - TRACK_PAD_X * 2) * tick.progress_ratio, 6);
+  ctx.fillRect(TRACK_PAD_X, barY, (W - TRACK_PAD_X * 2) * tick.progress_ratio, 6);
 
-  ctx.font = "bold 16px 'Malgun Gothic', sans-serif";
+  ctx.font = "bold 18px 'Malgun Gothic', sans-serif";
   ctx.fillStyle = "#7cf29c";
   ctx.textAlign = "left";
-  ctx.fillText(`통과권 ${passing}대`, TRACK_PAD_X, 40);
+  ctx.fillText(`통과권 ${passing}대`, TRACK_PAD_X, barY - 8);
 
   ctx.textAlign = "right";
   ctx.fillStyle = "#8b95a5";
-  ctx.fillText(`${Math.round(tick.progress_ratio * 100)}%`, W - TRACK_PAD_X, 40);
+  ctx.fillText(`${Math.round(tick.progress_ratio * 100)}%`, W - TRACK_PAD_X, barY - 8);
   ctx.textAlign = "left";
 }
 
@@ -637,12 +878,28 @@ function renderTrack(tick) {
   previousTickPositions = tick.positions;
 }
 
-function startCountdown(durationSeconds, startedAtIso, phaseLabel) {
+// ---------------------------------------------------------------------------
+// 카운트다운 (HUD 타이머)
+// ---------------------------------------------------------------------------
+
+let lastTickSecond = null;
+
+function startCountdown(durationSeconds, startedAtIso, phaseLabel, roundIndex) {
   if (countdownTimer) clearInterval(countdownTimer);
+  lastTickSecond = null;
   const startedAt = new Date(startedAtIso).getTime();
+  phaseLabelEl.textContent = phaseLabel;
+  roundPillEl.textContent = roundIndex ? `ROUND ${roundIndex}` : "READY";
   const update = () => {
     const remain = Math.max(0, durationSeconds - (Date.now() - startedAt) / 1000);
-    phaseBannerEl.innerHTML = `${phaseLabel} <span class="countdown">${remain.toFixed(1)}초</span>`;
+    phaseTimerEl.textContent = `${remain.toFixed(1)}s`;
+    const urgent = remain <= 5 && remain > 0;
+    phaseTimerEl.classList.toggle("urgent", urgent);
+    const wholeSecond = Math.ceil(remain);
+    if (urgent && wholeSecond !== lastTickSecond) {
+      lastTickSecond = wholeSecond;
+      SFX.tick(true);
+    }
     if (remain <= 0) clearInterval(countdownTimer);
   };
   update();
@@ -664,30 +921,100 @@ const PHASE_LABELS = {
 function handleRacingEvent(data) {
   if (data.type === "phase") {
     racingStarted = true;
-    showView("racing");
-    racingFinalEl.classList.add("hidden");
-    startCountdown(data.duration_seconds, data.started_at, PHASE_LABELS[data.phase] || data.phase);
+    hideAllOverlays();
+    currentPhase = data.phase;
+    startCountdown(
+      data.duration_seconds,
+      data.started_at,
+      PHASE_LABELS[data.phase] || data.phase,
+      RACE_ROUND_INDEX_LOCAL[data.phase]
+    );
     if (["race_r1", "race_r2", "race_r3"].includes(data.phase)) {
-      // 라운드가 바뀌면 이전 라운드의 선두 부서 정보를 들고 넘어가지 않도록 리셋
       currentLeaderDept = null;
+      const roundIndex = RACE_ROUND_INDEX_LOCAL[data.phase];
+      finalLapShownForRound = null;
+      if (roundIndex === 3) photoFinishShownForRound = null;
+      runStartLights(roundIndex);
+      SFX.startEngine();
+    } else {
+      SFX.stopEngine();
+      FX.setSpeedLines(0);
     }
     if (data.phase === "race_r1") showMcLine("opening");
     if (data.phase === "race_r3") showMcLine("race_progress");
+    if (data.phase === "score_r1_select_r2" || data.phase === "score_r2_select_r3") {
+      if (lastPredictionWindow && lastPredictionWindow.state === "open") {
+        showMcLine("prediction_open", { round: lastPredictionWindow.round });
+      }
+    }
   } else if (data.type === "race_tick") {
     renderTrack(data);
     if (data.department_live_rate) {
       renderDepartmentBars(data.department_live_rate);
     }
   } else if (data.type === "round_revealed") {
-    showMcLine("round_pass_announce", { pass_count: data.pass_ids ? data.pass_ids.length : undefined });
+    showBanner(
+      `ROUND ${data.round} 통과!`,
+      `${data.pass_ids ? data.pass_ids.length : "-"}명이 다음 라운드로 진출합니다`,
+      2000
+    );
+    SFX.pass();
+    FX.ring(window.innerWidth / 2, window.innerHeight * 0.5, "#7cf29c", 220);
+    showMcLine("round_pass_announce", { pass_count: data.pass_ids ? data.pass_ids.length : undefined }).then(
+      () => delay(2200)
+    ).then(() => showMcLine("elimination"));
   } else if (data.type === "racing_complete") {
     if (countdownTimer) clearInterval(countdownTimer);
-    phaseBannerEl.textContent = "진행 완료";
-    // 마지막 프레임(최종 위치)을 화면에 남긴 채 루프만 정지한다
+    phaseLabelEl.textContent = "진행 완료";
+    phaseTimerEl.textContent = "--";
+    phaseTimerEl.classList.remove("urgent");
     if (rafHandle !== null) {
       cancelAnimationFrame(rafHandle);
       rafHandle = null;
     }
+    SFX.stopEngine();
+    FX.setSpeedLines(0);
+  }
+}
+
+const RACE_ROUND_INDEX_LOCAL = { race_r1: 1, race_r2: 2, race_r3: 3 };
+
+// ---------------------------------------------------------------------------
+// 최종 시상대
+// ---------------------------------------------------------------------------
+
+function buildPodium(winnerIds, nameById) {
+  const top3 = winnerIds.slice(0, 3);
+  const rest = winnerIds.slice(3);
+  // 시각적 배치: 2위-1위-3위 순서(가운데가 1위)
+  const order = [top3[1], top3[0], top3[2]].filter((x) => x !== undefined);
+  const rankOf = (id) => top3.indexOf(id) + 1;
+  podiumStageEl.innerHTML = order
+    .map((id, i) => {
+      const rank = rankOf(id);
+      const label = nameById[id] || id;
+      const medal = rank === 1 ? "🥇" : rank === 2 ? "🥈" : "🥉";
+      return `<div class="podium-slot" data-rank="${rank}" style="animation-delay:${i * 0.15}s">
+        <div class="podium-name">${label}</div>
+        <div class="podium-block">${medal}</div>
+      </div>`;
+    })
+    .join("");
+  podiumRestEl.innerHTML = rest.map((id) => `<li>${nameById[id] || id}</li>`).join("");
+}
+
+async function playFinalReveal(winnerIds, nameById) {
+  showBanner("🏆 최종 당첨자 발표!", "", 1500);
+  SFX.drumroll(1.4);
+  await delay(1500);
+  buildPodium(winnerIds, nameById);
+  showOverlay("podium");
+  SFX.fanfare();
+  SFX.crowd(0.8, 1.8);
+  FX.confetti(220);
+  FX.screenFlash("rgba(255,209,102,0.35)", 260);
+  for (let i = 0; i < 3; i++) {
+    setTimeout(() => FX.burst(window.innerWidth * (0.3 + i * 0.2), window.innerHeight * 0.4, "#ffd166", 24), i * 220);
   }
 }
 
@@ -697,7 +1024,7 @@ function handleRacingEvent(data) {
 
 function render(session) {
   if (!session) {
-    showView("idle");
+    showOverlay("idle");
     statusEl.textContent = "명단 등록을 기다리는 중입니다";
     return;
   }
@@ -706,34 +1033,34 @@ function render(session) {
     const departmentCount = new Set(session.participants.map((p) => p.team || "미지정")).size;
     participantCountEl.textContent = session.participants.length;
     departmentCountEl.textContent = departmentCount;
-    showView("waiting");
+    showOverlay("waiting");
     return;
   }
 
   if (session.mode === "racing") {
     ensureGroupLookup(latest, latest.commit);
     if (latest.revealed) {
-      showView("racing");
-      racingFinalEl.classList.remove("hidden");
-      racingReelEl.textContent = "🎊 최종 당첨자 발표!";
-      racingWinnerListEl.innerHTML = latest.winners
-        .map((id) => {
-          const p = latest.snapshot.participants.find((x) => x.id === id);
-          return `<li>${p ? participantLabel(p) : id}</li>`;
-        })
-        .join("");
       if (lastFinalShownFor !== "racing-final") {
         lastFinalShownFor = "racing-final";
-        showMcLine("final_announce").then(() => delay(2500)).then(() => showMcLine("verification"));
+        const nameById = Object.fromEntries(
+          latest.snapshot.participants.map((p) => [p.id, participantLabel(p)])
+        );
+        playFinalReveal(latest.winners, nameById).then(() => delay(2500)).then(() => showMcLine("verification"));
+      } else if (overlays.podium.classList.contains("hidden") && bannerHideTimer === null) {
+        // 새로고침 등으로 재진입한 경우 이미 지나간 연출 없이 바로 시상대만 표시
+        const nameById = Object.fromEntries(
+          latest.snapshot.participants.map((p) => [p.id, participantLabel(p)])
+        );
+        buildPodium(latest.winners, nameById);
+        showOverlay("podium");
       }
       return;
     }
     if (racingStarted) {
-      showView("racing");
       return; // race_tick/phase 이벤트가 실시간 갱신을 담당
     }
     commitBadgeEl.textContent = latest.commit;
-    showView("committed");
+    showOverlay("committed");
     if (lastOpeningShownFor !== latest.commit) {
       lastOpeningShownFor = latest.commit;
       showMcLine("opening");
@@ -744,7 +1071,7 @@ function render(session) {
   // 룰렛 모드
   if (!latest.revealed) {
     commitBadgeEl.textContent = latest.commit;
-    showView("committed");
+    showOverlay("committed");
     if (lastOpeningShownFor !== latest.commit) {
       lastOpeningShownFor = latest.commit;
       showMcLine("opening");
@@ -761,7 +1088,7 @@ function render(session) {
       }
     });
   } else {
-    showView("drawing");
+    showOverlay("roulette");
     winnerListEl.innerHTML = latest.winners
       .map((id) => {
         const p = latest.snapshot.participants.find((x) => x.id === id);
@@ -773,6 +1100,7 @@ function render(session) {
 }
 
 document.getElementById("btn-demo-start").addEventListener("click", async (event) => {
+  unlockAudioOnce();
   event.target.disabled = true;
   event.target.textContent = "데모 준비 중...";
   try {
@@ -807,12 +1135,19 @@ const ws = connectWS((data) => {
     previousTickRound = null;
     currentLeaderDept = null;
     lastMcLiveCallAt = 0;
+    finalLapShownForRound = null;
+    photoFinishShownForRound = null;
+    shownLightsForRound.clear();
     stopRenderLoop();
-    raceCtx.clearRect(0, 0, raceCanvas.width, raceCanvas.height);
+    raceCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
+    FX.clear();
     overtakeLayer.innerHTML = "";
     const legendEl = document.getElementById("team-legend");
     if (legendEl) legendEl.innerHTML = "";
     if (countdownTimer) clearInterval(countdownTimer);
+    phaseLabelEl.textContent = "대기 중";
+    phaseTimerEl.textContent = "--";
+    roundPillEl.textContent = "READY";
   }
   if (data.type === "camera_mode") {
     cameraMode = data.mode;
@@ -825,6 +1160,9 @@ const ws = connectWS((data) => {
   }
   if (data.type === "prediction_window") {
     lastPredictionWindow = data;
+    if (data.state === "open") {
+      showMcLine("prediction_open", { round: data.round });
+    }
   }
   refresh();
 }, "stage");

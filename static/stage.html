@@ -2,60 +2,129 @@
 <html lang="ko">
 <head>
   <meta charset="utf-8" />
-  <title>타추위 추첨 프로그램</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>타추위 GRAND PRIX</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%8F%81%3C/text%3E%3C/svg%3E" />
   <link rel="stylesheet" href="/static/stage.css" />
 </head>
-<body>
-  <main id="stage-root">
-    <h1>🎉 타추위 경품 추첨</h1>
+<body data-mode="idle">
+  <div id="stage-shell">
 
-    <div id="idle-view" class="view">
-      <p id="ws-status">연결 대기 중...</p>
-      <button id="btn-demo-start">🚀 데모로 체험하기</button>
+    <!-- 배경: 레이스 트랙 + 이펙트 레이어 (화면 전체를 채운다) -->
+    <div id="scene">
+      <canvas id="race-canvas"></canvas>
+      <canvas id="fx-canvas"></canvas>
+      <div id="overtake-layer" class="overtake-layer"></div>
     </div>
 
-    <div id="waiting-view" class="view hidden">
-      <p class="sub">참가자 <span id="participant-count">-</span>명 · 부서 <span id="department-count">-</span>개</p>
+    <!-- 상단 HUD -->
+    <header id="hud-top">
+      <div class="hud-brand"><span class="flag">🏁</span> 타추위 <b>GRAND PRIX</b></div>
+      <div class="hud-center">
+        <div id="round-pill" class="round-pill">READY</div>
+        <div id="phase-label" class="phase-label">대기 중</div>
+      </div>
+      <div class="hud-right">
+        <div id="phase-timer" class="phase-timer">--</div>
+        <button id="btn-sound" class="icon-btn" title="효과음 켜기/끄기 (S)">🔇</button>
+        <button id="btn-voice" class="icon-btn" title="MC 음성 해설 켜기/끄기 (V)">🎙</button>
+        <button id="btn-fullscreen" class="icon-btn" title="전체 화면 (F)">⛶</button>
+      </div>
+    </header>
+
+    <!-- 좌: 실시간 포지션 타워 -->
+    <aside id="position-tower" class="glass side-panel">
+      <h3>POSITION</h3>
+      <ol id="position-list"></ol>
+    </aside>
+
+    <!-- 우: 부서 통과율 + 예측 리더보드 -->
+    <aside id="side-right">
+      <div id="department-panel" class="glass side-panel">
+        <h3>부서 통과율</h3>
+        <div id="department-bars"></div>
+      </div>
+      <div id="prediction-leaderboard" class="glass side-panel hidden">
+        <h3>예측 리더보드</h3>
+        <ol id="prediction-leaderboard-list"></ol>
+      </div>
+    </aside>
+
+    <!-- 하단: 팀 레전드 -->
+    <div id="team-legend" class="team-legend"></div>
+
+    <!-- 하단 로어서드: AI MC 해설 -->
+    <div id="mc-bar" class="mc-bar">
+      <div class="mc-avatar">🎙</div>
+      <div class="mc-body">
+        <div class="mc-name">AI MC</div>
+        <div id="mc-caption" class="mc-caption"></div>
+      </div>
+    </div>
+
+    <!-- ================= 오버레이 ================= -->
+
+    <!-- 대기: 데모 시작 -->
+    <div id="overlay-idle" class="overlay">
+      <h1 class="title-xl">🏁 타추위 <b>GRAND PRIX</b></h1>
+      <p id="ws-status" class="lead">연결 대기 중...</p>
+      <button id="btn-demo-start" class="cta">🚀 데모로 체험하기</button>
+      <p class="hint">클릭하면 효과음과 AI MC 음성 해설이 함께 켜집니다</p>
+    </div>
+
+    <!-- 명단 등록 완료, 커밋 대기 -->
+    <div id="overlay-waiting" class="overlay hidden">
+      <h1 class="title-xl">출발 준비</h1>
+      <p class="lead">참가자 <b id="participant-count">-</b>명 · 부서 <b id="department-count">-</b>개</p>
+      <img class="qr-image" src="/api/qrcode" alt="모바일 참여 QR" />
       <p class="hint">커밋 공개를 기다리는 중...</p>
-      <img class="qr-image" src="/api/qrcode" alt="모바일 참여 QR" />
     </div>
 
-    <div id="committed-view" class="view hidden">
-      <p class="sub">이 값이 오늘 추첨의 봉인입니다</p>
+    <!-- 커밋 공개 -->
+    <div id="overlay-committed" class="overlay hidden">
+      <p class="eyebrow">이 값이 오늘 추첨의 봉인입니다</p>
       <div id="commit-badge" class="commit-badge"></div>
-      <p class="hint">추첨 시작을 기다리는 중...</p>
       <img class="qr-image" src="/api/qrcode" alt="모바일 참여 QR" />
-      <p class="hint">모바일로 QR을 찍고 예측 게임에 참여해보세요</p>
+      <p class="hint">QR을 찍고 예측 게임에 참여해보세요</p>
     </div>
 
-    <div id="drawing-view" class="view hidden">
+    <!-- F1 스타트 라이트 -->
+    <div id="overlay-lights" class="overlay overlay-transparent hidden">
+      <div class="lights-rig">
+        <div class="light" data-i="0"></div>
+        <div class="light" data-i="1"></div>
+        <div class="light" data-i="2"></div>
+        <div class="light" data-i="3"></div>
+        <div class="light" data-i="4"></div>
+      </div>
+      <div id="lights-caption" class="lights-caption"></div>
+    </div>
+
+    <!-- 큰 배너 (FINAL PUSH / 라운드 결과 / 포토피니시) -->
+    <div id="overlay-banner" class="overlay-banner hidden">
+      <div id="banner-text"></div>
+      <div id="banner-sub"></div>
+    </div>
+
+    <!-- 룰렛 모드 -->
+    <div id="overlay-roulette" class="overlay hidden">
       <div id="reel" class="reel">-</div>
       <ol id="winner-list" class="winner-list"></ol>
     </div>
 
-    <div id="racing-view" class="view hidden">
-      <div id="racing-phase-banner" class="phase-banner">대기 중</div>
-      <div id="team-legend" class="team-legend"></div>
-      <div class="track-wrap">
-        <canvas id="race-canvas" width="960" height="440"></canvas>
-        <div id="overtake-layer" class="overtake-layer"></div>
-      </div>
-      <div class="racing-columns">
-        <div id="department-bars" class="department-bars"></div>
-        <div id="prediction-leaderboard" class="prediction-leaderboard hidden">
-          <h3>예측 리더보드</h3>
-          <ol id="prediction-leaderboard-list"></ol>
-        </div>
-      </div>
-      <div id="racing-final" class="hidden">
-        <div id="racing-reel" class="reel">-</div>
-        <ol id="racing-winner-list" class="winner-list"></ol>
-      </div>
+    <!-- 최종 시상대 -->
+    <div id="overlay-podium" class="overlay hidden">
+      <h1 class="title-xl">🏆 최종 당첨자</h1>
+      <div id="podium-stage" class="podium-stage"></div>
+      <ol id="podium-rest" class="podium-rest"></ol>
+      <p class="hint">/verify 에서 누구나 직접 재계산해 검증할 수 있습니다</p>
     </div>
 
-    <p id="mc-caption" class="mc-caption"></p>
-  </main>
+  </div>
+
   <script src="/static/shared.js"></script>
+  <script src="/static/audio.js"></script>
+  <script src="/static/fx.js"></script>
   <script src="/static/stage.js"></script>
 </body>
 </html>

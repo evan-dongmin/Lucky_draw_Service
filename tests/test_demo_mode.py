@@ -59,3 +59,25 @@ def test_demo_start_without_bots_leaves_zero_participants(client):
 
     lb = client.get("/api/predict/leaderboard?top_n=20").json()["top"]
     assert lb == []
+
+
+def test_demo_start_rejects_total_seconds_below_director_floor_without_clearing_session(client):
+    """데모는 예측 게임을 항상 켠 채로 시작하므로 하한은 150초다. 과거에는
+    이 검증이 없어 레이스가 백그라운드에서 조용히 실패해 무대가 커밋 화면에서
+    멈춘 것처럼 보였다. 지금은 즉시 400을 돌려주고, 검증 실패 시점이 세션을
+    지우기 전이어야 하므로 기존 세션이 그대로 남아 있어야 한다."""
+    first = client.post(
+        "/api/demo/start",
+        json={"participant_count": 20, "draw_count": 2, "total_seconds": 150},
+    )
+    assert first.status_code == 200
+    existing_session_id = client.get("/api/session").json()["session_id"]
+
+    resp = client.post(
+        "/api/demo/start",
+        json={"participant_count": 20, "draw_count": 2, "total_seconds": 10},
+    )
+    assert resp.status_code == 400
+
+    session = client.get("/api/session").json()
+    assert session["session_id"] == existing_session_id
