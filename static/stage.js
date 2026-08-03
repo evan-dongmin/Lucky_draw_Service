@@ -78,22 +78,61 @@ let koVoice = null;
 function pickKoreanVoice() {
   if (!ttsSupported) return;
   const voices = window.speechSynthesis.getVoices();
-  koVoice = voices.find((v) => v.lang && v.lang.toLowerCase().startsWith("ko")) || null;
+  const koVoices = voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith("ko"));
+  // 로컬 OS 내장 음성(예: Windows "Heami")은 대체로 단조롭다. 브라우저가
+  // 함께 제공하는 네트워크 기반 음성(예: Chrome의 "Google 한국어")은
+  // 억양이 더 자연스러운 경우가 많아 있으면 우선한다.
+  koVoice =
+    koVoices.find((v) => /google/i.test(v.name)) ||
+    koVoices.find((v) => !v.localService) ||
+    koVoices[0] ||
+    null;
 }
 if (ttsSupported) {
   pickKoreanVoice();
   window.speechSynthesis.onvoiceschanged = pickKoreanVoice;
 }
 
-function speak(text) {
+// -- 상황 태그별 말투 프로파일 --------------------------------------------
+// TTS 엔진 자체는 감정을 모르기 때문에, 상황마다 속도/피치를 다르게 줘서
+// "그냥 글 읽는 AI" 느낌을 줄인다. 긴장/액션 상황은 빠르고 높게, 차분한
+// 안내는 느리고 낮게. 같은 태그가 반복돼도 매번 살짝 다르게 들리도록
+// 작은 무작위 지터를 더한다(완전히 똑같은 억양의 반복은 그 자체로 기계적
+// 으로 들린다).
+const MC_ENERGY = {
+  opening: { rate: 1.0, pitch: 1.0 },
+  countdown: { rate: 1.18, pitch: 1.1 },
+  race_progress: { rate: 1.12, pitch: 1.06 },
+  close_call: { rate: 1.22, pitch: 1.14 },
+  final_lap: { rate: 1.24, pitch: 1.14 },
+  photo_finish: { rate: 1.28, pitch: 1.18 },
+  department_rank_shift: { rate: 1.14, pitch: 1.08 },
+  round_pass_announce: { rate: 1.06, pitch: 1.04 },
+  elimination: { rate: 0.94, pitch: 0.96 },
+  prediction_open: { rate: 1.06, pitch: 1.04 },
+  ability_trigger: { rate: 1.16, pitch: 1.1 },
+  gambling_open: { rate: 1.1, pitch: 1.06 },
+  gambling_result: { rate: 1.12, pitch: 1.08 },
+  gambling_champion: { rate: 1.1, pitch: 1.08 },
+  final_announce: { rate: 1.08, pitch: 1.06 },
+  podium: { rate: 1.0, pitch: 1.04 },
+  verification: { rate: 0.96, pitch: 0.99 },
+};
+const MC_ENERGY_DEFAULT = { rate: 1.05, pitch: 1.02 };
+
+function speak(text, tag) {
   if (!ttsSupported || !voiceOn || !text) return;
   try {
     window.speechSynthesis.cancel();
     const utter = new SpeechSynthesisUtterance(text);
     utter.lang = "ko-KR";
     if (koVoice) utter.voice = koVoice;
-    utter.rate = 1.05;
-    utter.pitch = 1.02;
+    const energy = MC_ENERGY[tag] || MC_ENERGY_DEFAULT;
+    const jitter = () => (Math.random() - 0.5) * 0.07;
+    utter.rate = Math.min(1.5, Math.max(0.8, energy.rate + jitter()));
+    utter.pitch = Math.min(1.6, Math.max(0.75, energy.pitch + jitter()));
+    // 느낌표로 끝나는 절규/환호 문구는 살짝 더 크게 -- 평서문과 대비를 준다
+    utter.volume = /[!]\s*$/.test(text.trim()) ? 1.0 : 0.92;
     utter.onstart = () => SFX.duck();
     utter.onend = () => SFX.unduck();
     utter.onerror = () => SFX.unduck();
@@ -169,7 +208,7 @@ async function showMcLine(tag, params) {
     const result = await fetchJSON(`/api/mc/line/${tag}${qs}`);
     if (result.text) {
       mcCaptionEl.textContent = `"${result.text}"`;
-      speak(result.text);
+      speak(result.text, tag);
     } else {
       mcCaptionEl.textContent = "";
     }
@@ -280,12 +319,82 @@ async function playRouletteSequence(draw) {
 // 레이싱 모드: 부서 통과율 실시간 랭킹 + 라운드 진행 상태머신
 // ---------------------------------------------------------------------------
 
-function renderPredictionLeaderboard(top) {
+function renderPredictionLeaderboard(top, mode) {
   if (!top || !top.length) return;
   predictionLeaderboardEl.classList.remove("hidden");
+  const titleEl = predictionLeaderboardEl.querySelector("h3");
+  if (titleEl) titleEl.textContent = mode === "gambling" ? "사이버머니 리더보드" : "예측 리더보드";
   predictionLeaderboardListEl.innerHTML = top
-    .map((entry) => `<li>${entry.participant_id} - ${entry.score}점</li>`)
+    .map((entry) =>
+      mode === "gambling"
+        ? `<li>${entry.participant_id} - ${entry.balance}</li>`
+        : `<li>${entry.participant_id} - ${entry.score}점</li>`
+    )
     .join("");
+}
+
+// ---------------------------------------------------------------------------
+// 갬블링 실시간 배당률 패널(우측) -- 베팅/선택 창이 열려 있는 동안만 폴링한다.
+// ---------------------------------------------------------------------------
+
+let sessionPredictionMode = "confidence";
+let liveOddsTimer = null;
+const gamblingOddsPanelEl = document.getElementById("gambling-odds-panel");
+const gamblingOddsListEl = document.getElementById("gambling-odds-list");
+
+async function pollLiveOdds() {
+  try {
+    const data = await fetchJSON("/api/predict/live");
+    if (data.mode !== "gambling") {
+      stopLiveOddsPolling();
+      return;
+    }
+    const rounds = data.rounds || {};
+    const roundKeys = Object.keys(rounds);
+    if (!roundKeys.length) {
+      gamblingOddsPanelEl.classList.add("hidden");
+      return;
+    }
+    gamblingOddsPanelEl.classList.remove("hidden");
+    gamblingOddsListEl.innerHTML = roundKeys
+      .map((r) => {
+        const stat = rounds[r];
+        const rows = Object.entries(stat.pool || {})
+          .sort((a, b) => b[1] - a[1])
+          .map(
+            ([target, amount]) =>
+              `<div class="odds-row"><span>${target}</span><span>${amount}</span><span>${
+                stat.odds && stat.odds[target] ? stat.odds[target] + "배" : "-"
+              }</span></div>`
+          )
+          .join("");
+        return `<div class="odds-round-block"><div class="odds-round-title">R${r} · 총 판돈 ${stat.total_pool}</div>${rows}</div>`;
+      })
+      .join("");
+  } catch (e) {
+    // 세션 없음/리셋 직후 등 -- 다음 폴링에서 자연 복구되므로 조용히 무시
+  }
+}
+
+function startLiveOddsPolling() {
+  if (liveOddsTimer) return;
+  liveOddsTimer = setInterval(pollLiveOdds, 2000);
+  pollLiveOdds();
+}
+
+function stopLiveOddsPolling() {
+  if (liveOddsTimer) {
+    clearInterval(liveOddsTimer);
+    liveOddsTimer = null;
+  }
+  gamblingOddsPanelEl.classList.add("hidden");
+}
+
+async function handleGamblingResult(data) {
+  showBanner(`ROUND ${data.round} 베팅 정산!`, `총 판돈 ${data.total_pool}`, 2200);
+  SFX.pass();
+  FX.ring(window.innerWidth / 2, window.innerHeight * 0.5, "#ff9f45", 220);
+  showMcLine("gambling_result", { round: data.round });
 }
 
 let currentLeaderDept = null;
@@ -334,7 +443,27 @@ const TEAM_PALETTE = [
   { base: "#f06292", glow: "#f8bbd0" },
 ];
 
+// 팀 특수능력(순수 연출용 -- 공정성 판정에는 어떤 영향도 주지 않는다).
+// 팀 색상과 동일한 방식으로 부서명 정렬 순서 인덱스에 고정 배정한다(같은
+// 명단이면 항상 같은 능력). 결과 자체를 바꾸지 않고, 이미 서버가 계산한
+// 추월/위기/선두교체 순간을 팀마다 다른 이펙트·문구로 "포장"할 뿐이다.
+const ABILITY_ROSTER = [
+  { id: "nitro", label: "니트로 부스트", emoji: "🔥" },
+  { id: "shield", label: "배리어 실드", emoji: "🛡️" },
+  { id: "spark", label: "스파크 러시", emoji: "⚡" },
+  { id: "draft", label: "슬립스트림", emoji: "🌪️" },
+  { id: "lucky", label: "럭키 드래프트", emoji: "💎" },
+  { id: "wave", label: "타이달 웨이브", emoji: "🌊" },
+  { id: "stardust", label: "스타더스트", emoji: "⭐" },
+  { id: "rocket", label: "로켓 대시", emoji: "🚀" },
+];
+
+function abilityForDepartment(name) {
+  return departmentAbilityCache.get(name) || ABILITY_ROSTER[0];
+}
+
 const departmentColorCache = new Map();
+const departmentAbilityCache = new Map();
 let currentPidToGroup = {};
 let currentDrawKeyForGroups = null;
 let previousTickPositions = {};
@@ -367,9 +496,11 @@ function ensureGroupLookup(latest, drawKey) {
   currentPidToGroup = map;
 
   departmentColorCache.clear();
+  departmentAbilityCache.clear();
   const groupNames = Object.keys(departments).sort();
   groupNames.forEach((name, idx) => {
     departmentColorCache.set(name, TEAM_PALETTE[idx % TEAM_PALETTE.length]);
+    departmentAbilityCache.set(name, ABILITY_ROSTER[idx % ABILITY_ROSTER.length]);
   });
   renderTeamLegend(groupNames);
 }
@@ -378,12 +509,12 @@ function renderTeamLegend(groupNames) {
   const el = document.getElementById("team-legend");
   if (!el) return;
   el.innerHTML = groupNames
-    .map(
-      (name) =>
-        `<span class="legend-item"><span class="legend-swatch" style="background:${colorForDepartment(
-          name
-        )}"></span>${name}</span>`
-    )
+    .map((name) => {
+      const ability = abilityForDepartment(name);
+      return `<span class="legend-item"><span class="legend-swatch" style="background:${colorForDepartment(
+        name
+      )}"></span>${name} <span class="legend-ability" title="${ability.label}">${ability.emoji}</span></span>`;
+    })
     .join("");
 }
 
@@ -412,13 +543,16 @@ function computeCamera(leaderX, round, W, H) {
 function spawnOvertakeBadge(pid) {
   const lane = laneFor(pid, lastLaneCount);
   const x = previousTickPositions[pid] !== undefined ? previousTickPositions[pid] : 0.5;
+  const group = currentPidToGroup[pid];
+  const ability = group ? abilityForDepartment(group) : ABILITY_ROSTER[0];
   const el = document.createElement("div");
   el.className = "overtake-badge";
-  el.textContent = "🚀";
+  el.textContent = ability.emoji;
   el.style.left = `${Math.min(96, Math.max(4, x * 100))}%`;
   el.style.top = `${Math.min(94, Math.max(6, ((lane + 0.5) / lastLaneCount) * 100))}%`;
   overtakeLayer.appendChild(el);
   setTimeout(() => el.remove(), 700);
+  return ability;
 }
 
 function detectOvertakes(sortedIds, round) {
@@ -431,12 +565,18 @@ function detectOvertakes(sortedIds, round) {
       const prevIdx = prevRank.get(pid);
       if (prevIdx === undefined) continue;
       if (prevIdx - i >= 3) {
-        spawnOvertakeBadge(pid);
+        const ability = spawnOvertakeBadge(pid);
         SFX.whoosh();
         badges += 1;
         if (!mcFired) {
-          // 쿨다운이 걸려 있으면 tryShowLiveMcLine이 조용히 무시한다
-          tryShowLiveMcLine("race_progress", { team: currentPidToGroup[pid] });
+          // 쿨다운이 걸려 있으면 tryShowLiveMcLine이 조용히 무시한다.
+          // 팀이 확인되면 그 팀의 특수능력 이름으로, 아니면 일반 문구로.
+          const group = currentPidToGroup[pid];
+          if (group) {
+            tryShowLiveMcLine("ability_trigger", { team: group, ability: ability.label });
+          } else {
+            tryShowLiveMcLine("race_progress");
+          }
           mcFired = true;
         }
       }
@@ -468,10 +608,11 @@ function renderPositionTower(sortedIds, positions, passLine) {
       const atRisk = !isLeader && positions[pid] < passLine && passLine - positions[pid] < 0.06;
       const rowClass = isLeader ? "pos-leader" : atRisk ? "pos-risk" : "";
       const label = pid.length > 14 ? pid.slice(0, 14) + "…" : pid;
+      const abilityBadge = isLeader && group ? `${abilityForDepartment(group).emoji} ` : "";
       return `<li class="pos-row ${rowClass}">
         <span class="pos-rank">${i + 1}</span>
         <span class="pos-swatch" style="background:${swatch}"></span>
-        <span class="pos-name">${group ? `${label} · ${group}` : label}</span>
+        <span class="pos-name">${abilityBadge}${group ? `${label} · ${group}` : label}</span>
         ${deltaHtml}
       </li>`;
     })
@@ -944,7 +1085,8 @@ function handleRacingEvent(data) {
     if (data.phase === "race_r3") showMcLine("race_progress");
     if (data.phase === "score_r1_select_r2" || data.phase === "score_r2_select_r3") {
       if (lastPredictionWindow && lastPredictionWindow.state === "open") {
-        showMcLine("prediction_open", { round: lastPredictionWindow.round });
+        const tag = lastPredictionWindow.mode === "gambling" ? "gambling_open" : "prediction_open";
+        showMcLine(tag, { round: lastPredictionWindow.round });
       }
     }
   } else if (data.type === "race_tick") {
@@ -1037,15 +1179,25 @@ function render(session) {
     return;
   }
 
+  sessionPredictionMode = session.prediction_mode || "confidence";
+  if (session.mode === "racing" && sessionPredictionMode === "gambling") {
+    startLiveOddsPolling();
+  }
+
   if (session.mode === "racing") {
     ensureGroupLookup(latest, latest.commit);
     if (latest.revealed) {
+      stopLiveOddsPolling();
       if (lastFinalShownFor !== "racing-final") {
         lastFinalShownFor = "racing-final";
         const nameById = Object.fromEntries(
           latest.snapshot.participants.map((p) => [p.id, participantLabel(p)])
         );
-        playFinalReveal(latest.winners, nameById).then(() => delay(2500)).then(() => showMcLine("verification"));
+        playFinalReveal(latest.winners, nameById)
+          .then(() => delay(2500))
+          .then(() => (sessionPredictionMode === "gambling" ? showMcLine("gambling_champion") : Promise.resolve()))
+          .then(() => delay(sessionPredictionMode === "gambling" ? 2500 : 0))
+          .then(() => showMcLine("verification"));
       } else if (overlays.podium.classList.contains("hidden") && bannerHideTimer === null) {
         // 새로고침 등으로 재진입한 경우 이미 지나간 연출 없이 바로 시상대만 표시
         const nameById = Object.fromEntries(
@@ -1099,18 +1251,27 @@ function render(session) {
   }
 }
 
-document.getElementById("btn-demo-start").addEventListener("click", async (event) => {
+async function startDemo(button, predictionMode) {
   unlockAudioOnce();
-  event.target.disabled = true;
-  event.target.textContent = "데모 준비 중...";
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "데모 준비 중...";
   try {
-    await fetchJSON("/api/demo/start", { method: "POST", body: JSON.stringify({}) });
+    await fetchJSON("/api/demo/start", {
+      method: "POST",
+      body: JSON.stringify({ prediction_mode: predictionMode }),
+    });
   } catch (e) {
     alert(e.message);
-    event.target.disabled = false;
-    event.target.textContent = "🚀 데모로 체험하기";
+    button.disabled = false;
+    button.textContent = originalText;
   }
-});
+}
+
+document.getElementById("btn-demo-start").addEventListener("click", (e) => startDemo(e.target, "confidence"));
+document
+  .getElementById("btn-demo-start-gambling")
+  .addEventListener("click", (e) => startDemo(e.target, "gambling"));
 
 async function refresh() {
   try {
@@ -1139,6 +1300,8 @@ const ws = connectWS((data) => {
     photoFinishShownForRound = null;
     shownLightsForRound.clear();
     stopRenderLoop();
+    stopLiveOddsPolling();
+    sessionPredictionMode = "confidence";
     raceCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
     FX.clear();
     overtakeLayer.innerHTML = "";
@@ -1156,12 +1319,15 @@ const ws = connectWS((data) => {
     handleRacingEvent(data);
   }
   if (data.type === "prediction_leaderboard") {
-    renderPredictionLeaderboard(data.top);
+    renderPredictionLeaderboard(data.top, data.mode);
+  }
+  if (data.type === "gambling_result") {
+    handleGamblingResult(data);
   }
   if (data.type === "prediction_window") {
     lastPredictionWindow = data;
     if (data.state === "open") {
-      showMcLine("prediction_open", { round: data.round });
+      showMcLine(data.mode === "gambling" ? "gambling_open" : "prediction_open", { round: data.round });
     }
   }
   refresh();

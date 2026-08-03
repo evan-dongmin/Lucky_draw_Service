@@ -48,6 +48,10 @@
         <h3>예측 리더보드</h3>
         <ol id="prediction-leaderboard-list"></ol>
       </div>
+      <div id="gambling-odds-panel" class="glass side-panel hidden">
+        <h3>실시간 배당률</h3>
+        <div id="gambling-odds-list"></div>
+      </div>
     </aside>
 
     <!-- 하단: 팀 레전드 -->
@@ -68,7 +72,10 @@
     <div id="overlay-idle" class="overlay">
       <h1 class="title-xl">🏁 타추위 <b>GRAND PRIX</b></h1>
       <p id="ws-status" class="lead">연결 대기 중...</p>
-      <button id="btn-demo-start" class="cta">🚀 데모로 체험하기</button>
+      <div class="cta-row">
+        <button id="btn-demo-start" class="cta">🚀 데모로 체험하기</button>
+        <button id="btn-demo-start-gambling" class="cta cta-secondary">🎰 갬블링 모드로 체험하기</button>
+      </div>
       <p class="hint">클릭하면 효과음과 AI MC 음성 해설이 함께 켜집니다</p>
     </div>
 

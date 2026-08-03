@@ -8,6 +8,19 @@ const modeSelectEl = document.getElementById("mode-select");
 const totalSecondsEl = document.getElementById("total-seconds");
 const totalSecondsHintEl = document.getElementById("total-seconds-hint");
 const predictionsEnabledEl = document.getElementById("predictions-enabled");
+const predictionModeRowEl = document.getElementById("prediction-mode-row");
+const predictionModeSelectEl = document.getElementById("prediction-mode-select");
+const gamblingWarningEl = document.getElementById("gambling-warning");
+
+function updatePredictionModeVisibility() {
+  const enabled = predictionsEnabledEl.checked;
+  predictionModeRowEl.classList.toggle("hidden", !enabled);
+  const isGambling = enabled && predictionModeSelectEl.value === "gambling";
+  gamblingWarningEl.classList.toggle("hidden", !isGambling);
+}
+predictionsEnabledEl.addEventListener("change", updatePredictionModeVisibility);
+predictionModeSelectEl.addEventListener("change", updatePredictionModeVisibility);
+updatePredictionModeVisibility();
 
 // Director의 하한(app/director.py MIN_TOTAL_SECONDS_WITH/WITHOUT_PREDICTIONS)과
 // 반드시 같은 값을 유지해야 한다. 서버가 최종 검증을 하지만, 그 전에 화면에서
@@ -135,6 +148,7 @@ document.getElementById("btn-create-session").addEventListener("click", async ()
         mode: modeSelectEl.value,
         total_seconds: parseFloat(totalSecondsEl.value),
         predictions_enabled: predictionsEnabledEl.checked,
+        prediction_mode: predictionModeSelectEl.value,
       }),
     });
     await refreshSession();
@@ -241,7 +255,10 @@ function renderSession(session) {
     commitDisplayEl.innerHTML = "";
     return;
   }
-  sessionInfoEl.innerHTML = `참가자 ${session.participants.length}명 · 당첨 인원 ${session.draw_count}명 · 제외 ${session.excluded_ids.length}명 · 모드 ${session.mode}`;
+  const predictionModeLabel = session.predictions_enabled
+    ? ` · 예측게임 ${session.prediction_mode === "gambling" ? "🎰갬블링" : "확신도배분"}`
+    : "";
+  sessionInfoEl.innerHTML = `참가자 ${session.participants.length}명 · 당첨 인원 ${session.draw_count}명 · 제외 ${session.excluded_ids.length}명 · 모드 ${session.mode}${predictionModeLabel}`;
 
   const latest = session.draws[session.draws.length - 1];
   if (!latest) {

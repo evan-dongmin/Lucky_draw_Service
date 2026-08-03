@@ -476,8 +476,15 @@ html, body {
   margin-top: 1.2rem;
 }
 
-.cta {
+.cta-row {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: center;
   margin-top: 1.6rem;
+}
+
+.cta {
   padding: 1.1rem 2.4rem;
   font-size: 1.3rem;
   border-radius: 0.9rem;
@@ -494,6 +501,54 @@ html, body {
 .cta:disabled {
   opacity: 0.6;
   cursor: default;
+}
+
+.cta-secondary {
+  background: linear-gradient(90deg, #ff9f45, #ffd166);
+  box-shadow: 0 10px 32px rgba(255, 159, 69, 0.35);
+}
+
+/* ---------------------------------------------------------------------
+   팀 특수능력 (레전드 아이콘) + 갬블링 실시간 배당률 패널
+--------------------------------------------------------------------- */
+
+.legend-ability {
+  margin-left: 0.15rem;
+  filter: drop-shadow(0 0 3px rgba(255, 209, 102, 0.6));
+}
+
+#gambling-odds-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  font-size: 0.85rem;
+}
+
+.odds-round-title {
+  color: #ff9f45;
+  font-weight: 700;
+  margin-bottom: 0.3rem;
+}
+
+.odds-row {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 0.5rem;
+  padding: 0.15rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.odds-row span:nth-child(2) {
+  color: #c7cedb;
+  font-family: "Consolas", monospace;
+}
+
+.odds-row span:nth-child(3) {
+  color: #7cf29c;
+  font-family: "Consolas", monospace;
+  font-weight: 700;
+  min-width: 3.2rem;
+  text-align: right;
 }
 
 .reel {

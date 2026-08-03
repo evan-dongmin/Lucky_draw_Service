@@ -10,15 +10,19 @@ const gameViewEl = document.getElementById("game-view");
 const myNameEl = document.getElementById("my-name");
 const myScoreEl = document.getElementById("my-score");
 const cardsEl = document.getElementById("cards");
+const leaderboardTitleEl = document.getElementById("leaderboard-title");
 const leaderboardListEl = document.getElementById("leaderboard-list");
 
 const ROUND_LABELS = { 1: "1라운드", 2: "2라운드", 3: "3라운드" };
 const STATE_LABELS = { pending: "대기 중", open: "선택 중", locked: "확정" };
+const BET_STATE_LABELS = { pending: "대기 중", open: "베팅 중", locked: "정산됨" };
 
 let departmentsData = {};
 let myToken = localStorage.getItem(TOKEN_KEY);
 let myParticipantId = null;
 let myName = "";
+let myMode = "confidence"; // "confidence" | "gambling" -- /api/predict/join, /api/predict/me 응답에서 갱신
+let liveRefreshTimer = null;
 
 function showOnboarding() {
   onboardingViewEl.classList.remove("hidden");
@@ -76,6 +80,7 @@ async function join(participantId, name) {
     });
     myToken = result.token;
     myParticipantId = result.participant_id;
+    myMode = result.mode || "confidence";
     myName = name;
     localStorage.setItem(TOKEN_KEY, myToken);
     showGame();
@@ -95,6 +100,7 @@ async function tryRestoreSession() {
   try {
     const me = await fetchJSON(`/api/predict/me?token=${encodeURIComponent(myToken)}`);
     myParticipantId = me.card.participant_id;
+    myMode = me.mode || "confidence";
     showGame();
     renderMe(me);
     await refreshLeaderboard();
@@ -112,7 +118,11 @@ function cardStateFor(me, round) {
   return "pending";
 }
 
-function renderCard(me, round) {
+// ---------------------------------------------------------------------------
+// 확신도 배분(무손실) 카드 렌더링
+// ---------------------------------------------------------------------------
+
+function renderConfidenceCard(me, round) {
   const state = cardStateFor(me, round);
   const alloc = me.card.alloc[round];
   const locked = me.card.locked[round];
@@ -132,14 +142,15 @@ function renderCard(me, round) {
     targetHtml = `<p>대상은 이 라운드가 시작될 때 선택할 수 있습니다.</p>`;
   } else if (state === "open") {
     const candidates = me.round_candidates[round] || [];
+    const dist = (me.live && me.live[round] && me.live[round].distribution) || {};
     targetHtml =
       `<p>지금 선택하세요! (미선택 시 시간 종료 후 무작위 배정)</p>` +
       `<div class="choice-list">` +
       candidates
-        .map(
-          (c) =>
-            `<button class="choice-btn target-btn ${target === c ? "selected" : ""}" data-round="${round}" data-target="${c}">${c}</button>`
-        )
+        .map((c) => {
+          const pct = dist[c] ? Math.round(dist[c] * 100) : 0;
+          return `<button class="choice-btn target-btn ${target === c ? "selected" : ""}" data-round="${round}" data-target="${c}">${c}<span class="pct-label">${pct}%</span></button>`;
+        })
         .join("") +
       `</div>`;
   } else {
@@ -158,19 +169,6 @@ function renderCard(me, round) {
       ${targetHtml}
     </div>
   `;
-}
-
-function renderMe(me) {
-  myNameEl.textContent = myName || me.card.participant_id;
-  myScoreEl.textContent = `내 점수: ${me.card.score}점`;
-  cardsEl.innerHTML =
-    [1, 2, 3].map((r) => renderCard(me, r)).join("") +
-    `<button id="btn-save-alloc">확신도 저장</button>`;
-
-  document.getElementById("btn-save-alloc").addEventListener("click", () => saveAllocation(me));
-  for (const btn of cardsEl.querySelectorAll(".target-btn")) {
-    btn.addEventListener("click", () => chooseTarget(parseInt(btn.dataset.round, 10), btn.dataset.target));
-  }
 }
 
 async function saveAllocation(me) {
@@ -206,6 +204,146 @@ async function chooseTarget(round, target) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// 사이버머니 갬블링(승인됨) 카드 렌더링 -- 패리뮤추얼 베팅
+// ---------------------------------------------------------------------------
+
+function renderBetCard(me, round) {
+  const state = cardStateFor(me, round);
+  const bet = me.card.bets[round]; // {target, amount} | null
+  const net = me.card.net ? me.card.net[round] : undefined;
+
+  let bodyHtml = "";
+  if (state === "pending") {
+    bodyHtml = `<p>이 라운드가 시작되면 베팅할 수 있습니다.</p>`;
+  } else if (state === "open") {
+    const candidates = me.round_candidates[round] || [];
+    const live = (me.live && me.live[round]) || { odds: {} };
+    const maxBet = me.card.balance + (bet ? bet.amount : 0);
+    const defaultAmount = bet ? bet.amount : Math.min(50, me.card.balance);
+    const oddsHtml = candidates
+      .map((c) => {
+        const odds = live.odds ? live.odds[c] : null;
+        const label = odds ? `${odds}배` : "최초 베팅";
+        const isMine = bet && bet.target === c;
+        return `<button class="choice-btn bet-target-btn ${isMine ? "selected" : ""}" data-round="${round}" data-target="${c}">
+          <span class="bet-target-name">${c}</span><span class="odds-label">${label}</span>
+        </button>`;
+      })
+      .join("");
+    bodyHtml = `
+      <p class="balance-line">보유 사이버머니: <strong>${me.card.balance}</strong></p>
+      ${bet ? `<p class="hint-line">현재 베팅: <strong>${bet.target}</strong>에 ${bet.amount} -- 0으로 다시 걸면 취소됩니다</p>` : `<p class="hint-line">지금 베팅하세요! 몰리는 쪽은 배당이 낮아집니다.</p>`}
+      <div class="choice-list odds-list">${oddsHtml}</div>
+      <div class="bet-amount-row">
+        <input type="number" min="0" max="${maxBet}" step="10" value="${defaultAmount}" id="bet-amount-${round}" />
+        <button class="btn-bet-submit" data-round="${round}">베팅하기</button>
+      </div>
+    `;
+  } else {
+    if (bet) {
+      const resultLabel =
+        net === undefined
+          ? "정산 대기 중..."
+          : net >= 0
+          ? `<span class="net-win">+${net} 획득</span>`
+          : `<span class="net-lose">${net} 손실</span>`;
+      bodyHtml = `<p>베팅: <strong>${bet.target}</strong>에 ${bet.amount} -- ${resultLabel}</p>`;
+    } else {
+      bodyHtml = `<p>이번 라운드는 베팅하지 않았습니다(구경만 했어요).</p>`;
+    }
+  }
+
+  return `
+    <div class="pred-card bet-card state-${state}">
+      <div class="pred-card-header">
+        <strong>${ROUND_LABELS[round]}</strong>
+        <span class="pred-card-badge">${BET_STATE_LABELS[state]}</span>
+      </div>
+      ${bodyHtml}
+    </div>
+  `;
+}
+
+async function placeBet(round, target, amount) {
+  try {
+    await fetchJSON("/api/bet/place", {
+      method: "POST",
+      body: JSON.stringify({ token: myToken, round, target, amount }),
+    });
+    await refreshMe();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// 공용 렌더/새로고침
+// ---------------------------------------------------------------------------
+
+function renderMe(me) {
+  myMode = me.mode || myMode;
+  myNameEl.textContent = myName || me.card.participant_id;
+  myScoreEl.textContent =
+    myMode === "gambling" ? `보유 사이버머니: ${me.card.balance}` : `내 점수: ${me.card.score}점`;
+
+  if (myMode === "gambling") {
+    cardsEl.innerHTML = [1, 2, 3].map((r) => renderBetCard(me, r)).join("");
+    for (const btn of cardsEl.querySelectorAll(".bet-target-btn")) {
+      btn.addEventListener("click", () => {
+        const round = parseInt(btn.dataset.round, 10);
+        for (const b of cardsEl.querySelectorAll(`.bet-target-btn[data-round="${round}"]`)) {
+          b.classList.remove("selected");
+        }
+        btn.classList.add("selected");
+        const input = document.getElementById(`bet-amount-${round}`);
+        if (input) input.dataset.target = btn.dataset.target;
+      });
+    }
+    for (const btn of cardsEl.querySelectorAll(".btn-bet-submit")) {
+      btn.addEventListener("click", () => {
+        const round = parseInt(btn.dataset.round, 10);
+        const input = document.getElementById(`bet-amount-${round}`);
+        const amount = parseInt(input.value, 10) || 0;
+        const selected = cardsEl.querySelector(`.bet-target-btn.selected[data-round="${round}"]`);
+        const target = selected ? selected.dataset.target : input.dataset.target;
+        if (!target) {
+          alert("먼저 베팅할 대상을 선택하세요.");
+          return;
+        }
+        placeBet(round, target, amount);
+      });
+    }
+  } else {
+    cardsEl.innerHTML =
+      [1, 2, 3].map((r) => renderConfidenceCard(me, r)).join("") +
+      `<button id="btn-save-alloc">확신도 저장</button>`;
+    document.getElementById("btn-save-alloc").addEventListener("click", () => saveAllocation(me));
+    for (const btn of cardsEl.querySelectorAll(".target-btn")) {
+      btn.addEventListener("click", () => chooseTarget(parseInt(btn.dataset.round, 10), btn.dataset.target));
+    }
+  }
+
+  updateLiveRefreshTimer(me);
+}
+
+// 베팅/선택 창이 열려 있는 동안에는 다른 참가자의 선택으로 배당률·분포가
+// 계속 바뀐다. 서버가 실시간으로 밀어주지 않으므로(브로드캐스트 폭주 방지),
+// 창이 열려 있을 때만 짧은 주기로 폴링해 "표가 몰립니다" 감각을 살린다.
+function anyRoundOpen(me) {
+  return Object.values(me.round_state).some((s) => s === "open");
+}
+
+function updateLiveRefreshTimer(me) {
+  const shouldPoll = anyRoundOpen(me);
+  if (shouldPoll && !liveRefreshTimer) {
+    liveRefreshTimer = setInterval(refreshMe, 2500);
+  } else if (!shouldPoll && liveRefreshTimer) {
+    clearInterval(liveRefreshTimer);
+    liveRefreshTimer = null;
+  }
+}
+
 async function refreshMe() {
   if (!myToken) return;
   try {
@@ -218,9 +356,15 @@ async function refreshMe() {
 
 async function refreshLeaderboard() {
   try {
-    const result = await fetchJSON("/api/predict/leaderboard");
+    const endpoint = myMode === "gambling" ? "/api/bet/leaderboard" : "/api/predict/leaderboard";
+    const result = await fetchJSON(endpoint);
+    leaderboardTitleEl.textContent = myMode === "gambling" ? "사이버머니 리더보드" : "리더보드";
     leaderboardListEl.innerHTML = result.top
-      .map((entry) => `<li>${entry.name} - ${entry.score}점</li>`)
+      .map((entry) =>
+        myMode === "gambling"
+          ? `<li>${entry.name} - ${entry.balance}</li>`
+          : `<li>${entry.name} - ${entry.score}점</li>`
+      )
       .join("");
   } catch (e) {
     console.error(e);
@@ -228,7 +372,7 @@ async function refreshLeaderboard() {
 }
 
 connectWS((data) => {
-  if (["phase", "prediction_window", "round_revealed"].includes(data.type)) {
+  if (["phase", "prediction_window", "round_revealed", "gambling_result"].includes(data.type)) {
     refreshMe();
   }
   if (data.type === "prediction_leaderboard" || data.type === "round_revealed") {
