@@ -462,6 +462,31 @@ function abilityForDepartment(name) {
   return departmentAbilityCache.get(name) || ABILITY_ROSTER[0];
 }
 
+const ABILITY_BY_ID = new Map(ABILITY_ROSTER.map((a) => [a.id, a]));
+
+// 참가자가 모바일에서 직접 고른 캐릭터(app/characters.py와 id 동일) --
+// 고르지 않은 참가자는 부서 기반 자동 배정으로 폴백한다. 카트 몸체 색은
+// 항상 부서색을 유지하고(팀 우열을 한눈에 보기 위한 정보이므로), 능력
+// (이모지 이펙트·MC 문구)만 개인화된다.
+let characterChoiceByPid = {};
+
+async function fetchCharacterChoices() {
+  try {
+    const data = await fetchJSON("/api/character/choices");
+    characterChoiceByPid = data.choices || {};
+  } catch (e) {
+    /* 세션 없음 등 -- 다음 시도에서 자연 복구되므로 조용히 무시 */
+  }
+}
+
+function abilityForParticipant(pid) {
+  const chosenId = characterChoiceByPid[pid];
+  const chosen = chosenId && ABILITY_BY_ID.get(chosenId);
+  if (chosen) return chosen;
+  const group = currentPidToGroup[pid];
+  return group ? abilityForDepartment(group) : ABILITY_ROSTER[0];
+}
+
 const departmentColorCache = new Map();
 const departmentAbilityCache = new Map();
 let currentPidToGroup = {};
@@ -503,6 +528,7 @@ function ensureGroupLookup(latest, drawKey) {
     departmentAbilityCache.set(name, ABILITY_ROSTER[idx % ABILITY_ROSTER.length]);
   });
   renderTeamLegend(groupNames);
+  fetchCharacterChoices();
 }
 
 function renderTeamLegend(groupNames) {
@@ -543,8 +569,7 @@ function computeCamera(leaderX, round, W, H) {
 function spawnOvertakeBadge(pid) {
   const lane = laneFor(pid, lastLaneCount);
   const x = previousTickPositions[pid] !== undefined ? previousTickPositions[pid] : 0.5;
-  const group = currentPidToGroup[pid];
-  const ability = group ? abilityForDepartment(group) : ABILITY_ROSTER[0];
+  const ability = abilityForParticipant(pid);
   const el = document.createElement("div");
   el.className = "overtake-badge";
   el.textContent = ability.emoji;
@@ -608,7 +633,7 @@ function renderPositionTower(sortedIds, positions, passLine) {
       const atRisk = !isLeader && positions[pid] < passLine && passLine - positions[pid] < 0.06;
       const rowClass = isLeader ? "pos-leader" : atRisk ? "pos-risk" : "";
       const label = pid.length > 14 ? pid.slice(0, 14) + "…" : pid;
-      const abilityBadge = isLeader && group ? `${abilityForDepartment(group).emoji} ` : "";
+      const abilityBadge = isLeader ? `${abilityForParticipant(pid).emoji} ` : "";
       return `<li class="pos-row ${rowClass}">
         <span class="pos-rank">${i + 1}</span>
         <span class="pos-swatch" style="background:${swatch}"></span>
@@ -1077,6 +1102,7 @@ function handleRacingEvent(data) {
       if (roundIndex === 3) photoFinishShownForRound = null;
       runStartLights(roundIndex);
       SFX.startEngine();
+      if (roundIndex === 1) fetchCharacterChoices(); // 레이스 시작 직전 최종 선택 스냅샷
     } else {
       SFX.stopEngine();
       FX.setSpeedLines(0);
@@ -1291,6 +1317,7 @@ const ws = connectWS((data) => {
     lastFinalShownFor = null;
     currentDrawKeyForGroups = null;
     currentPidToGroup = {};
+    characterChoiceByPid = {};
     previousTickPositions = {};
     previousTickOrder = [];
     previousTickRound = null;

@@ -219,3 +219,84 @@ button {
   color: #ff8080;
   font-weight: 700;
 }
+
+/* -- 캐릭터/카트 선택 -------------------------------------------------- */
+
+.character-list {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.6rem;
+}
+
+.character-list .choice-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.9rem 0.5rem;
+}
+
+.character-emoji {
+  font-size: 1.8rem;
+}
+
+.character-label {
+  font-size: 0.85rem;
+}
+
+.my-character {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.6rem;
+  margin: 0.3rem 0 0.8rem;
+}
+
+#my-character-display {
+  font-size: 1.05rem;
+  color: #ffd166;
+}
+
+#btn-change-character {
+  padding: 0.35rem 0.7rem;
+  font-size: 0.85rem;
+  background: #2a3242;
+}
+
+.character-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.2rem;
+  z-index: 50;
+}
+
+/* .hidden{display:none}이 파일 앞쪽에 정의돼 있어 동일 셀렉터 우선순위상
+   뒤에 오는 .character-overlay{display:flex}에 밀릴 수 있다 -- 클래스
+   두 개짜리 셀렉터로 명시적 우선순위를 준다. */
+.character-overlay.hidden {
+  display: none;
+}
+
+.character-overlay-inner {
+  background: #171c26;
+  border: 1px solid #2a3242;
+  border-radius: 0.75rem;
+  padding: 1.2rem;
+  width: 100%;
+  max-width: 420px;
+}
+
+.character-overlay-inner h2 {
+  margin-top: 0;
+  text-align: center;
+}
+
+#btn-close-character-overlay {
+  width: 100%;
+  margin-top: 0.8rem;
+  background: #2a3242;
+}

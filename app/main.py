@@ -848,7 +848,7 @@ async def predict_me(token: str) -> dict[str, Any]:
     if not session.predictions_enabled:
         # 예측/베팅 게임이 꺼진 순수 레이싱 세션 -- 카드를 만들 필요가
         # 없다(만들어봐야 라운드가 영원히 열리지 않는 죽은 데이터가 된다).
-        return {"predictions_enabled": False, "mode": None, "card": None}
+        return {"predictions_enabled": False, "mode": None, "card": None, "participant_id": pid}
     engine = _active_engine(session)
     card = engine.get_or_create_card(pid)
     open_rounds = [r for r, s in engine.round_state.items() if s == "open"]

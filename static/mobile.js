@@ -3,25 +3,34 @@ const TOKEN_KEY = "luckydraw_predict_token";
 const onboardingViewEl = document.getElementById("onboarding-view");
 const stepDepartmentEl = document.getElementById("onboarding-step-department");
 const stepNameEl = document.getElementById("onboarding-step-name");
+const stepCharacterEl = document.getElementById("onboarding-step-character");
 const departmentListEl = document.getElementById("department-list");
 const nameListEl = document.getElementById("name-list");
+const characterListEl = document.getElementById("character-list");
 const onboardingErrorEl = document.getElementById("onboarding-error");
 const gameViewEl = document.getElementById("game-view");
 const myNameEl = document.getElementById("my-name");
 const myScoreEl = document.getElementById("my-score");
+const myCharacterDisplayEl = document.getElementById("my-character-display");
 const cardsEl = document.getElementById("cards");
+const predictionsOffNoteEl = document.getElementById("predictions-off-note");
+const leaderboardPanelEl = document.getElementById("leaderboard-panel");
 const leaderboardTitleEl = document.getElementById("leaderboard-title");
 const leaderboardListEl = document.getElementById("leaderboard-list");
+const characterOverlayEl = document.getElementById("character-overlay");
+const characterOverlayListEl = document.getElementById("character-overlay-list");
 
 const ROUND_LABELS = { 1: "1라운드", 2: "2라운드", 3: "3라운드" };
 const STATE_LABELS = { pending: "대기 중", open: "선택 중", locked: "확정" };
 const BET_STATE_LABELS = { pending: "대기 중", open: "베팅 중", locked: "정산됨" };
 
 let departmentsData = {};
+let characterRoster = [];
 let myToken = localStorage.getItem(TOKEN_KEY);
 let myParticipantId = null;
 let myName = "";
 let myMode = "confidence"; // "confidence" | "gambling" -- /api/predict/join, /api/predict/me 응답에서 갱신
+let myCharacterId = null;
 let liveRefreshTimer = null;
 
 function showOnboarding() {
@@ -38,7 +47,7 @@ async function loadDepartments() {
   try {
     departmentsData = await fetchJSON("/api/predict/departments");
   } catch (e) {
-    onboardingErrorEl.textContent = "아직 명단이 등록되지 않았거나 예측 게임이 비활성화되어 있습니다.";
+    onboardingErrorEl.textContent = "아직 명단이 등록되지 않았거나 레이싱 세션이 아닙니다.";
     return;
   }
   departmentListEl.innerHTML = Object.keys(departmentsData)
@@ -71,6 +80,101 @@ document.getElementById("btn-back-to-department").addEventListener("click", () =
   stepDepartmentEl.classList.remove("hidden");
 });
 
+// ---------------------------------------------------------------------------
+// 캐릭터/카트 선택 -- 순수 연출용(순위·통과 여부에 영향 없음). 고르지
+// 않으면 무대 화면이 소속 부서 기준으로 자동 배정한다.
+// ---------------------------------------------------------------------------
+
+async function loadCharacterRoster() {
+  if (characterRoster.length) return characterRoster;
+  try {
+    const result = await fetchJSON("/api/character/roster");
+    characterRoster = result.roster || [];
+  } catch (e) {
+    characterRoster = [];
+  }
+  return characterRoster;
+}
+
+function characterButtonsHtml(selectedId) {
+  return characterRoster
+    .map(
+      (c) => `<button class="choice-btn character-btn ${c.id === selectedId ? "selected" : ""}" data-id="${c.id}">
+        <span class="character-emoji">${c.emoji}</span><span class="character-label">${c.label}</span>
+      </button>`
+    )
+    .join("");
+}
+
+async function showCharacterStep() {
+  await loadCharacterRoster();
+  characterListEl.innerHTML = characterButtonsHtml(myCharacterId);
+  for (const btn of characterListEl.querySelectorAll(".character-btn")) {
+    btn.addEventListener("click", () => chooseCharacter(btn.dataset.id, false));
+  }
+  stepNameEl.classList.add("hidden");
+  stepCharacterEl.classList.remove("hidden");
+}
+
+async function chooseCharacter(characterId, fromOverlay) {
+  try {
+    await fetchJSON("/api/character/choose", {
+      method: "POST",
+      body: JSON.stringify({ token: myToken, character_id: characterId }),
+    });
+    myCharacterId = characterId;
+    renderMyCharacterDisplay();
+  } catch (e) {
+    alert(e.message);
+    return;
+  }
+  if (fromOverlay) {
+    closeCharacterOverlay();
+  } else {
+    showGame();
+    await refreshMe();
+    await refreshLeaderboard();
+  }
+}
+
+function renderMyCharacterDisplay() {
+  const found = characterRoster.find((c) => c.id === myCharacterId);
+  myCharacterDisplayEl.textContent = found ? `${found.emoji} ${found.label}` : "카트 미선택(부서 기준 자동 배정)";
+}
+
+async function openCharacterOverlay() {
+  await loadCharacterRoster();
+  characterOverlayListEl.innerHTML = characterButtonsHtml(myCharacterId);
+  for (const btn of characterOverlayListEl.querySelectorAll(".character-btn")) {
+    btn.addEventListener("click", () => chooseCharacter(btn.dataset.id, true));
+  }
+  characterOverlayEl.classList.remove("hidden");
+}
+
+function closeCharacterOverlay() {
+  characterOverlayEl.classList.add("hidden");
+}
+
+document.getElementById("btn-change-character").addEventListener("click", openCharacterOverlay);
+document.getElementById("btn-close-character-overlay").addEventListener("click", closeCharacterOverlay);
+document.getElementById("btn-skip-character").addEventListener("click", async () => {
+  renderMyCharacterDisplay();
+  showGame();
+  await refreshMe();
+  await refreshLeaderboard();
+});
+
+async function refreshMyCharacter() {
+  if (!myToken) return;
+  try {
+    const result = await fetchJSON(`/api/character/me?token=${encodeURIComponent(myToken)}`);
+    myCharacterId = result.character_id;
+    renderMyCharacterDisplay();
+  } catch (e) {
+    /* 캐릭터 조회 실패는 치명적이지 않다 -- 표시만 비워둔다 */
+  }
+}
+
 async function join(participantId, name) {
   onboardingErrorEl.textContent = "";
   try {
@@ -83,9 +187,7 @@ async function join(participantId, name) {
     myMode = result.mode || "confidence";
     myName = name;
     localStorage.setItem(TOKEN_KEY, myToken);
-    showGame();
-    await refreshMe();
-    await refreshLeaderboard();
+    await showCharacterStep();
   } catch (e) {
     onboardingErrorEl.textContent = e.message;
   }
@@ -99,11 +201,12 @@ async function tryRestoreSession() {
   }
   try {
     const me = await fetchJSON(`/api/predict/me?token=${encodeURIComponent(myToken)}`);
-    myParticipantId = me.card.participant_id;
+    myParticipantId = me.participant_id;
     myMode = me.mode || "confidence";
     showGame();
     renderMe(me);
-    await refreshLeaderboard();
+    await refreshMyCharacter();
+    if (me.predictions_enabled) await refreshLeaderboard();
   } catch (e) {
     localStorage.removeItem(TOKEN_KEY);
     myToken = null;
@@ -282,8 +385,23 @@ async function placeBet(round, target, amount) {
 // ---------------------------------------------------------------------------
 
 function renderMe(me) {
+  myNameEl.textContent = myName || me.participant_id || (me.card && me.card.participant_id) || "";
+
+  if (!me.predictions_enabled) {
+    myScoreEl.textContent = "";
+    cardsEl.innerHTML = "";
+    predictionsOffNoteEl.classList.remove("hidden");
+    leaderboardPanelEl.classList.add("hidden");
+    if (liveRefreshTimer) {
+      clearInterval(liveRefreshTimer);
+      liveRefreshTimer = null;
+    }
+    return;
+  }
+  predictionsOffNoteEl.classList.add("hidden");
+  leaderboardPanelEl.classList.remove("hidden");
+
   myMode = me.mode || myMode;
-  myNameEl.textContent = myName || me.card.participant_id;
   myScoreEl.textContent =
     myMode === "gambling" ? `보유 사이버머니: ${me.card.balance}` : `내 점수: ${me.card.score}점`;
 

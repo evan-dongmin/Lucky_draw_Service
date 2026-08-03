@@ -59,6 +59,7 @@ def test_predict_me_reports_predictions_disabled_without_creating_card(client):
     body = resp.json()
     assert body["predictions_enabled"] is False
     assert body["card"] is None
+    assert body["participant_id"] == pid
 
 
 def test_character_choose_and_me_roundtrip(client):
