@@ -1,0 +1,12 @@
+.venv
+.git
+.pytest_cache
+__pycache__
+*.pyc
+data/session_snapshot.json
+data/prediction_snapshot.json
+data/mc_cache.json
+tests
+scripts
+*.md
+*.txt

@@ -1,0 +1,15 @@
+# Render.com 블루프린트. 대시보드에서 "New +" -> "Blueprint" -> 이 저장소
+# 선택만 하면 아래 설정이 자동 반영된다(Dockerfile 기반, 웹소켓 지원).
+# 무료 플랜은 트래픽이 없으면 슬립되므로, 행사 당일에는 시작 10~15분 전에
+# 한 번 접속해 깨워두는 것을 권장한다.
+services:
+  - type: web
+    name: taachuwi-grandprix
+    runtime: docker
+    plan: free
+    envVars:
+      - key: HOST
+        value: 0.0.0.0
+      # ANTHROPIC_API_KEY는 대시보드에서 직접 설정(선택 사항 -- 없어도
+      # MC 정적 폴백 멘트로 전 기능이 동작한다).
+    healthCheckPath: /
