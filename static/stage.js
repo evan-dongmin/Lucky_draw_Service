@@ -35,6 +35,7 @@ const bannerTextEl = document.getElementById("banner-text");
 const bannerSubEl = document.getElementById("banner-sub");
 const podiumStageEl = document.getElementById("podium-stage");
 const podiumRestEl = document.getElementById("podium-rest");
+const podiumBasisHintEl = document.getElementById("podium-basis-hint");
 const btnSound = document.getElementById("btn-sound");
 const btnVoice = document.getElementById("btn-voice");
 const btnFullscreen = document.getElementById("btn-fullscreen");
@@ -594,16 +595,39 @@ function jitterFor(pid) {
 
 // 웨이포인트 10구간(11점) -- 진폭을 들쭉날쭉하게 둬서(얕은 굴곡 + 깊은
 // 굴곡을 섞음) 같은 폭이 반복되는 사인파처럼 안 보이게 했다. 단, 구간당
-// 진폭 변화폭(ΔY/ΔT)은 기존에 검증된 값(~3.4) 이내로 제한했다 -- 그보다
-// 급하게 꺾으면 Catmull-Rom이 오버슈트해 리본 폴리곤이 스스로 겹치는
-// "나비매듭" 아티팩트가 생긴다(실제로 한 번 겪음). 굴곡이 늘어난 만큼
-// 실제 호 길이(TRACK_LENGTH)도 늘어나 arc-length 균등 LUT 덕분에 카트가
-// 체감상 "더 먼 트랙"을 도는 것처럼 보인다(진행률 0..1의 의미 자체는
-// 서버 쪽과 무관하게 그대로 유지됨).
-const TRACK_WAYPOINT_T = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
-// 중심선 대비 세로 진폭(half-band 비율)
-const TRACK_WAYPOINT_Y_FRAC = [0, -0.2, -0.34, -0.16, 0.18, 0.34, 0.18, -0.14, -0.3, -0.1, 0];
-const TRACK_HALF_WIDTH_FRAC = 0.5; // half-band 대비 트랙 반폭(굴곡이 늘어 여유를 더 뒀다)
+// 진폭 변화폭(ΔY/ΔT)은 검증된 값(~3.4) 이내로 제한했다 -- 그보다 급하게
+// 꺾으면 Catmull-Rom이 오버슈트해 리본 폴리곤이 스스로 겹치는 "나비매듭"
+// 아티팩트가 생긴다(실제로 한 번 겪음). 굴곡이 늘어난 만큼 실제 호 길이도
+// 늘어나 arc-length 균등 LUT 덕분에 카트가 체감상 "더 먼 트랙"을 도는
+// 것처럼 보인다(진행률 0..1의 의미 자체는 서버 쪽과 무관하게 그대로 유지됨).
+//
+// 라운드마다 트랙을 다르게 둔다(사용자 요청 -- 매번 같은 맵이면 지루하다).
+// R1은 250대가 한눈에 들어와야 하니 완만하게, R2는 중간, R3(결선·클로즈업
+// 카메라)는 가장 굴곡지게 -- 세 세트 전부 위 ΔY/ΔT 안전 규칙을 지킨다.
+const TRACK_DEFS = {
+  1: {
+    // 웨이포인트 수를 줄이고 간격을 넓혀 방향 전환 지점(=곡률이 가장
+    // 큰 지점)의 곡률 자체를 낮췄다 -- ΔY/ΔT 비율을 낮춰도 halfWidth가
+    // 넓으면 커브 스트라이프(외곽 연석)가 방향 전환 지점에서 서로
+    // 겹쳐 보이는 걸 스크린샷으로 실제 확인했다(리본 자체가 아니라
+    // 연석 사각형들이 급격한 회전 때문에 겹치는 문제). 250대가 한눈에
+    // 들어와야 하는 R1은 어차피 시각 디테일보다 가독성이 중요하므로
+    // 가장 완만하게 뒀다.
+    t: [0, 0.25, 0.5, 0.75, 1.0],
+    yFrac: [0, -0.2, 0.2, -0.15, 0],
+    halfWidthFrac: 0.55,
+  },
+  2: {
+    t: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
+    yFrac: [0, -0.2, -0.34, -0.16, 0.18, 0.34, 0.18, -0.14, -0.3, -0.1, 0],
+    halfWidthFrac: 0.5,
+  },
+  3: {
+    t: [0, 0.08, 0.16, 0.24, 0.32, 0.42, 0.52, 0.62, 0.72, 0.82, 0.91, 1.0],
+    yFrac: [0, -0.16, -0.3, -0.1, 0.17, 0.32, 0.12, -0.22, -0.32, -0.08, 0.22, 0],
+    halfWidthFrac: 0.48,
+  },
+};
 const TRACK_LUT_SIZE = 400;
 const TRACK_RAW_SAMPLES_PER_SEGMENT = 40;
 
@@ -626,15 +650,16 @@ function catmullRomPoint(p0, p1, p2, p3, t) {
   };
 }
 
-function buildTrackLUT(W, H) {
+function buildTrackLUT(W, H, round) {
+  const def = TRACK_DEFS[round] || TRACK_DEFS[1];
   const trackTop = H * 0.14;
   const trackBottom = H * 0.86;
   const centerY = (trackTop + trackBottom) / 2;
   const halfBand = (trackBottom - trackTop) / 2;
-  const halfWidth = halfBand * TRACK_HALF_WIDTH_FRAC;
-  const pts = TRACK_WAYPOINT_T.map((t, i) => ({
+  const halfWidth = halfBand * def.halfWidthFrac;
+  const pts = def.t.map((t, i) => ({
     x: TRACK_PAD_X + t * (W - TRACK_PAD_X * 2),
-    y: centerY + TRACK_WAYPOINT_Y_FRAC[i] * halfBand,
+    y: centerY + def.yFrac[i] * halfBand,
   }));
 
   const padded = [pts[0], ...pts, pts[pts.length - 1]];
@@ -679,19 +704,23 @@ function buildTrackLUT(W, H) {
   return { lut, length: total, halfWidth };
 }
 
-let trackLUTCache = null; // { w, h, lut, length, halfWidth }
-function getTrackLUT() {
+const trackLUTCacheByRound = new Map(); // round -> { w, h, lut, length, halfWidth }
+function getTrackLUT(round) {
+  const r = round || 1;
   const W = window.innerWidth;
   const H = window.innerHeight;
-  if (!trackLUTCache || trackLUTCache.w !== W || trackLUTCache.h !== H) {
-    const built = buildTrackLUT(W, H);
-    trackLUTCache = { w: W, h: H, ...built };
+  const cached = trackLUTCacheByRound.get(r);
+  if (!cached || cached.w !== W || cached.h !== H) {
+    const built = buildTrackLUT(W, H, r);
+    const entry = { w: W, h: H, ...built };
+    trackLUTCacheByRound.set(r, entry);
+    return entry;
   }
-  return trackLUTCache;
+  return cached;
 }
 
-function trackPointAt(progress) {
-  const { lut } = getTrackLUT();
+function trackPointAt(progress, round) {
+  const { lut } = getTrackLUT(round);
   const t = Math.min(1, Math.max(0, progress));
   const idx = t * (lut.length - 1);
   const i0 = Math.floor(idx);
@@ -720,14 +749,27 @@ function computeCamera(leaderPoint, round, W, H) {
   };
 }
 
+// 응원 이모지(모바일 -> 서버 허용목록 검증 -> stage 전체 브로드캐스트) 수신
+// 시 화면 하단 임의 위치에서 떠오르는 요소를 만든다. 순수 연출이라 순위/
+// 진행률 등 실제 상태는 전혀 건드리지 않는다.
+function spawnCheerBadge(emoji) {
+  const el = document.createElement("div");
+  el.className = "cheer-badge";
+  el.textContent = emoji;
+  el.style.left = `${8 + Math.random() * 84}%`;
+  overtakeLayer.appendChild(el);
+  setTimeout(() => el.remove(), 2500);
+}
+
 function spawnOvertakeBadge(pid) {
   const laneCount = lastLaneCount;
   const lane = laneFor(pid, laneCount);
-  const { halfWidth } = getTrackLUT();
+  const round = previousTickRound || 1;
+  const { halfWidth } = getTrackLUT(round);
   const laneWidth = (halfWidth * 2) / laneCount;
   const laneOffset = (lane - (laneCount - 1) / 2) * laneWidth + jitterFor(pid) * laneWidth * 0.5;
   const p = previousTickPositions[pid] !== undefined ? previousTickPositions[pid] : 0.5;
-  const center = trackPointAt(p);
+  const center = trackPointAt(p, round);
   const nx = -Math.sin(center.angle);
   const ny = Math.cos(center.angle);
   const x = center.x + nx * laneOffset;
@@ -886,7 +928,7 @@ function renderLoop() {
 // V2/V4/V5: 트랙 맵 · 카트 · 긴장 연출
 // ---------------------------------------------------------------------------
 
-function drawTrackSurface(ctx, W, H, lut, halfWidth, passLine, scrollPhase, trackLength) {
+function drawTrackSurface(ctx, W, H, lut, halfWidth, passLine, scrollPhase, trackLength, round) {
   const n = lut.length;
   const left = new Array(n);
   const right = new Array(n);
@@ -910,7 +952,7 @@ function drawTrackSurface(ctx, W, H, lut, halfWidth, passLine, scrollPhase, trac
   // 통과선 기준 위험(왼쪽)/안전(오른쪽) 구역 -- 웨이포인트가 좌→우로 단조
   // 증가하므로, 가로 그라데이션을 리본 모양에 클립해도 진행률과 대략
   // 일치한다. 리본 폴리곤이 여전히 현재 경로이므로 그대로 clip에 쓴다.
-  const passX = trackPointAt(passLine).x;
+  const passX = trackPointAt(passLine, round).x;
   ctx.save();
   ctx.clip();
   const danger = ctx.createLinearGradient(0, 0, passX, 0);
@@ -925,9 +967,12 @@ function drawTrackSurface(ctx, W, H, lut, halfWidth, passLine, scrollPhase, trac
   ctx.fillRect(passX, 0, W - passX, H);
   ctx.restore();
 
-  // 가장자리 커브(빨강/흰색 줄무늬) -- arc-length 기준 세그먼트, 스크롤로 속도감
+  // 가장자리 커브(빨강/흰색 줄무늬) -- arc-length 기준 세그먼트, 스크롤로 속도감.
+  // stripeArc가 너무 길면 급커브 구간에서 회전한 직사각형끼리 서로 겹쳐
+  // "나비매듭"처럼 보인다(라운드별 트랙 검증 중 실제로 발견) -- 짧게 잘라
+  // 곡선을 더 촘촘히 따라가게 한다.
   const curbH = 8;
-  const stripeArc = 26;
+  const stripeArc = 14;
   const stripeCount = Math.max(4, Math.round(trackLength / stripeArc));
   const segLenPx = trackLength / stripeCount;
   const phaseOffset = scrollPhase * stripeCount * 2;
@@ -1191,11 +1236,11 @@ function maybeSpawnObstacle(now, leaderProgress) {
   nextObstacleSpawnAt = now + 2200 + Math.random() * 1800;
 }
 
-function obstacleScreenPoints(now, laneCount, laneWidth) {
+function obstacleScreenPoints(now, laneCount, laneWidth, round) {
   return activeObstacles.map((o) => {
     const weaveLane = o.laneCenter + Math.sin((now - o.spawnedAt) * o.weaveSpeed) * o.weaveAmp;
     const laneOffset = (weaveLane - (laneCount - 1) / 2) * laneWidth;
-    const center = trackPointAt(o.spawnProgress);
+    const center = trackPointAt(o.spawnProgress, round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);
     return { ...o, x: center.x + nx * laneOffset, y: center.y + ny * laneOffset };
@@ -1216,16 +1261,16 @@ function drawFrame(positions, tick) {
 
   const sorted = [...ids].sort((a, b) => positions[b] - positions[a]);
   const leaderPos = positions[sorted[0]];
-  const { lut, length: trackLength, halfWidth } = getTrackLUT();
-  const leaderPoint = trackPointAt(leaderPos);
+  const { lut, length: trackLength, halfWidth } = getTrackLUT(tick.round);
+  const leaderPoint = trackPointAt(leaderPos, tick.round);
   const camera = computeCamera(leaderPoint, tick.round, W, H);
 
   raceCtx.save();
   raceCtx.translate(camera.offsetX, camera.offsetY);
   raceCtx.scale(camera.scale, camera.scale);
 
-  drawTrackSurface(raceCtx, W, H, lut, halfWidth, tick.pass_line, leaderPos, trackLength);
-  drawFinishLine(raceCtx, trackPointAt(tick.pass_line), halfWidth);
+  drawTrackSurface(raceCtx, W, H, lut, halfWidth, tick.pass_line, leaderPos, trackLength, tick.round);
+  drawFinishLine(raceCtx, trackPointAt(tick.pass_line, tick.round), halfWidth);
 
   const laneCount = Math.max(6, Math.min(36, ids.length));
   lastLaneCount = laneCount;
@@ -1233,7 +1278,7 @@ function drawFrame(positions, tick) {
   const kartH = Math.max(5, Math.min(64, laneWidth * 0.82));
 
   maybeSpawnObstacle(now, leaderPos);
-  const obstaclePoints = obstacleScreenPoints(now, laneCount, laneWidth);
+  const obstaclePoints = obstacleScreenPoints(now, laneCount, laneWidth, tick.round);
   const obstacleSize = Math.max(16, kartH * 1.4);
   for (const o of obstaclePoints) {
     drawObstacle(raceCtx, o.x, o.y, obstacleSize, o.type);
@@ -1246,7 +1291,7 @@ function drawFrame(positions, tick) {
     const p = positions[pid];
     const lane = laneFor(pid, laneCount);
     const laneOffset = (lane - (laneCount - 1) / 2) * laneWidth + jitterFor(pid) * laneWidth * 0.5;
-    const center = trackPointAt(p);
+    const center = trackPointAt(p, tick.round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);
     const x = center.x + nx * laneOffset;
@@ -1470,7 +1515,13 @@ const RACE_ROUND_INDEX_LOCAL = { race_r1: 1, race_r2: 2, race_r3: 3 };
 // 최종 시상대
 // ---------------------------------------------------------------------------
 
-function buildPodium(winnerIds, nameById) {
+const PRIZE_BASIS_LABEL = {
+  gambling: "사이버머니 갬블링 최종 리더보드 기준 당첨자입니다 -- 레이스 순위와 다를 수 있습니다",
+  confidence: "확신도 예측 최종 리더보드 기준 당첨자입니다 -- 레이스 순위와 다를 수 있습니다",
+};
+
+function buildPodium(winnerIds, nameById, basis) {
+  if (podiumBasisHintEl) podiumBasisHintEl.textContent = PRIZE_BASIS_LABEL[basis] || "";
   const top3 = winnerIds.slice(0, 3);
   const rest = winnerIds.slice(3);
   // 시각적 배치: 2위-1위-3위 순서(가운데가 1위)
@@ -1490,11 +1541,11 @@ function buildPodium(winnerIds, nameById) {
   podiumRestEl.innerHTML = rest.map((id) => `<li>${nameById[id] || id}</li>`).join("");
 }
 
-async function playFinalReveal(winnerIds, nameById) {
+async function playFinalReveal(winnerIds, nameById, basis) {
   showBanner("🏆 최종 당첨자 발표!", "", 1500);
   SFX.drumroll(1.4);
   await delay(1500);
-  buildPodium(winnerIds, nameById);
+  buildPodium(winnerIds, nameById, basis);
   showOverlay("podium");
   SFX.fanfare();
   SFX.crowd(0.8, 1.8);
@@ -1533,12 +1584,19 @@ function render(session) {
     ensureGroupLookup(latest, latest.commit);
     if (latest.revealed) {
       stopLiveOddsPolling();
+      if (!latest.prize_winners) {
+        // 레이스는 리빌됐지만 예측/갬블링 라운드 3 최종 채점이 아직 안
+        // 끝났다 -- 실제 당첨자가 확정될 때까지는 시상대를 띄우지 않는다
+        // (막판까지 리더보드가 뒤집힐 수 있다는 게 이 설계의 핵심이라,
+        // 레이스 리빌 순간과 최종 당첨자 발표 순간을 일부러 분리했다).
+        return;
+      }
       if (lastFinalShownFor !== "racing-final") {
         lastFinalShownFor = "racing-final";
         const nameById = Object.fromEntries(
           latest.snapshot.participants.map((p) => [p.id, participantLabel(p)])
         );
-        playFinalReveal(latest.winners, nameById)
+        playFinalReveal(latest.prize_winners, nameById, latest.prize_basis)
           .then(() => delay(2500))
           .then(() => (sessionPredictionMode === "gambling" ? showMcLine("gambling_champion") : Promise.resolve()))
           .then(() => delay(sessionPredictionMode === "gambling" ? 2500 : 0))
@@ -1548,7 +1606,7 @@ function render(session) {
         const nameById = Object.fromEntries(
           latest.snapshot.participants.map((p) => [p.id, participantLabel(p)])
         );
-        buildPodium(latest.winners, nameById);
+        buildPodium(latest.prize_winners, nameById, latest.prize_basis);
         showOverlay("podium");
       }
       return;
@@ -1667,6 +1725,9 @@ const ws = connectWS((data) => {
   }
   if (data.type === "camera_mode") {
     cameraMode = data.mode;
+  }
+  if (data.type === "cheer") {
+    spawnCheerBadge(data.emoji);
   }
   if (["phase", "race_tick", "round_revealed", "racing_complete"].includes(data.type)) {
     handleRacingEvent(data);

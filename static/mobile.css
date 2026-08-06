@@ -60,6 +60,34 @@ h2 {
   background: #4f8cff;
 }
 
+.cheer-panel h2 {
+  margin: 0 0 0.6rem;
+  font-size: 1rem;
+}
+
+.cheer-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.cheer-btn {
+  flex: 1 1 20%;
+  min-width: 52px;
+  min-height: 52px;
+  font-size: 1.6rem;
+  border-radius: 0.6rem;
+  border: 1px solid #2a3242;
+  background: #12213f;
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+
+.cheer-btn:active {
+  transform: scale(0.88);
+  background: #4f8cff;
+}
+
 .error {
   color: #ff8080;
 }

@@ -19,6 +19,9 @@ const leaderboardTitleEl = document.getElementById("leaderboard-title");
 const leaderboardListEl = document.getElementById("leaderboard-list");
 const characterOverlayEl = document.getElementById("character-overlay");
 const characterOverlayListEl = document.getElementById("character-overlay-list");
+const cheerButtonsEl = document.getElementById("cheer-buttons");
+
+const CHEER_EMOJI = ["🔥", "👏", "🎉", "💪", "😱", "⚡", "❤️", "😂"]; // app/main.py CHEER_EMOJI_ALLOWLIST와 반드시 일치시킬 것
 
 const ROUND_LABELS = { 1: "1라운드", 2: "2라운드", 3: "3라운드" };
 const STATE_LABELS = { pending: "대기 중", open: "선택 중", locked: "확정" };
@@ -520,7 +523,7 @@ async function refreshLeaderboard() {
   }
 }
 
-connectWS((data) => {
+const ws = connectWS((data) => {
   if (data.type === "reset") {
     // 관리자가 세션을 초기화하면 서버는 predict_tokens를 전부 지운다.
     // 폴링이 다음 401을 잡을 때까지(참여 창이 닫혀 있으면 폴링 자체가
@@ -536,5 +539,12 @@ connectWS((data) => {
     refreshLeaderboard();
   }
 }, "mobile");
+
+// 응원 이모지 버튼 -- 무대 화면에 가볍게 이모지를 날린다. 서버가 허용
+// 목록/쿨다운을 검증하므로 여기서는 그냥 보내기만 하면 된다.
+cheerButtonsEl.innerHTML = CHEER_EMOJI.map((e) => `<button class="cheer-btn" data-emoji="${e}">${e}</button>`).join("");
+for (const btn of cheerButtonsEl.querySelectorAll(".cheer-btn")) {
+  btn.addEventListener("click", () => sendWS(ws, { type: "cheer", emoji: btn.dataset.emoji }));
+}
 
 tryRestoreSession();

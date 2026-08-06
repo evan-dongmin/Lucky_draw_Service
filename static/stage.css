@@ -69,6 +69,24 @@ html, body {
   100% { opacity: 0; transform: translate(-50%, -70%) scale(1); }
 }
 
+/* 응원 이모지 -- 모바일에서 누르면 화면 하단 임의 위치에서 위로
+   떠오르며 옅어진다. 가벼운 연출이라 overtake-badge보다 느리고 조용하게. */
+.cheer-badge {
+  position: absolute;
+  bottom: 4%;
+  transform: translate(-50%, 0);
+  font-size: 2.2rem;
+  animation: cheer-float 2.4s ease-out forwards;
+  filter: drop-shadow(0 0 8px rgba(255, 255, 255, 0.35));
+  z-index: 4;
+}
+
+@keyframes cheer-float {
+  0% { opacity: 0; transform: translate(-50%, 0) scale(0.7) rotate(-6deg); }
+  12% { opacity: 1; transform: translate(-50%, -6vh) scale(1.05) rotate(4deg); }
+  100% { opacity: 0; transform: translate(-50%, -62vh) scale(1) rotate(-4deg); }
+}
+
 /* ---------------------------------------------------------------------
    글래스모피즘 공통 패널
 --------------------------------------------------------------------- */

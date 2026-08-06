@@ -65,7 +65,7 @@ const ws = connectWS((data) => {
   } else if (data.type === "racing_complete") {
     racingStatusEl.innerHTML = `<strong>레이스 진행 완료</strong>`;
   }
-  if (["session_created", "session_updated", "commit_ready", "revealed", "reset"].includes(data.type)) {
+  if (["session_created", "session_updated", "commit_ready", "revealed", "reset", "prize_winners"].includes(data.type)) {
     refreshSession();
   }
 }, "admin");
@@ -266,13 +266,30 @@ function renderSession(session) {
   } else if (!latest.revealed) {
     commitDisplayEl.innerHTML = `<strong>커밋 해시(공개됨):</strong><br><code>${latest.commit}</code>`;
   } else {
-    const names = latest.winners
-      .map((id) => {
-        const p = latest.snapshot.participants.find((x) => x.id === id);
-        return p ? participantLabel(p) : id;
-      })
-      .join(", ");
-    commitDisplayEl.innerHTML = `<strong>커밋 해시:</strong> <code>${latest.commit}</code><br><strong>당첨자(${latest.winners.length}명):</strong> ${names}<br><strong>시드(리빌됨):</strong> <code>${latest.seed}</code>`;
+    const labelFor = (id) => {
+      const p = latest.snapshot.participants.find((x) => x.id === id);
+      return p ? participantLabel(p) : id;
+    };
+    const raceNames = latest.winners.map(labelFor).join(", ");
+    // 예측/갬블링이 켜진 세션은 레이스 결과(winners)와 실제 경품 당첨자
+    // (prize_winners, 최종 리더보드 기준)가 다를 수 있다 -- 조기에 레이스
+    // 결과만 보고 상품을 잘못 나눠주지 않도록 실제 당첨자를 먼저, 더 크게
+    // 보여준다. prize_winners는 라운드 3 최종 채점이 끝나야 채워지므로
+    // 그 전까지는 "채점 대기 중"으로 표시한다.
+    let prizeLine;
+    if (!latest.prize_winners) {
+      prizeLine = `<strong>실제 경품 당첨자:</strong> 예측/갬블링 최종 채점 대기 중...<br>`;
+    } else {
+      const basisLabel =
+        latest.prize_basis === "gambling" ? "사이버머니 갬블링 리더보드" : latest.prize_basis === "confidence" ? "확신도 예측 리더보드" : "레이스 결과";
+      const prizeNames = latest.prize_winners.map(labelFor).join(", ") || "(없음 -- 예측/갬블링 참여자가 부족합니다)";
+      prizeLine = `<strong>실제 경품 당첨자(${basisLabel} 기준, ${latest.prize_winners.length}명):</strong> ${prizeNames}<br>`;
+    }
+    const raceLine =
+      latest.prize_winners && latest.prize_basis !== "race"
+        ? `<strong>참고 -- 레이스 결과(${latest.winners.length}명):</strong> ${raceNames}<br>`
+        : "";
+    commitDisplayEl.innerHTML = `<strong>커밋 해시:</strong> <code>${latest.commit}</code><br>${prizeLine}${raceLine}<strong>시드(리빌됨):</strong> <code>${latest.seed}</code>`;
   }
 
   drawsHistoryEl.innerHTML =
