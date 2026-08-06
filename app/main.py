@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 import random
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -169,6 +170,8 @@ def public_draw_dict(draw: DrawResult) -> dict[str, Any]:
         data["seed"] = None
         data["winners"] = []
         data["ranking"] = []
+        data["prize_winners"] = None
+        data["prize_basis"] = None
         data["round_pass_ids"] = {
             str(r): ids for r, ids in draw.round_pass_ids.items() if r in draw.revealed_rounds
         }
@@ -383,6 +386,12 @@ async def reveal_draw(payload: RevealRequest) -> dict[str, Any]:
         session = _require_session()
         draw = _require_draw(session, payload.draw_index)
         fairness.reveal(draw)
+        # 룰렛 모드는 레이싱 라운드/예측·갬블링 창이 전혀 안 돌기 때문에
+        # 리더보드 기준 당첨자를 계산할 방법이 없다 -- 레이스 결과를 그대로
+        # 실제 당첨자로 쓴다(아래 _compute_prize_winners의 predictions_enabled
+        # =False 케이스와 동일한 폴백).
+        draw.prize_winners = list(draw.winners)
+        draw.prize_basis = "race"
         store.set_session(session)
         public = public_draw_dict(draw)
         await hub.broadcast({"type": "revealed", "draw": public})
@@ -639,6 +648,31 @@ async def _score_and_open_next(
         )
 
 
+def _compute_prize_winners(session: Session, draw: DrawResult) -> tuple[list[str], str]:
+    """실제 경품 당첨자를 정한다. 예측/갬블링 게임이 켜져 있으면 그 최종
+    리더보드 상위 N명(N = 원래 레이스로 정해졌던 당첨 인원수, len(draw.winners))
+    이 곧 당첨자다 -- 레이스 자체는 여전히 공정하고 /verify로 검증 가능하지만,
+    "그 공정한 레이스를 누가 가장 잘 예측했는가"가 최종 결과를 정하는 구조로
+    바꾼 것(사용자 요청: 막판까지 순위를 알 수 없고 리더보드가 끝까지
+    갱신되는 반전 있는 진행을 위함). 예측 게임이 꺼져 있으면 리더보드 자체가
+    없으므로 레이스 결과를 그대로 쓴다(기존 동작과 동일, 회귀 없음).
+
+    두 엔진의 leaderboard()는 이미 (-score/-balance, participant_id) 순으로
+    결정론적으로 정렬돼 있어 동점 처리를 따로 할 필요가 없다. 참여 인원이
+    N명보다 적으면(모바일 온보딩을 안 한 사람이 많은 경우) 그만큼 당첨자
+    수가 줄어든다 -- 예측/갬블링 게임에 참여해야 당첨 대상이 된다는 뜻이라
+    문서에 명확히 안내해야 한다.
+    """
+    n = len(draw.winners)
+    if not session.predictions_enabled:
+        return list(draw.winners), "race"
+    if session.prediction_mode == "gambling":
+        ranked = gambling_engine.leaderboard(n)
+    else:
+        ranked = prediction_engine.leaderboard(n)
+    return [c.participant_id for c in ranked], session.prediction_mode
+
+
 async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: float) -> None:
     try:
         session = store.get_session()
@@ -680,7 +714,17 @@ async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: f
                     store.set_session(session)
                 await hub.broadcast({"type": "revealed", "draw": public_draw_dict(draw)})
                 if predictions_enabled:
+                    # 라운드 3 최종 채점(예측/갬블링 리더보드가 여기서 확정됨)이
+                    # 끝난 뒤에야 실제 당첨자를 뽑는다 -- "revealed" 브로드캐스트
+                    # 시점엔 아직 순위가 안 정해져 있다(막판까지 리더보드가
+                    # 계속 뒤집힐 수 있다는 게 이 설계의 핵심 재미 포인트).
                     await _score_and_open_next(session, draw, 3, None)
+                prize_ids, prize_basis = _compute_prize_winners(session, draw)
+                async with state_lock:
+                    draw.prize_winners = prize_ids
+                    draw.prize_basis = prize_basis
+                    store.set_session(session)
+                await hub.broadcast({"type": "prize_winners", "winners": prize_ids, "basis": prize_basis})
                 await asyncio.sleep(seg.duration_seconds)
             else:
                 await asyncio.sleep(seg.duration_seconds)
@@ -1333,6 +1377,14 @@ async def mobile_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "mobile.html")
 
 
+# 응원 이모지(가벼운 화면 연출용). 임의 문자열이 그대로 무대 화면에
+# 뿌려지는 걸 막기 위해 허용 목록만 통과시키고, 연결당 최소 간격을 둬서
+# 연타 도배를 막는다(250명이 동시에 눌러도 서버 부하는 무시할 수준).
+CHEER_EMOJI_ALLOWLIST = {"🔥", "👏", "🎉", "💪", "😱", "⚡", "❤️", "😂"}
+CHEER_COOLDOWN_SECONDS = 0.4
+_last_cheer_at: dict[WebSocket, float] = {}
+
+
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket, role: str = "unknown") -> None:
     await hub.connect(websocket, role=role)
@@ -1343,9 +1395,17 @@ async def websocket_endpoint(websocket: WebSocket, role: str = "unknown") -> Non
                 message = json.loads(raw)
             except json.JSONDecodeError:
                 message = {"type": "echo", "raw": raw}
+            if message.get("type") == "cheer":
+                emoji = message.get("emoji")
+                now = time.monotonic()
+                if emoji in CHEER_EMOJI_ALLOWLIST and now - _last_cheer_at.get(websocket, 0.0) >= CHEER_COOLDOWN_SECONDS:
+                    _last_cheer_at[websocket] = now
+                    await hub.broadcast({"type": "cheer", "emoji": emoji}, sender=websocket, roles={"stage"})
+                continue  # 허용 밖/쿨다운 중이면 조용히 무시하고 범용 릴레이로 안 흘려보냄
             await hub.broadcast(message, sender=websocket)
     except WebSocketDisconnect:
         hub.disconnect(websocket)
+        _last_cheer_at.pop(websocket, None)
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

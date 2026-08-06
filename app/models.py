@@ -50,6 +50,13 @@ class DrawResult:
     revealed_rounds: list[int] = field(default_factory=list)
     created_at: str = ""
     revealed_at: str | None = None
+    # 실제 경품 당첨자(레이스 결과 winners와는 다를 수 있다). 예측/갬블링이
+    # 켜진 세션에서는 최종 리더보드 상위 N명으로 결정되고, 꺼져 있거나
+    # 룰렛 모드면 winners와 동일한 값이 그대로 들어간다. prize_basis로
+    # "race"|"confidence"|"gambling" 중 어느 기준으로 뽑혔는지 구분한다.
+    # 둘 다 리빌 전에는 None -- winners처럼 결과가 조기 노출되면 안 된다.
+    prize_winners: list[str] | None = None
+    prize_basis: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -67,6 +74,8 @@ class DrawResult:
             "revealed_rounds": list(self.revealed_rounds),
             "created_at": self.created_at,
             "revealed_at": self.revealed_at,
+            "prize_winners": None if self.prize_winners is None else list(self.prize_winners),
+            "prize_basis": self.prize_basis,
         }
 
     @classmethod
@@ -86,6 +95,8 @@ class DrawResult:
             revealed_rounds=list(data.get("revealed_rounds", [])),
             created_at=data.get("created_at", ""),
             revealed_at=data.get("revealed_at"),
+            prize_winners=data.get("prize_winners"),
+            prize_basis=data.get("prize_basis"),
         )
 
 
