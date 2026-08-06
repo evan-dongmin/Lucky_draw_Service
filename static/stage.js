@@ -53,11 +53,23 @@ let currentPhase = null;
 
 // -- 오버레이 스위칭 --------------------------------------------------------
 
+// 오버레이(화면)별 배경음악 장면 매핑. 레이싱 구간(overlay 없음, hideAllOverlays)
+// 은 handleRacingEvent의 phase 분기에서 별도로 처리한다.
+const OVERLAY_BGM_SCENE = {
+  idle: "idle",
+  waiting: "idle",
+  committed: "anticipation",
+  roulette: "roulette",
+  podium: "victory",
+};
+
 function showOverlay(name) {
   for (const key of Object.keys(overlays)) {
     overlays[key].classList.toggle("hidden", key !== name);
   }
   bodyEl.dataset.mode = name || "racing";
+  const scene = OVERLAY_BGM_SCENE[name];
+  if (scene) SFX.playScene(scene);
 }
 
 function hideAllOverlays() {
@@ -312,6 +324,7 @@ async function playRouletteSequence(draw) {
   }
   reelEl.textContent = "🎊 추첨 완료!";
   SFX.fanfare();
+  SFX.playScene("victory"); // 룰렛 모드는 podium 오버레이가 따로 없어 여기서 직접 전환
   FX.confetti(160);
 }
 
@@ -1263,9 +1276,11 @@ function drawFrame(positions, tick) {
   drawHud(raceCtx, W, H, positions, tick, sorted);
   renderPositionTower(sorted, positions, tick.pass_line);
 
-  // 속도 연출: 진행률 + 근접 경쟁 강도에 비례해 속도선/엔진 피치를 올린다
+  // 속도 연출: 진행률 + 근접 경쟁 강도에 비례해 속도선/엔진 피치/BGM 텐션을 올린다
+  const speedIntensity = Math.min(1, tick.progress_ratio * 1.05 + riskCount * 0.03);
   FX.setSpeedLines(Math.min(1, tick.progress_ratio * 1.1));
-  SFX.setRpm(Math.min(1, tick.progress_ratio * 1.05 + riskCount * 0.03));
+  SFX.setRpm(speedIntensity);
+  SFX.setSceneIntensity(speedIntensity);
 
   // 클로즈콜: 통과선 근처에 여러 대가 몰려 있으면 긴장 멘트 + 심장박동
   if (riskCount >= 3) {
@@ -1366,7 +1381,15 @@ const PHASE_LABELS = {
 function handleRacingEvent(data) {
   if (data.type === "phase") {
     racingStarted = true;
-    hideAllOverlays();
+    // final_announce 중 리빌되면 playFinalReveal()이 시상대(overlay-podium)를
+    // 띄운다. 그 직후 도착하는 verify phase 이벤트가 여기서 무조건
+    // hideAllOverlays()를 부르면 막 띄운 시상대가 바로 가려지고, 복구
+    // 분기(render()의 "else if")는 bannerHideTimer가 이미 최소 한 번은
+    // 세팅돼 있어 사실상 다시 null이 되지 않으므로 영영 안 돌아온다 --
+    // 시상대가 떠 있는 동안은 오버레이를 건드리지 않는다.
+    if (overlays.podium.classList.contains("hidden")) {
+      hideAllOverlays();
+    }
     currentPhase = data.phase;
     startCountdown(
       data.duration_seconds,
@@ -1381,10 +1404,14 @@ function handleRacingEvent(data) {
       if (roundIndex === 3) photoFinishShownForRound = null;
       runStartLights(roundIndex);
       SFX.startEngine();
+      SFX.playScene("race", { round: roundIndex });
       if (roundIndex === 1) fetchCharacterChoices(); // 레이스 시작 직전 최종 선택 스냅샷
     } else {
       SFX.stopEngine();
       FX.setSpeedLines(0);
+      // 결과 발표 구간(final_announce/verify)은 승리감 있는 장면으로, 그 외
+      // (오프닝/락/선택창)는 다음 결정을 기다리는 긴장감 있는 장면으로.
+      SFX.playScene(data.phase === "final_announce" || data.phase === "verify" ? "victory" : "anticipation");
     }
     if (data.phase === "race_r1") showMcLine("opening");
     if (data.phase === "race_r3") showMcLine("race_progress");
@@ -1609,6 +1636,7 @@ const ws = connectWS((data) => {
     kartWobbleUntil = {};
     shownLightsForRound.clear();
     stopRenderLoop();
+    SFX.stopScene(); // 다음 render()가 idle 오버레이를 다시 켜면서 idle 장면으로 자연스럽게 복귀한다
     stopLiveOddsPolling();
     sessionPredictionMode = "confidence";
     raceCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
