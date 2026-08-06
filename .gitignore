@@ -184,9 +184,9 @@ cython_debug/
 # PyCharm
 #   JetBrains specific template is maintained in a separate JetBrains.gitignore that can
 #   be found at https://github.com/github/gitignore/blob/main/Global/JetBrains.gitignore
-#   and can be added to the global gitignore or merged into this file.  For a more nuclear
-#   option (not recommended) you can uncomment the following to ignore the entire idea folder.
-# .idea/
+#   and can be added to the global gitignore or merged into this file. 개인 IDE 설정(모듈
+#   구조·검사 프로파일·VCS 설정)이라 팀원마다 다를 수 있어 저장소에 안 올린다.
+.idea/
 
 # Abstra
 #   Abstra is an AI-powered process automation framework.
