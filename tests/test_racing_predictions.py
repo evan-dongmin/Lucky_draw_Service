@@ -78,11 +78,9 @@ async def test_racing_with_predictions_scores_across_all_rounds(monkeypatch):
 
 
 def predictions_top_department(draw, round_index: int) -> str:
-    from app.predictions import top_k_by_rate
+    from app.predictions import rank_targets_by_rate
 
-    rates = draw.department_pass_rate[round_index]
-    k = 2 if round_index == 1 else 1
-    return sorted(top_k_by_rate(rates, k))[0]
+    return rank_targets_by_rate(draw.department_pass_rate[round_index])[0]
 
 
 @pytest.mark.asyncio
@@ -159,3 +157,54 @@ async def test_racing_completes_with_zero_mobile_participation(monkeypatch):
     assert draw.revealed is True
     assert len(draw.winners) == 2
     assert main_module.prediction_engine.cards == {}  # 참여자가 없었으므로 카드도 없음
+
+
+@pytest.mark.asyncio
+async def test_non_mobile_participants_still_score_and_stay_prize_eligible(monkeypatch):
+    """사용자 요청의 핵심: 폰을 들지 않은 사람도 명단에 있기만 하면
+    R1·R2는 자기 부서가 자동 선택되고, 순위 차등 채점 덕에 점수가 쌓여
+    경품 대상에 남아야 한다(예전에는 카드 자체가 없어 통째로 제외됐다)."""
+    participants = generate_sample_participants(40, seed=11)
+    draw = fairness.compute_draw("no-phone", participants, draw_count=3, seed="no-phone-seed")
+    session = Session(
+        session_id="no-phone",
+        participants=participants,
+        draw_count=3,
+        mode="racing",
+        total_seconds=300.0,
+        predictions_enabled=True,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    session.draws.append(draw)
+    main_module.store.set_session(session)
+    main_module.prediction_engine.reset()
+    main_module.predict_tokens.clear()
+
+    # commit 흐름과 동일하게 전원 등록 + R1 개방 (아무도 join하지 않는다)
+    department_names = list(draw.snapshot["departments"].keys())
+    await main_module._open_round_1(session, draw, department_names)
+
+    monkeypatch.setattr(main_module.director, "build_runbook", lambda **kwargs: list(TINY_SEGMENTS))
+    monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.01)
+
+    async def fake_broadcast(message, sender=None, roles=None):
+        pass
+
+    monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
+
+    await main_module.run_racing_sequence("no-phone", 0, 300.0)
+
+    cards = main_module.prediction_engine.cards
+    assert len(cards) == len(participants)  # 전원에게 카드가 있다
+
+    dept_by_pid = main_module._department_by_pid(draw)
+    for card in cards.values():
+        # R1·R2는 자기 부서가 자동 선택됐고, R3만 무작위다
+        assert card.target[1] == dept_by_pid[card.participant_id]
+        assert card.target[2] == dept_by_pid[card.participant_id]
+        assert card.is_auto == {1: True, 2: True, 3: True}
+        assert card.score > 0  # 참여 보상 덕분에 누구도 0점이 아니다
+
+    # 폰을 안 든 사람만 있어도 경품 당첨자가 정원만큼 나온다
+    assert draw.prize_basis == "prediction"
+    assert len(draw.prize_winners) == 3

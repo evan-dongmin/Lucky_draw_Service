@@ -333,7 +333,7 @@ async def commit_draw() -> dict[str, Any]:
         store.set_session(session)
         if session.predictions_enabled:
             department_names = list(draw.snapshot.get("departments", {}).keys())
-            await _open_round_1(session, department_names)
+            await _open_round_1(session, draw, department_names)
         public = public_draw_dict(draw)
         await hub.broadcast({"type": "commit_ready", "draw": public, "draw_index": len(session.draws) - 1})
         return public
@@ -391,7 +391,7 @@ async def redraw(payload: RedrawRequest) -> dict[str, Any]:
             # 새 추첨 회차 -- 예측 게임도 처음부터 새로 시작한다
             prediction_engine.reset()
             department_names = list(draw.snapshot.get("departments", {}).keys())
-            await _open_round_1(session, department_names)
+            await _open_round_1(session, draw, department_names)
         public = public_draw_dict(draw)
         await hub.broadcast({"type": "commit_ready", "draw": public, "draw_index": len(session.draws) - 1})
         return public
@@ -500,8 +500,27 @@ async def _leaderboard_payload() -> dict[str, Any]:
     }
 
 
-async def _open_round_1(session: Session, department_names: list[str]) -> None:
-    """커밋 직후(또는 재추첨 직후) 1라운드 선택 창을 연다."""
+def _department_by_pid(draw: DrawResult) -> dict[str, str]:
+    """participant_id -> 예측 대상으로 쓰이는 부서 그룹명.
+
+    커밋된 스냅샷의 departments(병합 후 5~8개 그룹)를 뒤집은 것이라,
+    참가자의 원래 team 문자열이 아니라 **실제 예측 후보로 노출되는 이름**과
+    항상 일치한다. 자동 배정 기본값이 후보에 없는 사태를 막는 핵심.
+    """
+    return {
+        pid: name
+        for name, ids in draw.snapshot.get("departments", {}).items()
+        for pid in ids
+    }
+
+
+async def _open_round_1(session: Session, draw: DrawResult, department_names: list[str]) -> None:
+    """커밋 직후(또는 재추첨 직후) 1라운드 선택 창을 연다.
+
+    이때 명단 전원에게 카드를 만들어 둔다(사용자 요청) -- 모바일로 참여하지
+    않은 사람도 R1·R2는 자기 부서가 자동 선택되므로 경품 가능성을 일단
+    확보한다. 자세한 이유는 PredictionEngine.enroll_all 참고."""
+    prediction_engine.enroll_all(_department_by_pid(draw))
     prediction_engine.open_round(1, department_names)
     save_prediction_snapshot()
     await hub.broadcast(
@@ -524,15 +543,23 @@ async def _lock_round(session: Session, round_index: int, seed: str) -> None:
     )
 
 
+def _ranked_targets(draw: DrawResult, scored_round: int) -> list[str]:
+    """그 라운드 결과 순위대로 정렬된 예측 대상 목록(1위부터).
+
+    R1·R2는 부서 통과율 내림차순, R3는 결선 진출자를 결승 등수 순으로
+    나열한다. draw.ranking은 전체 참가자를 HMAC 점수 순으로 정렬해 둔
+    확정 순위이므로, 여기서 결선 진출자만 걸러내면 곧 결승 등수가 된다.
+    """
+    if scored_round in (1, 2):
+        return predictions.rank_targets_by_rate(draw.department_pass_rate.get(scored_round, {}))
+    finalists = set(draw.round_pass_ids.get(2, []))
+    return [pid for pid in draw.ranking if pid in finalists]
+
+
 async def _score_and_open_next(
     session: Session, draw: DrawResult, scored_round: int, next_round: int | None
 ) -> None:
-    if scored_round in (1, 2):
-        hit_set = predictions.top_k_by_rate(
-            draw.department_pass_rate.get(scored_round, {}), 2 if scored_round == 1 else 1
-        )
-    else:
-        hit_set = set(draw.winners)
+    ranked_targets = _ranked_targets(draw, scored_round)
 
     next_candidates: list[str] | None = None
     if next_round is not None:
@@ -541,10 +568,35 @@ async def _score_and_open_next(
         else:
             next_candidates = list(draw.snapshot.get("departments", {}).keys())
 
-    prediction_engine.score_round(scored_round, hit_set)
+    # 성과 점수 입력값: 이미 fairness.py가 계산해둔 결과(통과자·부서별
+    # 통과율 순위·최종 당첨자)를 읽어서 넘길 뿐이라 추첨 계산에는 관여하지
+    # 않는다. R3는 "통과"가 곧 최종 당첨이라 결선 당첨 점수만 얹는다.
+    passed_ids = set(draw.round_pass_ids.get(scored_round, []))
+    ranked_dept_ids: list[set[str]] = []
+    final_winner_ids: set[str] = set()
+    if scored_round in (1, 2):
+        departments = draw.snapshot.get("departments", {})
+        ranked_dept_ids = [
+            set(departments.get(name, []))
+            for name in predictions.rank_targets_by_rate(
+                draw.department_pass_rate.get(scored_round, {})
+            )
+        ]
+    else:
+        passed_ids = set()
+        final_winner_ids = set(draw.winners)
+
+    prediction_engine.score_round(
+        scored_round,
+        ranked_targets,
+        passed_ids=passed_ids,
+        ranked_dept_ids=ranked_dept_ids,
+        final_winner_ids=final_winner_ids,
+    )
     if next_candidates is not None:
         prediction_engine.open_round(next_round, next_candidates)
     save_prediction_snapshot()
+    await hub.broadcast({"type": "prediction_result", "round": scored_round})
     await hub.broadcast(await _leaderboard_payload())
 
     if next_round is not None:
@@ -1075,7 +1127,7 @@ async def demo_start(payload: DemoStartRequest) -> dict[str, Any]:
         store.set_session(session)
 
         department_names = list(draw.snapshot.get("departments", {}).keys())
-        await _open_round_1(session, department_names)
+        await _open_round_1(session, draw, department_names)
         public = public_draw_dict(draw)
         await hub.broadcast({"type": "commit_ready", "draw": public, "draw_index": 0})
 

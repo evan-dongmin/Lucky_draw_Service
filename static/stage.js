@@ -1975,6 +1975,12 @@ const ws = connectWS((data) => {
   if (["phase", "race_tick", "round_revealed", "racing_complete"].includes(data.type)) {
     handleRacingEvent(data);
   }
+  if (data.type === "prediction_result") {
+    showBanner(`ROUND ${data.round} 예측 채점!`, "순위가 가까울수록 점수가 큽니다", 2200);
+    SFX.pass();
+    FX.ring(window.innerWidth / 2, window.innerHeight * 0.5, "#ff9f45", 220);
+    showMcLine("prediction_result", { round: data.round });
+  }
   if (data.type === "prediction_leaderboard") {
     renderPredictionLeaderboard(data.top);
   }

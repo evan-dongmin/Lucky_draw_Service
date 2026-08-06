@@ -22,8 +22,11 @@ def test_demo_start_creates_full_session_with_bots(client):
     assert len(session["draws"]) == 1
     assert session["draws"][0]["commit"]
 
+    # 리더보드에는 봇뿐 아니라 명단 전원이 올라온다 -- 커밋 시점에
+    # enroll_all이 전원에게 카드를 만들어 두기 때문(모바일로 참여하지
+    # 않아도 경품 대상에 남는다는 설계).
     lb = client.get("/api/predict/leaderboard?top_n=40").json()["top"]
-    assert len(lb) == 35
+    assert len(lb) == 40
 
 
 def test_demo_start_leaves_reserved_slots_joinable_by_a_real_person(client):
@@ -49,7 +52,9 @@ def test_demo_start_leaves_reserved_slots_joinable_by_a_real_person(client):
         assert join_resp.status_code == 200, f"예약된 참가자 {pid}가 참여할 수 없음"
 
 
-def test_demo_start_without_bots_leaves_zero_participants(client):
+def test_demo_start_without_bots_still_enrolls_everyone_at_zero(client):
+    """봇을 채우지 않아도 명단 전원이 0점으로 리더보드에 올라와 있어야
+    한다 -- 아무도 폰을 안 들어도 경품 대상은 명단 전체다."""
     resp = client.post(
         "/api/demo/start",
         json={"participant_count": 20, "draw_count": 2, "total_seconds": 150, "with_bots": False},
@@ -58,7 +63,8 @@ def test_demo_start_without_bots_leaves_zero_participants(client):
     assert resp.json()["bots_filled"] == 0
 
     lb = client.get("/api/predict/leaderboard?top_n=20").json()["top"]
-    assert lb == []
+    assert len(lb) == 20
+    assert all(entry["score"] == 0 for entry in lb)
 
 
 def test_demo_start_rejects_total_seconds_below_director_floor_without_clearing_session(client):

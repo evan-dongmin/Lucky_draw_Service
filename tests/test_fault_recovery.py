@@ -43,7 +43,7 @@ def test_prediction_snapshot_survives_process_restart():
     engine_before.open_round(1, ["개발팀", "영업팀"])
     engine_before.set_target("P1", 1, "개발팀")
     engine_before.lock_round(1, seed="restart-pred-seed")
-    engine_before.score_round(1, hit_set={"개발팀"})
+    engine_before.score_round(1, ["개발팀", "영업팀"])
     engine_before.open_round(2, ["개발팀", "영업팀"])
 
     payload = json.dumps(engine_before.to_dict(), ensure_ascii=False)

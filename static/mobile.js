@@ -227,8 +227,41 @@ function cardStateFor(me, round) {
 }
 
 // ---------------------------------------------------------------------------
-// 확신도 배분(무손실) 카드 렌더링
+// 예측 카드 렌더링 (무손실 -- 확신도 배분 + 순위 차등 채점)
 // ---------------------------------------------------------------------------
+
+// R1·R2는 최소 10을 남겨야 하지만 R3에는 하한이 없다(몰아주기 허용) --
+// app/predictions.py의 MIN_ALLOC / MIN_ALLOC_ROUNDS와 반드시 일치시킬 것.
+const MIN_ALLOC = 10;
+const MAX_ROUND3_ALLOC = 100 - MIN_ALLOC * 2;
+
+// 라운드별 점수 내역. 서버가 card.rewards에 항목별로 남겨준 값을 그대로
+// 보여준다 -- "왜 몇 점을 받았는지"가 폰에서 바로 보여야 한다는 사용자 요청.
+const TEAM_RANK_LABEL = { 1: "🥇 우리 팀 1위", 2: "🥈 우리 팀 2위", 3: "🥉 우리 팀 3위" };
+const HIT_RANK_LABEL = { 1: "🎯 1위 적중", 2: "2위 예측", 3: "3위 예측" };
+
+function renderRewardBreakdown(me, round) {
+  const reward = me.card.rewards ? me.card.rewards[round] : null;
+  if (!reward) return "";
+  const items = [];
+  if (reward.predict !== undefined) {
+    const label = HIT_RANK_LABEL[reward.hit_rank] || `${reward.hit_rank || "순위 밖"} 예측`;
+    items.push(`<li>${label} <b>+${reward.predict}</b></li>`);
+  }
+  if (reward.finish) items.push(`<li>🏁 결승선 통과 <b>+${reward.finish}</b></li>`);
+  if (reward.team_bonus) {
+    const label = TEAM_RANK_LABEL[reward.team_rank] || "우리 팀 순위 보상";
+    items.push(`<li>${label} <b>+${reward.team_bonus}</b></li>`);
+  }
+  if (reward.final) items.push(`<li>🏆 결선 당첨 <b>+${reward.final}</b></li>`);
+  if (!items.length) return "";
+  return `
+    <div class="reward-box">
+      <div class="reward-title">이번 라운드 점수 <span class="reward-total">+${reward.total}</span></div>
+      <ul class="reward-list">${items.join("")}</ul>
+    </div>
+  `;
+}
 
 function renderConfidenceCard(me, round) {
   const state = cardStateFor(me, round);
@@ -236,14 +269,18 @@ function renderConfidenceCard(me, round) {
   const locked = me.card.locked[round];
   const target = me.card.target[round];
   const isAuto = me.card.is_auto[round];
-  const gain = me.card.gain[round];
+  const minAlloc = round === 3 ? 0 : MIN_ALLOC;
+  const maxAlloc = round === 3 ? MAX_ROUND3_ALLOC : 100 - MIN_ALLOC * 2;
 
   let allocHtml = locked
     ? `<div class="alloc-row"><label>확신도</label><span class="alloc-value">${alloc} (고정)</span></div>`
     : `<div class="alloc-row">
          <label>확신도</label>
-         <input type="number" min="10" max="80" step="1" value="${alloc}" class="alloc-input" data-round="${round}" />
-       </div>`;
+         <input type="number" min="${minAlloc}" max="${maxAlloc}" step="1" value="${alloc}" class="alloc-input" data-round="${round}" />
+       </div>` +
+      (round === 3
+        ? `<p class="hint-line">🔥 마지막 라운드는 하한이 없습니다 -- 최대 ${MAX_ROUND3_ALLOC}까지 몰아주면 한 방에 뒤집을 수 있어요.</p>`
+        : "");
 
   let targetHtml = "";
   if (state === "pending") {
@@ -251,8 +288,14 @@ function renderConfidenceCard(me, round) {
   } else if (state === "open") {
     const candidates = me.round_candidates[round] || [];
     const dist = (me.live && me.live[round] && me.live[round].distribution) || {};
+    // 미선택 시 자동 배정 규칙이 라운드마다 다르다 -- R1·R2는 자기 부서,
+    // R3는 무작위(결선 진출자 개인이라 "자기 팀"이 없다).
+    const autoNote =
+      round === 3
+        ? "미선택 시 무작위 배정"
+        : "미선택 시 <strong>우리 부서</strong>가 자동 선택됩니다";
     targetHtml =
-      `<p>지금 선택하세요! (미선택 시 시간 종료 후 무작위 배정)</p>` +
+      `<p>지금 선택하세요! (${autoNote})</p>` +
       `<div class="choice-list">` +
       candidates
         .map((c) => {
@@ -262,9 +305,8 @@ function renderConfidenceCard(me, round) {
         .join("") +
       `</div>`;
   } else {
-    targetHtml = `<p>선택 결과: <strong>${target}</strong>${isAuto ? " (무작위 배정)" : ""}${
-      gain !== undefined ? ` -- 획득 점수 ${gain}` : ""
-    }</p>`;
+    const autoLabel = isAuto ? (round === 3 ? " (무작위 배정)" : " (우리 부서 자동 선택)") : "";
+    targetHtml = `<p>선택 결과: <strong>${target}</strong>${autoLabel}</p>`;
   }
 
   return `
@@ -275,6 +317,7 @@ function renderConfidenceCard(me, round) {
       </div>
       ${allocHtml}
       ${targetHtml}
+      ${renderRewardBreakdown(me, round)}
     </div>
   `;
 }
@@ -287,6 +330,10 @@ async function saveAllocation(me) {
   const total = alloc[1] + alloc[2] + alloc[3];
   if (total !== 100) {
     alert(`확신도 합계는 100이어야 합니다 (현재 ${total}). 예: 20/30/50`);
+    return;
+  }
+  if (alloc[1] < MIN_ALLOC || alloc[2] < MIN_ALLOC) {
+    alert(`1·2라운드 확신도는 각각 ${MIN_ALLOC} 이상이어야 합니다 (3라운드는 하한 없음).`);
     return;
   }
   try {
@@ -427,7 +474,7 @@ const ws = connectWS((data) => {
     resetToOnboarding();
     return;
   }
-  if (["phase", "prediction_window", "round_revealed"].includes(data.type)) {
+  if (["phase", "prediction_window", "round_revealed", "prediction_result"].includes(data.type)) {
     refreshMe();
   }
   if (data.type === "prediction_leaderboard" || data.type === "round_revealed") {
