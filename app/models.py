@@ -57,6 +57,11 @@ class DrawResult:
     # 둘 다 리빌 전에는 None -- winners처럼 결과가 조기 노출되면 안 된다.
     prize_winners: list[str] | None = None
     prize_basis: str | None = None
+    # 당첨자별 최종 성적(갬블링이면 사이버머니 잔액, 확신도면 점수). 시상대에
+    # "얼마로 당첨됐는지"를 함께 보여주기 위한 표시 전용 값 -- prize_winners와
+    # 같은 순서로 채워진다. 레이스 기준(prize_basis="race")이면 성적 개념이
+    # 없으므로 빈 리스트.
+    prize_scores: list[int] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +81,7 @@ class DrawResult:
             "revealed_at": self.revealed_at,
             "prize_winners": None if self.prize_winners is None else list(self.prize_winners),
             "prize_basis": self.prize_basis,
+            "prize_scores": list(self.prize_scores),
         }
 
     @classmethod
@@ -97,6 +103,7 @@ class DrawResult:
             revealed_at=data.get("revealed_at"),
             prize_winners=data.get("prize_winners"),
             prize_basis=data.get("prize_basis"),
+            prize_scores=list(data.get("prize_scores", [])),
         )
 
 

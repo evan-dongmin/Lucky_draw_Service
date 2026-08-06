@@ -3,7 +3,7 @@ import pytest
 from app import fairness
 from app import main as main_module
 from app.director import RunbookSegment
-from app.gambling import STARTING_BALANCE
+from app.gambling import STARTING_BALANCE, TEAM_RANK_REWARDS
 from app.models import Session
 from app.roster import generate_sample_participants
 
@@ -182,11 +182,16 @@ async def test_racing_gambling_grants_round_rewards_to_passers_and_winning_team(
     winning_dept_ids = set(departments[winning_dept])
     second_dept = _department_by_rank(draw, 1, 1)
     second_dept_ids = set(departments[second_dept])
+    # 보상 순위표(TEAM_RANK_REWARDS)에 드는 상위 3개 부서 전체 -- "팀 보너스를
+    # 전혀 못 받는 통과자"를 고르려면 이 셋 모두에서 빠져 있어야 한다.
+    rewarded_dept_ids = set()
+    for rank in range(len(TEAM_RANK_REWARDS)):
+        rewarded_dept_ids |= set(departments[_department_by_rank(draw, 1, rank)])
 
     passer_in_winning_dept = next(pid for pid in eliminated_after_r1 if pid in winning_dept_ids)
     passer_in_second_dept = next(pid for pid in eliminated_after_r1 if pid in second_dept_ids)
     passer_not_in_winning_dept = next(
-        pid for pid in eliminated_after_r1 if pid not in winning_dept_ids and pid not in second_dept_ids
+        pid for pid in eliminated_after_r1 if pid not in rewarded_dept_ids
     )
     non_passer = next(pid for pid in draw.ranking if pid not in r1_pass_set)
     winner = draw.winners[0]
@@ -206,13 +211,7 @@ async def test_racing_gambling_grants_round_rewards_to_passers_and_winning_team(
 
     await main_module.run_racing_sequence("reward-race", 0, 300.0)
 
-    from app.gambling import (
-        FINAL_WIN_REWARD,
-        FINISH_REWARD,
-        ROUND_BONUS_CHIPS,
-        STARTING_BALANCE,
-        TEAM_RANK_REWARDS,
-    )
+    from app.gambling import FINAL_WIN_REWARD, FINISH_REWARD, ROUND_BONUS_CHIPS
 
     cards = main_module.gambling_engine.cards
     # 라운드 2·3 개방 시 전원에게 지급되는 파산 방지 보너스(성과와 무관) --

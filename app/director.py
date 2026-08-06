@@ -25,16 +25,21 @@ MIN_TOTAL_SECONDS_WITH_PREDICTIONS = 150.0
 MIN_TOTAL_SECONDS_WITHOUT_PREDICTIONS = 60.0
 
 # (구간명, 기준 초, 선택창 포함 여부) -- 기준 총합은 300초
+#
+# race_r3(결선)는 원래 70초로 가장 길었는데, 결선은 카트가 5~10대뿐이라
+# 볼거리가 적은데도 총 600초 기준 140초나 끌어서 "너무 느리다"는 피드백을
+# 받았다(사용자 요청). 40초로 줄이고 회수한 30초를 카트가 많아 볼거리가
+# 실제로 많은 R1/R2와 발표 구간에 재배분한다.
 _BASE_SEGMENTS: tuple[tuple[str, float, bool], ...] = (
     ("opening", 10.0, False),
     ("r1_lock", 10.0, False),
-    ("race_r1", 45.0, False),
+    ("race_r1", 55.0, False),
     ("score_r1_select_r2", 30.0, True),
-    ("race_r2", 45.0, False),
+    ("race_r2", 55.0, False),
     ("score_r2_select_r3", 30.0, True),
-    ("race_r3", 70.0, False),
-    ("final_announce", 30.0, False),
-    ("verify", 30.0, False),
+    ("race_r3", 40.0, False),
+    ("final_announce", 35.0, False),
+    ("verify", 35.0, False),
 )
 
 _RACE_PHASES = {"race_r1", "race_r2", "race_r3"}

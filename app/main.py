@@ -172,6 +172,7 @@ def public_draw_dict(draw: DrawResult) -> dict[str, Any]:
         data["ranking"] = []
         data["prize_winners"] = None
         data["prize_basis"] = None
+        data["prize_scores"] = []
         data["round_pass_ids"] = {
             str(r): ids for r, ids in draw.round_pass_ids.items() if r in draw.revealed_rounds
         }
@@ -622,9 +623,9 @@ async def _score_and_open_next(
             departments = draw.snapshot.get("departments", {})
             ranked_names = [name for name, _ in sorted(rates.items(), key=lambda kv: (-kv[1], kv[0]))]
             ranked_dept_ids = [set(departments.get(name, [])) for name in ranked_names]
-            rewards = gambling_engine.award_round_rewards(passed_ids, ranked_dept_ids)
+            rewards = gambling_engine.award_round_rewards(passed_ids, ranked_dept_ids, scored_round)
         else:
-            rewards = gambling_engine.award_final_rewards(set(draw.winners))
+            rewards = gambling_engine.award_final_rewards(set(draw.winners), scored_round)
 
         save_gambling_snapshot()
         await hub.broadcast({"type": "gambling_result", "rewards": rewards, **odds_payload})
@@ -648,7 +649,7 @@ async def _score_and_open_next(
         )
 
 
-def _compute_prize_winners(session: Session, draw: DrawResult) -> tuple[list[str], str]:
+def _compute_prize_winners(session: Session, draw: DrawResult) -> tuple[list[str], str, list[int]]:
     """실제 경품 당첨자를 정한다. 예측/갬블링 게임이 켜져 있으면 그 최종
     리더보드 상위 N명(N = 원래 레이스로 정해졌던 당첨 인원수, len(draw.winners))
     이 곧 당첨자다 -- 레이스 자체는 여전히 공정하고 /verify로 검증 가능하지만,
@@ -665,12 +666,15 @@ def _compute_prize_winners(session: Session, draw: DrawResult) -> tuple[list[str
     """
     n = len(draw.winners)
     if not session.predictions_enabled:
-        return list(draw.winners), "race"
+        # 레이스 결과 그대로 -- "성적" 개념이 없으므로 점수는 비운다.
+        return list(draw.winners), "race", []
     if session.prediction_mode == "gambling":
         ranked = gambling_engine.leaderboard(n)
+        scores = [c.balance for c in ranked]
     else:
         ranked = prediction_engine.leaderboard(n)
-    return [c.participant_id for c in ranked], session.prediction_mode
+        scores = [c.score for c in ranked]
+    return [c.participant_id for c in ranked], session.prediction_mode, scores
 
 
 async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: float) -> None:
@@ -719,12 +723,20 @@ async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: f
                     # 시점엔 아직 순위가 안 정해져 있다(막판까지 리더보드가
                     # 계속 뒤집힐 수 있다는 게 이 설계의 핵심 재미 포인트).
                     await _score_and_open_next(session, draw, 3, None)
-                prize_ids, prize_basis = _compute_prize_winners(session, draw)
+                prize_ids, prize_basis, prize_scores = _compute_prize_winners(session, draw)
                 async with state_lock:
                     draw.prize_winners = prize_ids
                     draw.prize_basis = prize_basis
+                    draw.prize_scores = prize_scores
                     store.set_session(session)
-                await hub.broadcast({"type": "prize_winners", "winners": prize_ids, "basis": prize_basis})
+                await hub.broadcast(
+                    {
+                        "type": "prize_winners",
+                        "winners": prize_ids,
+                        "basis": prize_basis,
+                        "scores": prize_scores,
+                    }
+                )
                 await asyncio.sleep(seg.duration_seconds)
             else:
                 await asyncio.sleep(seg.duration_seconds)
@@ -1103,68 +1115,6 @@ async def bet_leaderboard(top_n: int = 10) -> dict[str, Any]:
             }
             for c in top
         ]
-    }
-
-
-class TokenOnlyRequest(BaseModel):
-    token: str
-
-
-@app.post("/api/bet/upgrade/personal")
-async def bet_upgrade_personal(payload: TokenOnlyRequest) -> dict[str, Any]:
-    """사이버머니로 내 카트의 코스메틱 업그레이드(글로우 강도)를 산다.
-    레이스 결과에는 어떤 영향도 주지 않는다 -- app/gambling.py 모듈
-    docstring 참조."""
-    session = _require_session()
-    _require_gambling_mode(session)
-    pid = _resolve_pid_from_token(payload.token)
-    try:
-        card = gambling_engine.purchase_personal_upgrade(pid)
-    except gambling.GamblingError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    save_gambling_snapshot()
-    return card.to_dict()
-
-
-class TeamUpgradeContributeRequest(BaseModel):
-    token: str
-    amount: int
-
-
-@app.post("/api/bet/upgrade/team")
-async def bet_upgrade_team(payload: TeamUpgradeContributeRequest) -> dict[str, Any]:
-    """소속 부서의 공동 업그레이드 풀에 사이버머니를 기여한다(십시일반).
-    임계값을 넘을 때마다 그 부서 전원의 시각 효과 레벨이 오른다."""
-    session = _require_session()
-    _require_gambling_mode(session)
-    pid = _resolve_pid_from_token(payload.token)
-    groups = departments_module.compute_department_groups(session.participants)
-    department = departments_module.group_of(groups, pid)
-    if department is None:
-        raise HTTPException(status_code=400, detail="소속 부서를 찾을 수 없습니다.")
-    try:
-        card = gambling_engine.contribute_team_upgrade(pid, department, payload.amount)
-    except gambling.GamblingError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    save_gambling_snapshot()
-    return {**card.to_dict(), "department": department, "team_pool": gambling_engine.team_upgrade_pool[department]}
-
-
-@app.get("/api/bet/upgrades")
-async def bet_upgrades() -> dict[str, Any]:
-    """전체 팀/개인 업그레이드 현황(공개, 토큰 불필요) -- Stage가 폴링해
-    카트 글로우 크기에 반영한다. 대부분은 레벨 0이므로 개인 레벨은 0보다
-    큰 것만 담아 payload를 작게 유지한다."""
-    pools = gambling_engine.team_upgrade_pool
-    personal_levels = {
-        pid: card.personal_upgrade_level
-        for pid, card in gambling_engine.cards.items()
-        if card.personal_upgrade_level > 0
-    }
-    return {
-        "team_pool": dict(pools),
-        "team_level": {dept: gambling_engine.team_upgrade_level(dept) for dept in pools},
-        "personal_level": personal_levels,
     }
 
 

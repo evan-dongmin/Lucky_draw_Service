@@ -43,7 +43,7 @@ def _make_session(mode: str, predictions_enabled: bool, draw_count: int = 3, cou
 
 def test_predictions_disabled_falls_back_to_race_winners():
     session, draw = _make_session("confidence", predictions_enabled=False)
-    ids, basis = main_module._compute_prize_winners(session, draw)
+    ids, basis, scores = main_module._compute_prize_winners(session, draw)
     assert basis == "race"
     assert ids == list(draw.winners)
 
@@ -60,7 +60,7 @@ def test_gambling_leaderboard_can_diverge_from_race_winners():
         card = main_module.gambling_engine.get_or_create_card(pid)
         card.balance = i + 1  # 레이스 순위가 뒤일수록(꼴찌에 가까울수록) 잔액이 높음
 
-    ids, basis = main_module._compute_prize_winners(session, draw)
+    ids, basis, scores = main_module._compute_prize_winners(session, draw)
     assert basis == "gambling"
     expected = list(reversed(draw.ranking))[: len(draw.winners)]
     assert ids == expected
@@ -75,7 +75,7 @@ def test_confidence_leaderboard_can_diverge_from_race_winners():
         card = main_module.prediction_engine.get_or_create_card(pid)
         card.score = i + 1  # 레이스 순위가 뒤일수록 예측 점수가 높음
 
-    ids, basis = main_module._compute_prize_winners(session, draw)
+    ids, basis, scores = main_module._compute_prize_winners(session, draw)
     assert basis == "confidence"
     expected = list(reversed(draw.ranking))[: len(draw.winners)]
     assert ids == expected
@@ -92,7 +92,7 @@ def test_prize_winner_count_shrinks_when_fewer_participants_engaged():
     for pid in only_two:
         main_module.gambling_engine.get_or_create_card(pid)
 
-    ids, basis = main_module._compute_prize_winners(session, draw)
+    ids, basis, scores = main_module._compute_prize_winners(session, draw)
     assert basis == "gambling"
     assert len(ids) == 2
     assert set(ids) == set(only_two)
