@@ -252,8 +252,14 @@ function showBanner(text, sub = "", ms = 1800) {
   bannerTextEl.textContent = text;
   bannerSubEl.textContent = sub;
   overlayBannerEl.classList.remove("hidden");
+  // 타이머가 실행된 뒤에도 변수를 null로 되돌려야 한다 -- 그러지 않으면
+  // render()의 "새로고침 등으로 재진입" 복구 분기(시상대 등)가
+  // bannerHideTimer가 null인 걸 "아직 아무 배너도 안 뜬 상태"의
+  // 신호로 쓰는데, 라운드 배너 한 번만 떠도 그 이후로 영원히 non-null로
+  // 남아 그 분기가 죽은 코드가 되던 문제가 있었다.
   bannerHideTimer = setTimeout(() => {
     overlayBannerEl.classList.add("hidden");
+    bannerHideTimer = null;
   }, ms);
 }
 
@@ -586,11 +592,18 @@ function jitterFor(pid) {
 // 화면 크기가 바뀔 때만 LUT를 다시 만든다(매 프레임 재계산하지 않는다).
 // ---------------------------------------------------------------------------
 
-const TRACK_WAYPOINT_T = [0, 0.15, 0.35, 0.55, 0.75, 0.9, 1.0];
-// 중심선 대비 세로 진폭(half-band 비율) -- 예전 고정 960x440 캔버스에서
-// 검증한 S자 곡선(228,165,291,170,291,200,228 / half-band 182)과 동일한 비율
-const TRACK_WAYPOINT_Y_FRAC = [0, -0.346, 0.346, -0.319, 0.346, -0.154, 0];
-const TRACK_HALF_WIDTH_FRAC = 0.55; // half-band 대비 트랙 반폭
+// 웨이포인트 10구간(11점) -- 진폭을 들쭉날쭉하게 둬서(얕은 굴곡 + 깊은
+// 굴곡을 섞음) 같은 폭이 반복되는 사인파처럼 안 보이게 했다. 단, 구간당
+// 진폭 변화폭(ΔY/ΔT)은 기존에 검증된 값(~3.4) 이내로 제한했다 -- 그보다
+// 급하게 꺾으면 Catmull-Rom이 오버슈트해 리본 폴리곤이 스스로 겹치는
+// "나비매듭" 아티팩트가 생긴다(실제로 한 번 겪음). 굴곡이 늘어난 만큼
+// 실제 호 길이(TRACK_LENGTH)도 늘어나 arc-length 균등 LUT 덕분에 카트가
+// 체감상 "더 먼 트랙"을 도는 것처럼 보인다(진행률 0..1의 의미 자체는
+// 서버 쪽과 무관하게 그대로 유지됨).
+const TRACK_WAYPOINT_T = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+// 중심선 대비 세로 진폭(half-band 비율)
+const TRACK_WAYPOINT_Y_FRAC = [0, -0.2, -0.34, -0.16, 0.18, 0.34, 0.18, -0.14, -0.3, -0.1, 0];
+const TRACK_HALF_WIDTH_FRAC = 0.5; // half-band 대비 트랙 반폭(굴곡이 늘어 여유를 더 뒀다)
 const TRACK_LUT_SIZE = 400;
 const TRACK_RAW_SAMPLES_PER_SEGMENT = 40;
 
@@ -1405,7 +1418,7 @@ function handleRacingEvent(data) {
       runStartLights(roundIndex);
       SFX.startEngine();
       SFX.playScene("race", { round: roundIndex });
-      if (roundIndex === 1) fetchCharacterChoices(); // 레이스 시작 직전 최종 선택 스냅샷
+      fetchCharacterChoices(); // 레이스 시작 직전 최종 선택 스냅샷(매 라운드 -- 라운드 사이 선택창에서 바꾼 캐릭터도 반영)
     } else {
       SFX.stopEngine();
       FX.setSpeedLines(0);
@@ -1645,6 +1658,9 @@ const ws = connectWS((data) => {
     const legendEl = document.getElementById("team-legend");
     if (legendEl) legendEl.innerHTML = "";
     if (countdownTimer) clearInterval(countdownTimer);
+    if (bannerHideTimer) clearTimeout(bannerHideTimer);
+    bannerHideTimer = null;
+    overlayBannerEl.classList.add("hidden");
     phaseLabelEl.textContent = "대기 중";
     phaseTimerEl.textContent = "--";
     roundPillEl.textContent = "READY";
