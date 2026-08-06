@@ -208,10 +208,16 @@ async function tryRestoreSession() {
     await refreshMyCharacter();
     if (me.predictions_enabled) await refreshLeaderboard();
   } catch (e) {
-    localStorage.removeItem(TOKEN_KEY);
-    myToken = null;
-    showOnboarding();
-    await loadDepartments();
+    if (e.status === 401 || e.status === 404) {
+      // 토큰이 실제로 무효(세션 리셋 등) -- 온보딩부터 다시 시작.
+      resetToOnboarding();
+    } else {
+      // 페이지를 막 열었는데 네트워크가 불안정한 경우 -- 토큰은 지우지
+      // 않고 온보딩 화면만 우선 보여준 뒤 잠시 후 복원을 재시도한다.
+      onboardingErrorEl.textContent = "연결이 불안정합니다. 잠시 후 다시 시도합니다...";
+      showOnboarding();
+      setTimeout(tryRestoreSession, 3000);
+    }
   }
 }
 
@@ -462,13 +468,38 @@ function updateLiveRefreshTimer(me) {
   }
 }
 
+// 세션이 리셋되거나(관리자가 /api/session/reset) 토큰이 실제로 무효화된
+// 경우에만 부른다 -- 네트워크 순단 등 일시적 오류에는 절대 쓰지 않는다
+// (여기서 토큰을 지우면, 서버는 여전히 이 참가자를 "참여 중"으로 알고
+// 있는데 클라이언트만 잊어버려서 재참여 시도가 409 "이미 다른 기기에서
+// 참여 중"으로 영구 잠기는 문제가 있었다).
+function resetToOnboarding() {
+  localStorage.removeItem(TOKEN_KEY);
+  myToken = null;
+  myParticipantId = null;
+  myName = "";
+  myCharacterId = null;
+  if (liveRefreshTimer) {
+    clearInterval(liveRefreshTimer);
+    liveRefreshTimer = null;
+  }
+  showOnboarding();
+  loadDepartments();
+}
+
 async function refreshMe() {
   if (!myToken) return;
   try {
     const me = await fetchJSON(`/api/predict/me?token=${encodeURIComponent(myToken)}`);
     renderMe(me);
   } catch (e) {
-    console.error(e);
+    if (e.status === 401) {
+      // 토큰이 서버에서 사라졌다(세션 리셋 등) -- 온보딩으로 되돌린다.
+      // 그 외(네트워크 오류 등)는 토큰을 지우지 않고 다음 폴링에서 재시도.
+      resetToOnboarding();
+    } else {
+      console.error(e);
+    }
   }
 }
 
@@ -490,6 +521,14 @@ async function refreshLeaderboard() {
 }
 
 connectWS((data) => {
+  if (data.type === "reset") {
+    // 관리자가 세션을 초기화하면 서버는 predict_tokens를 전부 지운다.
+    // 폴링이 다음 401을 잡을 때까지(참여 창이 닫혀 있으면 폴링 자체가
+    // 없어서 영영 안 잡힐 수도 있음) 기다리지 않고 즉시 온보딩으로
+    // 되돌린다 -- 안 그러면 화면이 리셋 전 점수/베팅카드를 계속 보여준다.
+    resetToOnboarding();
+    return;
+  }
   if (["phase", "prediction_window", "round_revealed", "gambling_result"].includes(data.type)) {
     refreshMe();
   }
