@@ -30,7 +30,8 @@ def test_validate_llm_templates_rejects_disallowed_placeholders():
 
 
 def test_mc_agent_without_api_key_uses_static_pool(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.config.ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr("app.config.XAI_API_KEY", "")
+    monkeypatch.setattr("app.config.GEMINI_API_KEY", "")
     agent = MCAgent(cache_path=tmp_path / "mc_cache.json")
     assert agent.has_llm is False
 
@@ -42,7 +43,8 @@ def test_mc_agent_without_api_key_uses_static_pool(tmp_path, monkeypatch):
 
 
 def test_mc_agent_pregenerate_falls_back_on_llm_failure(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.config.ANTHROPIC_API_KEY", "fake-key-for-test")
+    monkeypatch.setattr("app.config.XAI_API_KEY", "fake-key-for-test")
+    monkeypatch.setattr("app.config.GEMINI_API_KEY", "")
     agent = MCAgent(cache_path=tmp_path / "mc_cache.json")
     assert agent.has_llm is True
 
@@ -58,7 +60,8 @@ def test_mc_agent_pregenerate_falls_back_on_llm_failure(tmp_path, monkeypatch):
 
 
 def test_mc_agent_pregenerate_uses_llm_lines_when_available(tmp_path, monkeypatch):
-    monkeypatch.setattr("app.config.ANTHROPIC_API_KEY", "fake-key-for-test")
+    monkeypatch.setattr("app.config.XAI_API_KEY", "fake-key-for-test")
+    monkeypatch.setattr("app.config.GEMINI_API_KEY", "")
     agent = MCAgent(cache_path=tmp_path / "mc_cache.json")
 
     def _fake_call(self, tag, count):
@@ -70,6 +73,39 @@ def test_mc_agent_pregenerate_uses_llm_lines_when_available(tmp_path, monkeypatc
     line = agent.pick_line("opening")
     assert line.startswith("LLM생성-opening")
     assert (tmp_path / "mc_cache.json").exists()
+
+
+def test_mc_agent_falls_back_to_gemini_when_grok_fails(tmp_path, monkeypatch):
+    """Grok 호출이 실패(한도 초과 등)하면 Gemini로 자동 대체되어야 한다."""
+    monkeypatch.setattr("app.config.XAI_API_KEY", "fake-grok-key")
+    monkeypatch.setattr("app.config.GEMINI_API_KEY", "fake-gemini-key")
+    agent = MCAgent(cache_path=tmp_path / "mc_cache.json")
+
+    def _grok_boom(self, tag, count):
+        raise RuntimeError("Grok 한도 초과 시뮬레이션")
+
+    def _fake_gemini(self, tag, count):
+        return [f"Gemini생성-{tag}-1"]
+
+    monkeypatch.setattr(MCAgent, "_call_grok", _grok_boom)
+    monkeypatch.setattr(MCAgent, "_call_gemini", _fake_gemini)
+
+    lines = agent._call_llm_for_tag("opening", 1)
+    assert lines == ["Gemini생성-opening-1"]
+
+
+def test_mc_agent_uses_gemini_directly_when_only_gemini_key_set(tmp_path, monkeypatch):
+    monkeypatch.setattr("app.config.XAI_API_KEY", "")
+    monkeypatch.setattr("app.config.GEMINI_API_KEY", "fake-gemini-key")
+    agent = MCAgent(cache_path=tmp_path / "mc_cache.json")
+    assert agent.has_llm is True
+
+    def _fake_gemini(self, tag, count):
+        return [f"Gemini생성-{tag}-1"]
+
+    monkeypatch.setattr(MCAgent, "_call_gemini", _fake_gemini)
+    lines = agent._call_llm_for_tag("opening", 1)
+    assert lines == ["Gemini생성-opening-1"]
 
 
 def test_mc_agent_pick_line_rotates_without_immediate_repeat():

@@ -10,6 +10,9 @@ services:
     envVars:
       - key: HOST
         value: 0.0.0.0
-      # ANTHROPIC_API_KEY는 대시보드에서 직접 설정(선택 사항 -- 없어도
-      # MC 정적 폴백 멘트로 전 기능이 동작한다).
+      # XAI_API_KEY / GEMINI_API_KEY는 대시보드 Environment 탭에서 직접
+      # 설정한다(선택 사항 -- 없어도 MC 정적 폴백 멘트로 전 기능이 동작한다).
+      # Grok을 우선 호출하고 실패/한도 초과 시 Gemini로 자동 대체한다.
+      # 절대 이 파일(render.yaml)에는 실제 키 값을 직접 넣지 않는다 -- 이
+      # 파일은 저장소에 커밋되므로 대시보드에서만 값을 입력해야 한다.
     healthCheckPath: /

@@ -156,7 +156,8 @@ def test_mc_line_accepts_pass_count_override_param(client):
 
 
 def test_mc_pregenerate_without_api_key_reports_static_fallback(client, monkeypatch):
-    monkeypatch.setattr("app.mc.config.ANTHROPIC_API_KEY", "")
+    monkeypatch.setattr("app.mc.config.XAI_API_KEY", "")
+    monkeypatch.setattr("app.mc.config.GEMINI_API_KEY", "")
     resp = client.post("/api/mc/pregenerate")
     assert resp.status_code == 200
     assert resp.json()["has_llm"] is False

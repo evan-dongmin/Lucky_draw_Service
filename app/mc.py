@@ -216,29 +216,60 @@ class MCAgent:
 
     @property
     def has_llm(self) -> bool:
-        return bool(config.ANTHROPIC_API_KEY)
+        return bool(config.XAI_API_KEY or config.GEMINI_API_KEY)
 
-    def _call_llm_for_tag(self, tag: str, count: int) -> list[str]:
-        """행사 전 사전 생성 전용. 반드시 익명 슬롯만 사용하도록 프롬프트로 강제한다."""
-        import anthropic
-
-        client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+    @staticmethod
+    def _build_prompt(tag: str, count: int) -> str:
         allowed = ", ".join(f"{{{p}}}" for p in ALLOWED_PLACEHOLDERS)
-        prompt = (
+        return (
             "사내 타운홀 경품 추첨 행사의 AI 진행자 멘트를 만들어줘.\n"
             f"상황: {tag}\n"
             f"서로 다른 멘트 {count}개를 한 줄씩 만들어줘. 각 줄은 완성된 한국어 문장이어야 해.\n"
             f"실제 이름이나 숫자는 절대 쓰지 말고, 필요하면 다음 플레이스홀더만 써: {allowed}\n"
             "그 외 다른 중괄호 표현은 쓰지 마. 설명 없이 멘트만 한 줄씩 출력해."
         )
-        response = client.messages.create(
-            model=config.ANTHROPIC_MODEL,
+
+    @staticmethod
+    def _split_lines(text: str) -> list[str]:
+        return [ln.strip("- ").strip() for ln in text.splitlines() if ln.strip()]
+
+    def _call_grok(self, tag: str, count: int) -> list[str]:
+        """xAI Grok (OpenAI 호환 API) 호출."""
+        from openai import OpenAI
+
+        client = OpenAI(api_key=config.XAI_API_KEY, base_url="https://api.x.ai/v1")
+        response = client.chat.completions.create(
+            model=config.XAI_MODEL,
             max_tokens=500,
-            messages=[{"role": "user", "content": prompt}],
+            messages=[{"role": "user", "content": self._build_prompt(tag, count)}],
         )
-        text = response.content[0].text
-        lines = [ln.strip("- ").strip() for ln in text.splitlines() if ln.strip()]
-        return _validate_llm_templates(lines)
+        text = response.choices[0].message.content or ""
+        return _validate_llm_templates(self._split_lines(text))
+
+    def _call_gemini(self, tag: str, count: int) -> list[str]:
+        """Google Gemini 호출."""
+        from google import genai
+
+        client = genai.Client(api_key=config.GEMINI_API_KEY)
+        response = client.models.generate_content(
+            model=config.GEMINI_MODEL,
+            contents=self._build_prompt(tag, count),
+        )
+        text = response.text or ""
+        return _validate_llm_templates(self._split_lines(text))
+
+    def _call_llm_for_tag(self, tag: str, count: int) -> list[str]:
+        """행사 전 사전 생성 전용. 반드시 익명 슬롯만 사용하도록 프롬프트로 강제한다.
+
+        xAI Grok을 우선 사용한다(무료 크레딧 소진/한도 초과 등으로 실패하면
+        Gemini로 자동 대체). 두 키 모두 없으면 pregenerate()의 has_llm 체크에서
+        이미 걸러지므로 여기까지 오지 않는다."""
+        if config.XAI_API_KEY:
+            try:
+                return self._call_grok(tag, count)
+            except Exception:  # noqa: BLE001 - Grok 한도 초과/오류 시 Gemini로 대체
+                logger.warning("Grok 호출 실패(%s) -- Gemini로 대체 시도", tag, exc_info=True)
+        return self._call_gemini(tag, count)
 
     def pregenerate(self, tags: list[str] | None = None, lines_per_tag: int = 12) -> None:
         """행사 시작 전 1회 호출. 실패해도 예외를 전파하지 않고 정적 폴백을 유지한다.
@@ -249,7 +280,7 @@ class MCAgent:
         tags = tags or list(SITUATION_TAGS)
         self._bags.clear()  # 새로 채워질 풀 기준으로 셔플백을 다시 만든다
         if not self.has_llm:
-            logger.info("ANTHROPIC_API_KEY 없음 -- 정적 폴백 멘트만 사용")
+            logger.info("XAI_API_KEY/GEMINI_API_KEY 없음 -- 정적 폴백 멘트만 사용")
             return
         for tag in tags:
             try:
