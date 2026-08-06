@@ -8,6 +8,9 @@
 반전이 핵심 재미 포인트입니다.
 
 > 저장소: https://github.com/evan-dongmin/Lucky_draw_Service
+> 배포 주소: https://taachuwi-grandprix.onrender.com/ (Render.com 무료
+> 플랜 — 트래픽이 없으면 슬립되므로 접속 후 첫 응답이 몇십 초 걸릴 수
+> 있습니다. `/mobile`, `/verify`도 같은 도메인에서 바로 접속 가능합니다.)
 
 > **문서 안내**
 > - **`타추위-추첨프로그램_게임구조.md`** — 게임 진행 순서·라운드별 규칙·
@@ -200,6 +203,10 @@ python run.py
 행사 PC에서 로컬로 실행하는 것도 여전히 가장 안전한 방식이며(네트워크
 불확실성이 없음), 배포 주소는 원격 심사자가 사전에 미리 체험해볼 수
 있게 하는 보조 수단으로 추천합니다.
+
+**실제 배포 주소**: https://taachuwi-grandprix.onrender.com/ (위 방식으로
+이미 배포되어 있습니다. `/mobile`, `/verify`, `/admin`도 같은 도메인
+경로로 바로 접속됩니다.)
 
 ### 운영자 진행 순서 (실제 행사용)
 
