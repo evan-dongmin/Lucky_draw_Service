@@ -22,6 +22,14 @@ const SFX = (() => {
   // 엔진음 노드(레이스 구간에만 살아 있음)
   let engine = null;
 
+  // 장면별 배경음악(BGM) 상태 -- 아래 "장면별 배경음악" 섹션 참고
+  let sceneGain = null;
+  let sceneName = null;
+  let sceneTimer = null;
+  let sceneGeneration = 0;
+  let sceneParams = {};
+  let sceneIntensity = 0.4;
+
   function supported() {
     return typeof window !== "undefined" && (window.AudioContext || window.webkitAudioContext);
   }
@@ -336,6 +344,167 @@ const SFX = (() => {
     engine = null;
   }
 
+  // ---------------------------------------------------------------------
+  // 장면별 배경음악(BGM)
+  //
+  // SFX 한숏과 같은 원칙(외부 파일 없이 오실레이터로 합성, 실패해도 진행에
+  // 영향 없음)을 지속음악에도 적용한다. 화면/구간마다 어울리는 짧은 루프를
+  // 정의해두고, playScene(name)을 부르면 이전 루프를 부드럽게 낮추면서 새
+  // 루프를 올린다 -- 장면이 바뀔 때마다 뚝 끊기지 않는다.
+  //
+  // 각 트랙은 playBar(at, params)를 구현한다: 현재 마디의 음들을 sceneTone
+  // 으로 예약하고 마디 길이(초)를 반환한다. 드라이버(loop)가 그 길이만큼
+  // 뒤에 setTimeout으로 스스로를 다시 부르는 방식의 "마디 단위 루프"라
+  // 정교한 lookahead 스케줄러 없이도 매끄럽게 이어진다.
+  // ---------------------------------------------------------------------
+
+  function ensureSceneGain() {
+    const c = ensureCtx();
+    if (!c) return null;
+    if (!sceneGain) {
+      sceneGain = ctx.createGain();
+      sceneGain.gain.value = 0.0001;
+      sceneGain.connect(master);
+    }
+    return sceneGain;
+  }
+
+  // 음이름 -> Hz (A4 기준 평균율). 코드를 Hz 대신 음이름으로 적어 어떤
+  // 화음/스케일인지 한눈에 알아볼 수 있게 한다.
+  const SEMITONE_FROM_A4 = {
+    C2: -33, D2: -31, E2: -29, G2: -26, A2: -24, B2: -22,
+    C3: -21, D3: -19, E3: -17, G3: -14, A3: -12, B3: -10,
+    C4: -9, D4: -7, E4: -5, G4: -2, A4: 0, B4: 2,
+    C5: 3, D5: 5, E5: 7, G5: 10,
+  };
+  function hz(name) {
+    return 440 * Math.pow(2, SEMITONE_FROM_A4[name] / 12);
+  }
+
+  /** BGM 전용 한 음. sceneGain을 통해서만 나가고, 뮤트/dpr 등은 상위 master가 처리한다. */
+  function sceneTone(freq, dur, type, gain, at) {
+    if (!isReady() || !sceneGain) return;
+    const t = now() + at;
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + 0.02);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(0.05, dur));
+    osc.connect(g);
+    g.connect(sceneGain);
+    osc.start(t);
+    osc.stop(t + dur + 0.05);
+  }
+
+  const SCENES = {
+    // 대기 화면(idle/waiting) -- 행사 시작 전, 아무 일도 안 일어나는 동안
+    // 거슬리지 않게 아주 낮은 볼륨으로 깔리는 5도 화음 패드.
+    idle: {
+      playBar(at) {
+        const bar = 4.2;
+        sceneTone(hz("C3"), bar * 0.92, "sine", 0.045, at);
+        sceneTone(hz("G3"), bar * 0.92, "sine", 0.028, at + 0.15);
+        return bar;
+      },
+    },
+    // 선택/발표 대기 화면(committed, r1_lock, score_rX_select_rY) -- 참가자가
+    // 모바일에서 대상을 고르는 동안의 "결정을 기다리는" 긴장감. 단조 아르페지오.
+    anticipation: {
+      playBar(at) {
+        const bpm = 100;
+        const beat = 60 / bpm;
+        sceneTone(hz("A2"), beat * 3.7, "triangle", 0.06, at);
+        const arp = ["A3", "C4", "E4", "A4", "E4", "C4"];
+        const step = (beat * 4) / arp.length;
+        arp.forEach((n, i) => sceneTone(hz(n), beat * 0.4, "square", 0.04, at + i * step));
+        return beat * 4;
+      },
+    },
+    // 레이스 진행(race_r1/r2/r3) -- 베이스 오스티나토 + 리드 아르페지오.
+    // params.round(1~3)로 기본 템포를, setSceneIntensity(0..1, 진행률+접전도)
+    // 로 마디마다 템포/밝기를 살짝 올려 후반부로 갈수록 몰아치는 느낌을 준다.
+    race: {
+      playBar(at, params) {
+        const round = (params && params.round) || 1;
+        const bpm = 122 + round * 8 + sceneIntensity * 14;
+        const beat = 60 / bpm;
+        const bass = ["E2", "E2", "G2", "E2", "A2", "E2", "G2", "B2"];
+        bass.forEach((n, i) => sceneTone(hz(n), beat * 0.42, "sawtooth", 0.065, at + i * beat * 0.5));
+        const lead = ["E4", "G4", "B4", "A4"];
+        const leadGain = 0.03 + sceneIntensity * 0.045;
+        lead.forEach((n, i) => sceneTone(hz(n), beat * 0.5, "square", leadGain, at + i * beat));
+        if (sceneIntensity > 0.72) {
+          sceneTone(hz("E5"), beat * 1.6, "triangle", 0.03, at + beat * 2);
+        }
+        return beat * 4;
+      },
+    },
+    // 결과 화면(round_revealed 이후/final_announce/verify/podium) -- 밝은
+    // 장조 화음 + 반짝이는 벨 음으로 승리감을 준다.
+    victory: {
+      playBar(at) {
+        const bar = 2.6;
+        ["C4", "E4", "G4"].forEach((n) => sceneTone(hz(n), bar * 0.85, "triangle", 0.045, at));
+        sceneTone(hz("C5"), 0.5, "square", 0.05, at + 0.05);
+        sceneTone(hz("G5"), 0.45, "square", 0.035, at + bar * 0.55);
+        return bar;
+      },
+    },
+    // 룰렛 모드 스핀 구간 -- 빙글빙글 도는 느낌의 짧고 단순한 루프.
+    roulette: {
+      playBar(at) {
+        const bar = 1.8;
+        sceneTone(hz("A3"), bar * 0.9, "sine", 0.05, at);
+        sceneTone(hz("E4"), bar * 0.4, "triangle", 0.035, at + bar * 0.5);
+        return bar;
+      },
+    },
+  };
+
+  /** 장면 전환. 이미 같은 장면이면(라운드 등 params만 갱신하고) 다시 시작하지 않는다 -- 매 페이즈 이벤트마다 불려도 끊기지 않게. */
+  function playScene(name, opts = {}) {
+    if (!SCENES[name]) return;
+    if (sceneName === name) {
+      sceneParams = { ...sceneParams, ...opts };
+      return;
+    }
+    if (!ensureSceneGain()) return;
+    sceneGeneration += 1;
+    const myGen = sceneGeneration;
+    sceneName = name;
+    sceneParams = { ...opts };
+    sceneGain.gain.cancelScheduledValues(now());
+    sceneGain.gain.setTargetAtTime(0.55, now(), 0.5);
+
+    if (sceneTimer) clearTimeout(sceneTimer);
+    const loop = () => {
+      if (myGen !== sceneGeneration) return;
+      if (!isReady()) {
+        sceneTimer = setTimeout(loop, 300); // 아직 unlock 전이거나 음소거 -- 조용히 재시도
+        return;
+      }
+      const bar = SCENES[sceneName].playBar(0, sceneParams);
+      sceneTimer = setTimeout(loop, Math.max(200, bar * 1000 - 60));
+    };
+    loop();
+  }
+
+  function stopScene() {
+    sceneGeneration += 1;
+    if (sceneTimer) {
+      clearTimeout(sceneTimer);
+      sceneTimer = null;
+    }
+    sceneName = null;
+    if (sceneGain) sceneGain.gain.setTargetAtTime(0.0001, now(), 0.4);
+  }
+
+  function setSceneIntensity(value) {
+    sceneIntensity = Math.max(0, Math.min(1, value));
+  }
+
   return {
     unlock,
     setEnabled,
@@ -358,5 +527,9 @@ const SFX = (() => {
     startEngine,
     setRpm,
     stopEngine,
+    playScene,
+    stopScene,
+    setSceneIntensity,
+    getSceneName: () => sceneName,
   };
 })();

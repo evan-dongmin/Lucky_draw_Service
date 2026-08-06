@@ -245,7 +245,7 @@ class MCAgent:
 
         race_progress/department_rank_shift는 레이스 도중 실시간 이벤트(추월·
         선두 교체)마다 호출되어 소모가 빠르므로 기본 요청 수를 12줄로 늘렸다
-        (기존 6줄 -- 5분 데모에서도 금방 티가 나던 반복을 줄이기 위함)."""
+        (기존 6줄 -- 10분 데모에서도 금방 티가 나던 반복을 줄이기 위함)."""
         tags = tags or list(SITUATION_TAGS)
         self._bags.clear()  # 새로 채워질 풀 기준으로 셔플백을 다시 만든다
         if not self.has_llm:

@@ -47,12 +47,13 @@ def test_rejects_non_positive_total_seconds():
         build_runbook(total_seconds=-10)
 
 
-def test_default_300_seconds_matches_runbook_proportions():
+def test_default_600_seconds_matches_runbook_proportions():
     segments = build_runbook()
     by_phase = {s.phase: s.duration_seconds for s in segments}
-    assert by_phase["opening"] == pytest.approx(10, abs=0.01)
-    assert by_phase["race_r3"] == pytest.approx(70, abs=0.01)
-    assert by_phase["score_r1_select_r2"] == pytest.approx(30, abs=0.01)
+    # 기본 총 시간(600초)은 기준 비율표(합 300초)의 2배로 스케일된다
+    assert by_phase["opening"] == pytest.approx(20, abs=0.01)
+    assert by_phase["race_r3"] == pytest.approx(140, abs=0.01)
+    assert by_phase["score_r1_select_r2"] == pytest.approx(60, abs=0.01)
 
 
 def test_segment_order_is_stable():

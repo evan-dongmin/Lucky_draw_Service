@@ -265,7 +265,7 @@ class CreateSessionRequest(BaseModel):
     participants: list[dict[str, Any]]
     draw_count: int = 1
     mode: str = "roulette"
-    total_seconds: float = 300.0
+    total_seconds: float = 600.0
     predictions_enabled: bool = False
     prediction_mode: str = "confidence"
 
@@ -1233,7 +1233,7 @@ async def qrcode_image(request: Request) -> Response:
 class DemoStartRequest(BaseModel):
     participant_count: int = 250
     draw_count: int = 3
-    total_seconds: float = 300.0
+    total_seconds: float = 600.0
     with_bots: bool = True
     reserved_for_human: int = 5
     prediction_mode: str = "confidence"

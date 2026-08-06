@@ -96,7 +96,7 @@ class Session:
     draw_count: int = 1
     excluded_ids: list[str] = field(default_factory=list)
     mode: str = "roulette"
-    total_seconds: float = 300.0
+    total_seconds: float = 600.0
     predictions_enabled: bool = False
     # "confidence"(무손실 확신도 배분) | "gambling"(승인된 사이버머니 갬블링).
     # predictions_enabled가 False면 어느 쪽도 쓰이지 않는다. 두 모드는 동시에
@@ -129,7 +129,7 @@ class Session:
             draw_count=data.get("draw_count", 1),
             excluded_ids=list(data.get("excluded_ids", [])),
             mode=data.get("mode", "roulette"),
-            total_seconds=data.get("total_seconds", 300.0),
+            total_seconds=data.get("total_seconds", 600.0),
             predictions_enabled=data.get("predictions_enabled", False),
             prediction_mode=data.get("prediction_mode", "confidence"),
             created_at=data.get("created_at", ""),
