@@ -10,3 +10,4 @@ tests
 scripts
 *.md
 *.txt
+!requirements.txt

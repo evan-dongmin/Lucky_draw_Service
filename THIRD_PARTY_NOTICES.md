@@ -11,7 +11,7 @@
 | openpyxl | 3.1.5 | MIT | xlsx 명단 파싱 |
 | qrcode[pil] | 8.0 | BSD-3-Clause | 모바일 참여 화면(/mobile) 접속용 QR 코드 생성 |
 | anthropic | 0.42.0 | MIT | AI MC 멘트 사전 생성 (LLM API, 선택적 -- 키 없이도 정적 폴백으로 동작) |
-| pydantic | 2.13.4 | MIT | FastAPI 요청/응답 모델 검증 |
+| pydantic | 2.12.4 | MIT | FastAPI 요청/응답 모델 검증 |
 | python-multipart | 0.0.20 | Apache-2.0 | 명단 파일 업로드(multipart/form-data) 처리 |
 | pytest | 8.3.4 | MIT | 테스트 프레임워크 |
 | pytest-asyncio | 0.25.2 | Apache-2.0 | 비동기(asyncio) 테스트 지원 |
