@@ -181,71 +181,9 @@ button {
   margin-top: 0.15rem;
 }
 
-/* -- 갬블링 베팅 카드 ------------------------------------------------- */
-
-.bet-card.state-open {
-  border-color: #ff9f45;
-}
-
-.bet-card.state-locked {
-  border-color: #7cf29c;
-}
-
-.balance-line {
-  font-size: 1.05rem;
-  color: #ffd166;
-  font-weight: 700;
-}
-
 .hint-line {
   color: #c7cedb;
   font-size: 0.92rem;
-}
-
-.odds-list .bet-target-btn {
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0.15rem;
-  min-width: 6.5rem;
-}
-
-.odds-label {
-  font-size: 0.78rem;
-  color: #7cf29c;
-  font-family: "Consolas", monospace;
-}
-
-.bet-amount-row {
-  display: flex;
-  gap: 0.5rem;
-  margin-top: 0.5rem;
-}
-
-.bet-amount-row input[type="number"] {
-  flex: 1;
-  padding: 0.5rem;
-  border-radius: 0.5rem;
-  border: 1px solid #2a3242;
-  background: #0b0e14;
-  color: #f5f7fa;
-  font-family: "Consolas", monospace;
-}
-
-.btn-bet-submit {
-  background: #ff9f45;
-  color: #1a0d0d;
-  font-weight: 700;
-}
-
-.net-win {
-  color: #7cf29c;
-  font-weight: 700;
-}
-
-.net-lose {
-  color: #ff8080;
-  font-weight: 700;
 }
 
 /* -- 캐릭터/카트 선택 -------------------------------------------------- */

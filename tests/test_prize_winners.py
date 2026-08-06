@@ -1,4 +1,4 @@
-"""_compute_prize_winners: 실제 경품 당첨자를 예측/갬블링 최종 리더보드에서
+"""_compute_prize_winners: 실제 경품 당첨자를 예측 게임 최종 리더보드에서
 뽑는 로직. 레이스/공정성(fairness.py, draw.winners)은 이 파일에서 전혀
 건드리지 않는다 -- 그 위에 얹는 별도 결정 단계이기 때문이다."""
 
@@ -23,9 +23,11 @@ TINY_SEGMENTS = [
 ]
 
 
-def _make_session(mode: str, predictions_enabled: bool, draw_count: int = 3, count: int = 40) -> tuple[Session, object]:
+def _make_session(predictions_enabled: bool, draw_count: int = 3, count: int = 40) -> tuple[Session, object]:
     participants = generate_sample_participants(count, seed=3)
-    draw = fairness.compute_draw(f"prize-{mode}-{predictions_enabled}", participants, draw_count=draw_count, seed="prize-seed")
+    draw = fairness.compute_draw(
+        f"prize-{predictions_enabled}", participants, draw_count=draw_count, seed="prize-seed"
+    )
     fairness.reveal(draw)
     session = Session(
         session_id="prize-session",
@@ -34,7 +36,6 @@ def _make_session(mode: str, predictions_enabled: bool, draw_count: int = 3, cou
         mode="racing",
         total_seconds=300.0,
         predictions_enabled=predictions_enabled,
-        prediction_mode=mode,
         created_at="2026-01-01T00:00:00Z",
     )
     session.draws.append(draw)
@@ -42,33 +43,17 @@ def _make_session(mode: str, predictions_enabled: bool, draw_count: int = 3, cou
 
 
 def test_predictions_disabled_falls_back_to_race_winners():
-    session, draw = _make_session("confidence", predictions_enabled=False)
+    session, draw = _make_session(predictions_enabled=False)
     ids, basis, scores = main_module._compute_prize_winners(session, draw)
     assert basis == "race"
     assert ids == list(draw.winners)
 
 
-def test_gambling_leaderboard_can_diverge_from_race_winners():
-    """핵심 시나리오: 레이스 순위와 무관하게 사이버머니를 제일 많이 모은
-    사람이 실제 경품 당첨자가 돼야 한다(레이스 1등이라도 잔액이 낮으면
-    탈락). 전원에게 레이스 순위와 정반대인 잔액을 줘서 확실히 검증한다."""
-    session, draw = _make_session("gambling", predictions_enabled=True)
-    main_module.gambling_engine.reset()
-
-    n = len(draw.ranking)
-    for i, pid in enumerate(draw.ranking):
-        card = main_module.gambling_engine.get_or_create_card(pid)
-        card.balance = i + 1  # 레이스 순위가 뒤일수록(꼴찌에 가까울수록) 잔액이 높음
-
-    ids, basis, scores = main_module._compute_prize_winners(session, draw)
-    assert basis == "gambling"
-    expected = list(reversed(draw.ranking))[: len(draw.winners)]
-    assert ids == expected
-    assert set(ids).isdisjoint(draw.winners)  # 레이스 당첨자는 전원 잔액 최하위라 실제 당첨에서 탈락
-
-
-def test_confidence_leaderboard_can_diverge_from_race_winners():
-    session, draw = _make_session("confidence", predictions_enabled=True)
+def test_prediction_leaderboard_can_diverge_from_race_winners():
+    """핵심 시나리오: 레이스 순위와 무관하게 예측 점수를 제일 많이 모은
+    사람이 실제 경품 당첨자가 돼야 한다(레이스 1등이라도 점수가 낮으면
+    탈락). 전원에게 레이스 순위와 정반대인 점수를 줘서 확실히 검증한다."""
+    session, draw = _make_session(predictions_enabled=True)
     main_module.prediction_engine.reset()
 
     for i, pid in enumerate(draw.ranking):
@@ -76,24 +61,24 @@ def test_confidence_leaderboard_can_diverge_from_race_winners():
         card.score = i + 1  # 레이스 순위가 뒤일수록 예측 점수가 높음
 
     ids, basis, scores = main_module._compute_prize_winners(session, draw)
-    assert basis == "confidence"
+    assert basis == "prediction"
     expected = list(reversed(draw.ranking))[: len(draw.winners)]
     assert ids == expected
-    assert set(ids).isdisjoint(draw.winners)
+    assert set(ids).isdisjoint(draw.winners)  # 레이스 당첨자는 전원 점수 최하위라 실제 당첨에서 탈락
 
 
 def test_prize_winner_count_shrinks_when_fewer_participants_engaged():
-    """당첨 인원 N보다 예측/갬블링에 참여한 사람이 적으면(모바일 온보딩을
+    """당첨 인원 N보다 예측 게임에 참여한 사람이 적으면(모바일 온보딩을
     안 한 사람이 많음) 그만큼만 실제 당첨자가 나온다 -- 에러 없이 조용히
     부족분만큼 줄어들어야 한다."""
-    session, draw = _make_session("gambling", predictions_enabled=True, draw_count=5)
-    main_module.gambling_engine.reset()
+    session, draw = _make_session(predictions_enabled=True, draw_count=5)
+    main_module.prediction_engine.reset()
     only_two = list(draw.ranking)[:2]
     for pid in only_two:
-        main_module.gambling_engine.get_or_create_card(pid)
+        main_module.prediction_engine.get_or_create_card(pid)
 
     ids, basis, scores = main_module._compute_prize_winners(session, draw)
-    assert basis == "gambling"
+    assert basis == "prediction"
     assert len(ids) == 2
     assert set(ids) == set(only_two)
 
@@ -124,15 +109,14 @@ async def test_racing_sequence_broadcasts_prize_winners_after_final_scoring(monk
         mode="racing",
         total_seconds=300.0,
         predictions_enabled=True,
-        prediction_mode="gambling",
         created_at="2026-01-01T00:00:00Z",
     )
     session.draws.append(draw)
     main_module.store.set_session(session)
-    main_module.gambling_engine.reset()
+    main_module.prediction_engine.reset()
     main_module.predict_tokens.clear()
     department_names = list(draw.snapshot["departments"].keys())
-    main_module.gambling_engine.open_round(1, department_names)
+    main_module.prediction_engine.open_round(1, department_names)
 
     monkeypatch.setattr(main_module.director, "build_runbook", lambda **kwargs: list(TINY_SEGMENTS))
     monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.01)
@@ -149,12 +133,12 @@ async def test_racing_sequence_broadcasts_prize_winners_after_final_scoring(monk
     types_seen = [m["type"] for m in messages]
     assert "prize_winners" in types_seen
     assert types_seen.index("prize_winners") > types_seen.index("revealed")
-    # 라운드 3 최종 채점(gambling_result) 이후에 당첨자가 정해져야 한다
-    round3_result_positions = [i for i, m in enumerate(messages) if m["type"] == "gambling_result" and m.get("round") == 3]
-    assert round3_result_positions
-    assert types_seen.index("prize_winners") > round3_result_positions[0]
+    # 라운드 3 최종 채점(리더보드 갱신) 이후에 당첨자가 정해져야 한다
+    leaderboard_positions = [i for i, m in enumerate(messages) if m["type"] == "prediction_leaderboard"]
+    assert leaderboard_positions
+    assert types_seen.index("prize_winners") > leaderboard_positions[-1]
 
     prize_msg = next(m for m in messages if m["type"] == "prize_winners")
-    assert prize_msg["basis"] == "gambling"
+    assert prize_msg["basis"] == "prediction"
     assert draw.prize_winners == prize_msg["winners"]
-    assert draw.prize_basis == "gambling"
+    assert draw.prize_basis == "prediction"

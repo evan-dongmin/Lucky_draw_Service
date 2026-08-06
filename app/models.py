@@ -50,15 +50,15 @@ class DrawResult:
     revealed_rounds: list[int] = field(default_factory=list)
     created_at: str = ""
     revealed_at: str | None = None
-    # 실제 경품 당첨자(레이스 결과 winners와는 다를 수 있다). 예측/갬블링이
+    # 실제 경품 당첨자(레이스 결과 winners와는 다를 수 있다). 예측 게임이
     # 켜진 세션에서는 최종 리더보드 상위 N명으로 결정되고, 꺼져 있거나
     # 룰렛 모드면 winners와 동일한 값이 그대로 들어간다. prize_basis로
-    # "race"|"confidence"|"gambling" 중 어느 기준으로 뽑혔는지 구분한다.
+    # "race"|"prediction" 중 어느 기준으로 뽑혔는지 구분한다.
     # 둘 다 리빌 전에는 None -- winners처럼 결과가 조기 노출되면 안 된다.
     prize_winners: list[str] | None = None
     prize_basis: str | None = None
-    # 당첨자별 최종 성적(갬블링이면 사이버머니 잔액, 확신도면 점수). 시상대에
-    # "얼마로 당첨됐는지"를 함께 보여주기 위한 표시 전용 값 -- prize_winners와
+    # 당첨자별 최종 성적(예측 게임 점수). 시상대에
+    # "몇 점으로 당첨됐는지"를 함께 보여주기 위한 표시 전용 값 -- prize_winners와
     # 같은 순서로 채워진다. 레이스 기준(prize_basis="race")이면 성적 개념이
     # 없으므로 빈 리스트.
     prize_scores: list[int] = field(default_factory=list)
@@ -116,10 +116,6 @@ class Session:
     mode: str = "roulette"
     total_seconds: float = 600.0
     predictions_enabled: bool = False
-    # "confidence"(무손실 확신도 배분) | "gambling"(승인된 사이버머니 갬블링).
-    # predictions_enabled가 False면 어느 쪽도 쓰이지 않는다. 두 모드는 동시에
-    # 참가자에게 강요하지 않는다 -- 세션당 하나만 활성화된다.
-    prediction_mode: str = "confidence"
     created_at: str = ""
     draws: list[DrawResult] = field(default_factory=list)
     round_plans: list[RoundPlan] = field(default_factory=list)
@@ -133,7 +129,6 @@ class Session:
             "mode": self.mode,
             "total_seconds": self.total_seconds,
             "predictions_enabled": self.predictions_enabled,
-            "prediction_mode": self.prediction_mode,
             "created_at": self.created_at,
             "draws": [d.to_dict() for d in self.draws],
             "round_plans": [r.to_dict() for r in self.round_plans],
@@ -149,7 +144,6 @@ class Session:
             mode=data.get("mode", "roulette"),
             total_seconds=data.get("total_seconds", 600.0),
             predictions_enabled=data.get("predictions_enabled", False),
-            prediction_mode=data.get("prediction_mode", "confidence"),
             created_at=data.get("created_at", ""),
             draws=[DrawResult.from_dict(d) for d in data.get("draws", [])],
             round_plans=[RoundPlan.from_dict(r) for r in data.get("round_plans", [])],

@@ -14,14 +14,12 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from app import characters, departments as departments_module
-from app import director, fairness, gambling, predictions, race, roster
+from app import director, fairness, predictions, race, roster
 from app.config import (
     CHARACTER_SNAPSHOT_PATH,
-    GAMBLING_SNAPSHOT_PATH,
     PREDICTION_SNAPSHOT_PATH,
     STATIC_DIR,
 )
-from app.gambling import GamblingEngine
 from app.mc import MCAgent
 from app.models import DrawResult, Participant, Session
 from app.predictions import PredictionEngine
@@ -41,7 +39,6 @@ async def lifespan(_: FastAPI):
     if session:
         logger.info("세션 스냅샷 복원: %s", session.session_id)
     load_prediction_snapshot()
-    load_gambling_snapshot()
     load_character_snapshot()
     mc_agent.load_cache()
     yield
@@ -86,17 +83,15 @@ class ConnectionHub:
 hub = ConnectionHub()
 active_race_tasks: dict[str, asyncio.Task] = {}
 prediction_engine = PredictionEngine()
-gambling_engine = GamblingEngine()
-predict_tokens: dict[str, str] = {}  # 기기 토큰 -> participant_id (예측/베팅 게임 공용 온보딩)
+predict_tokens: dict[str, str] = {}  # 기기 토큰 -> participant_id (예측 게임/캐릭터 선택 공용 온보딩)
 fast_forward_requests: set[str] = set()  # 조기 종료가 요청된 session_id 집합 (레이스 구간 전용)
 character_choices: dict[str, str] = {}  # participant_id -> character_id (선택 안 하면 부서 기반 폴백)
 prediction_snapshot_path = PREDICTION_SNAPSHOT_PATH
-gambling_snapshot_path = GAMBLING_SNAPSHOT_PATH
 character_snapshot_path = CHARACTER_SNAPSHOT_PATH
 
 
 def save_prediction_snapshot() -> None:
-    """예측 게임(확신도 배분) 상태를 디스크에 저장한다. Session과 마찬가지로
+    """예측 게임 상태를 디스크에 저장한다. Session과 마찬가지로
     서버가 재시작돼도 채점 결과가 사라지지 않도록(재계산이 아니라 그대로
     복원) 매 변경 시점마다 호출한다."""
     payload = {"engine": prediction_engine.to_dict(), "tokens": dict(predict_tokens)}
@@ -111,27 +106,6 @@ def load_prediction_snapshot() -> None:
         return
     data = json.loads(prediction_snapshot_path.read_text(encoding="utf-8"))
     prediction_engine.load_dict(data.get("engine", {}))
-    predict_tokens.update(data.get("tokens", {}))
-
-
-def save_gambling_snapshot() -> None:
-    """갬블링 모드 상태(잔액·베팅·정산 이력)를 디스크에 저장한다. 확신도
-    배분과 동일한 이유(장애 복구)로 매 변경 시점마다 호출한다. 세션당
-    한 모드만 활성화되므로 실제로는 이 함수와 save_prediction_snapshot 중
-    하나만 계속 호출되지만, tokens는 두 스냅샷 모두에 중복 저장해 둔다
-    (재시작 시 어느 파일을 읽어도 참여자 신원 복원이 가능하도록)."""
-    payload = {"engine": gambling_engine.to_dict(), "tokens": dict(predict_tokens)}
-    gambling_snapshot_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = gambling_snapshot_path.with_suffix(".tmp")
-    tmp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp_path.replace(gambling_snapshot_path)
-
-
-def load_gambling_snapshot() -> None:
-    if not gambling_snapshot_path.exists():
-        return
-    data = json.loads(gambling_snapshot_path.read_text(encoding="utf-8"))
-    gambling_engine.load_dict(data.get("engine", {}))
     predict_tokens.update(data.get("tokens", {}))
 
 
@@ -262,31 +236,22 @@ async def roster_sample(count: int = 250) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-VALID_PREDICTION_MODES = {"confidence", "gambling"}
-
-
 class CreateSessionRequest(BaseModel):
     participants: list[dict[str, Any]]
     draw_count: int = 1
     mode: str = "roulette"
     total_seconds: float = 600.0
     predictions_enabled: bool = False
-    prediction_mode: str = "confidence"
 
 
-def _reset_prediction_and_gambling_state() -> None:
-    """새 세션·재추첨·초기화 시 예측/베팅 두 엔진과 캐릭터 선택, 스냅샷
-    파일을 모두 정리한다. 세션당 한 예측 모드만 쓰이지만, 이전 세션이
-    다른 모드였을 수 있으므로 전부 확실히 비워야 다음 세션에서 낡은
-    상태가 새지 않는다."""
+def _reset_prediction_state() -> None:
+    """새 세션·재추첨·초기화 시 예측 엔진과 캐릭터 선택, 스냅샷 파일을 모두
+    정리한다. 하나라도 남으면 다음 세션에 낡은 점수/신원이 새어 들어간다."""
     prediction_engine.reset()
-    gambling_engine.reset()
     predict_tokens.clear()
     character_choices.clear()
     if prediction_snapshot_path.exists():
         prediction_snapshot_path.unlink()
-    if gambling_snapshot_path.exists():
-        gambling_snapshot_path.unlink()
     if character_snapshot_path.exists():
         character_snapshot_path.unlink()
 
@@ -297,8 +262,6 @@ async def create_session(payload: CreateSessionRequest) -> dict[str, Any]:
         participants = [Participant.from_dict(p) for p in payload.participants]
         if not participants:
             raise HTTPException(status_code=400, detail="참가자가 없습니다.")
-        if payload.prediction_mode not in VALID_PREDICTION_MODES:
-            raise HTTPException(status_code=400, detail=f"prediction_mode는 {VALID_PREDICTION_MODES} 중 하나여야 합니다.")
         session = Session(
             session_id=uuid.uuid4().hex[:12],
             participants=participants,
@@ -306,11 +269,10 @@ async def create_session(payload: CreateSessionRequest) -> dict[str, Any]:
             mode=payload.mode,
             total_seconds=payload.total_seconds,
             predictions_enabled=payload.predictions_enabled,
-            prediction_mode=payload.prediction_mode,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
         store.set_session(session)
-        _reset_prediction_and_gambling_state()
+        _reset_prediction_state()
         await hub.broadcast({"type": "session_created", "session": public_session_dict(session)})
         return public_session_dict(session)
 
@@ -339,7 +301,7 @@ async def set_excluded(payload: ExcludeRequest) -> dict[str, Any]:
 async def reset_session() -> dict[str, Any]:
     async with state_lock:
         store.clear()
-        _reset_prediction_and_gambling_state()
+        _reset_prediction_state()
         fast_forward_requests.clear()
         for session_id, task in list(active_race_tasks.items()):
             if not task.done():
@@ -426,11 +388,8 @@ async def redraw(payload: RedrawRequest) -> dict[str, Any]:
         session.draws.append(draw)
         store.set_session(session)
         if session.predictions_enabled:
-            # 새 추첨 회차 -- 예측/베팅 게임도 새로 시작(활성 엔진만 리셋)
-            if session.prediction_mode == "gambling":
-                gambling_engine.reset()
-            else:
-                prediction_engine.reset()
+            # 새 추첨 회차 -- 예측 게임도 처음부터 새로 시작한다
+            prediction_engine.reset()
             department_names = list(draw.snapshot.get("departments", {}).keys())
             await _open_round_1(session, department_names)
         public = public_draw_dict(draw)
@@ -534,7 +493,6 @@ async def _announce_round(session: Session, draw: DrawResult, round_index: int) 
 async def _leaderboard_payload() -> dict[str, Any]:
     return {
         "type": "prediction_leaderboard",
-        "mode": "confidence",
         "top": [
             {"participant_id": c.participant_id, "score": c.score}
             for c in prediction_engine.leaderboard(10)
@@ -542,53 +500,27 @@ async def _leaderboard_payload() -> dict[str, Any]:
     }
 
 
-async def _gambling_leaderboard_payload() -> dict[str, Any]:
-    # "prediction_leaderboard" 타입을 그대로 재사용한다 -- 클라이언트가 이미
-    # 이 이벤트를 구독 중이므로 새 이벤트 타입을 추가하지 않고 mode 필드로
-    # 분기시킨다(확신도 배분은 score, 갬블링은 balance가 랭킹 기준).
-    return {
-        "type": "prediction_leaderboard",
-        "mode": "gambling",
-        "top": [
-            {"participant_id": c.participant_id, "balance": c.balance}
-            for c in gambling_engine.leaderboard(10)
-        ],
-    }
-
-
 async def _open_round_1(session: Session, department_names: list[str]) -> None:
-    """커밋 직후(또는 재추첨 직후) 1라운드 선택/베팅 창을 연다. 활성 모드에
-    따라 예측 엔진과 갬블링 엔진 중 하나만 움직인다."""
-    if session.prediction_mode == "gambling":
-        gambling_engine.open_round(1, department_names)
-        save_gambling_snapshot()
-    else:
-        prediction_engine.open_round(1, department_names)
-        save_prediction_snapshot()
+    """커밋 직후(또는 재추첨 직후) 1라운드 선택 창을 연다."""
+    prediction_engine.open_round(1, department_names)
+    save_prediction_snapshot()
     await hub.broadcast(
         {
             "type": "prediction_window",
             "round": 1,
             "state": "open",
             "candidates": department_names,
-            "mode": session.prediction_mode,
         }
     )
 
 
 async def _lock_round(session: Session, round_index: int, seed: str) -> None:
-    if session.prediction_mode == "gambling":
-        if gambling_engine.round_state.get(round_index) != "open":
-            return
-        gambling_engine.lock_round(round_index)
-        save_gambling_snapshot()
-    else:
-        if prediction_engine.round_state.get(round_index) != "open":
-            return
-        prediction_engine.lock_round(round_index, seed=seed)
-        save_prediction_snapshot()
+    if prediction_engine.round_state.get(round_index) != "open":
+        return
+    prediction_engine.lock_round(round_index, seed=seed)
+    save_prediction_snapshot()
     await hub.broadcast(
-        {"type": "prediction_window", "round": round_index, "state": "locked", "mode": session.prediction_mode}
+        {"type": "prediction_window", "round": round_index, "state": "locked"}
     )
 
 
@@ -609,33 +541,11 @@ async def _score_and_open_next(
         else:
             next_candidates = list(draw.snapshot.get("departments", {}).keys())
 
-    if session.prediction_mode == "gambling":
-        odds_payload = gambling_engine.resolve_round(scored_round, hit_set)
-        if next_candidates is not None:
-            gambling_engine.open_round(next_round, next_candidates)
-
-        # 라운드 보상(사용자 요청): 통과한 개인 + 그 라운드 통과율 순위별
-        # 부서("팀") 소속 통과자에게 차등 추가 지급. 이미 fairness.py가
-        # 계산해둔 결과를 읽어서 지급할 뿐이라 추첨 계산에는 관여하지 않는다.
-        if scored_round in (1, 2):
-            passed_ids = set(draw.round_pass_ids[scored_round])
-            rates = draw.department_pass_rate.get(scored_round, {})
-            departments = draw.snapshot.get("departments", {})
-            ranked_names = [name for name, _ in sorted(rates.items(), key=lambda kv: (-kv[1], kv[0]))]
-            ranked_dept_ids = [set(departments.get(name, [])) for name in ranked_names]
-            rewards = gambling_engine.award_round_rewards(passed_ids, ranked_dept_ids, scored_round)
-        else:
-            rewards = gambling_engine.award_final_rewards(set(draw.winners), scored_round)
-
-        save_gambling_snapshot()
-        await hub.broadcast({"type": "gambling_result", "rewards": rewards, **odds_payload})
-        await hub.broadcast(await _gambling_leaderboard_payload())
-    else:
-        prediction_engine.score_round(scored_round, hit_set)
-        if next_candidates is not None:
-            prediction_engine.open_round(next_round, next_candidates)
-        save_prediction_snapshot()
-        await hub.broadcast(await _leaderboard_payload())
+    prediction_engine.score_round(scored_round, hit_set)
+    if next_candidates is not None:
+        prediction_engine.open_round(next_round, next_candidates)
+    save_prediction_snapshot()
+    await hub.broadcast(await _leaderboard_payload())
 
     if next_round is not None:
         await hub.broadcast(
@@ -644,37 +554,30 @@ async def _score_and_open_next(
                 "round": next_round,
                 "state": "open",
                 "candidates": next_candidates,
-                "mode": session.prediction_mode,
             }
         )
 
 
 def _compute_prize_winners(session: Session, draw: DrawResult) -> tuple[list[str], str, list[int]]:
-    """실제 경품 당첨자를 정한다. 예측/갬블링 게임이 켜져 있으면 그 최종
-    리더보드 상위 N명(N = 원래 레이스로 정해졌던 당첨 인원수, len(draw.winners))
-    이 곧 당첨자다 -- 레이스 자체는 여전히 공정하고 /verify로 검증 가능하지만,
+    """실제 경품 당첨자를 정한다. 예측 게임이 켜져 있으면 그 최종 리더보드
+    상위 N명(N = 원래 레이스로 정해졌던 당첨 인원수, len(draw.winners))이 곧
+    당첨자다 -- 레이스 자체는 여전히 공정하고 /verify로 검증 가능하지만,
     "그 공정한 레이스를 누가 가장 잘 예측했는가"가 최종 결과를 정하는 구조로
     바꾼 것(사용자 요청: 막판까지 순위를 알 수 없고 리더보드가 끝까지
     갱신되는 반전 있는 진행을 위함). 예측 게임이 꺼져 있으면 리더보드 자체가
     없으므로 레이스 결과를 그대로 쓴다(기존 동작과 동일, 회귀 없음).
 
-    두 엔진의 leaderboard()는 이미 (-score/-balance, participant_id) 순으로
-    결정론적으로 정렬돼 있어 동점 처리를 따로 할 필요가 없다. 참여 인원이
-    N명보다 적으면(모바일 온보딩을 안 한 사람이 많은 경우) 그만큼 당첨자
-    수가 줄어든다 -- 예측/갬블링 게임에 참여해야 당첨 대상이 된다는 뜻이라
-    문서에 명확히 안내해야 한다.
+    leaderboard()는 이미 (-score, participant_id) 순으로 결정론적으로 정렬돼
+    있어 동점 처리를 따로 할 필요가 없다. 참여 인원이 N명보다 적으면(모바일
+    온보딩을 안 한 사람이 많은 경우) 그만큼 당첨자 수가 줄어든다 -- 예측
+    게임에 참여해야 당첨 대상이 된다는 뜻이라 문서에 명확히 안내해야 한다.
     """
     n = len(draw.winners)
     if not session.predictions_enabled:
         # 레이스 결과 그대로 -- "성적" 개념이 없으므로 점수는 비운다.
         return list(draw.winners), "race", []
-    if session.prediction_mode == "gambling":
-        ranked = gambling_engine.leaderboard(n)
-        scores = [c.balance for c in ranked]
-    else:
-        ranked = prediction_engine.leaderboard(n)
-        scores = [c.score for c in ranked]
-    return [c.participant_id for c in ranked], session.prediction_mode, scores
+    ranked = prediction_engine.leaderboard(n)
+    return [c.participant_id for c in ranked], "prediction", [c.score for c in ranked]
 
 
 async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: float) -> None:
@@ -842,35 +745,22 @@ class PredictJoinRequest(BaseModel):
     existing_token: str | None = None
 
 
-def _active_engine(session: Session):
-    return gambling_engine if session.prediction_mode == "gambling" else prediction_engine
-
-
-def _save_active_snapshot(session: Session) -> None:
-    if session.prediction_mode == "gambling":
-        save_gambling_snapshot()
-    else:
-        save_prediction_snapshot()
-
-
 @app.post("/api/predict/join")
 async def predict_join(payload: PredictJoinRequest) -> dict[str, Any]:
-    """참가자 신원 확인(부서->실명 선택 후 발급되는 기기 토큰). 예측/베팅
-    게임과 캐릭터 선택이 공유하는 단일 온보딩 단계다 -- 예측 게임이 꺼져
-    있는 순수 레이싱 세션에서도 캐릭터를 고르려면 이 토큰이 필요하므로
-    레이싱 모드이기만 하면 참여할 수 있다."""
+    """참가자 신원 확인(부서->실명 선택 후 발급되는 기기 토큰). 예측 게임과
+    캐릭터 선택이 공유하는 단일 온보딩 단계다 -- 예측 게임이 꺼져 있는 순수
+    레이싱 세션에서도 캐릭터를 고르려면 이 토큰이 필요하므로 레이싱
+    모드이기만 하면 참여할 수 있다."""
     session = _require_session()
     _require_racing_mode(session)
-    engine = _active_engine(session)
 
     if payload.existing_token and payload.existing_token in predict_tokens:
         token = payload.existing_token
         pid = predict_tokens[token]
-        card = engine.get_or_create_card(pid) if session.predictions_enabled else None
+        card = prediction_engine.get_or_create_card(pid) if session.predictions_enabled else None
         return {
             "token": token,
             "participant_id": pid,
-            "mode": session.prediction_mode,
             "predictions_enabled": session.predictions_enabled,
             "card": card.to_dict() if card else None,
         }
@@ -891,23 +781,19 @@ async def predict_join(payload: PredictJoinRequest) -> dict[str, Any]:
     predict_tokens[token] = payload.participant_id
     card = None
     if session.predictions_enabled:
-        card = engine.get_or_create_card(payload.participant_id)
-        _save_active_snapshot(session)
+        card = prediction_engine.get_or_create_card(payload.participant_id)
+        save_prediction_snapshot()
     return {
         "token": token,
         "participant_id": payload.participant_id,
-        "mode": session.prediction_mode,
         "predictions_enabled": session.predictions_enabled,
         "card": card.to_dict() if card else None,
     }
 
 
-def _live_stats(session: Session, round_index: int) -> dict[str, Any]:
-    """선택/베팅 창이 열려 있는 동안의 실시간 통계. 확신도 배분은 선택
-    분포(%), 갬블링은 패리뮤추얼 배당률 -- 둘 다 상태를 바꾸지 않는 순수
-    조회라 자주 폴링해도 안전하다."""
-    if session.prediction_mode == "gambling":
-        return gambling_engine.live_odds(round_index)
+def _live_stats(round_index: int) -> dict[str, Any]:
+    """선택 창이 열려 있는 동안의 실시간 선택 분포(%). 상태를 바꾸지 않는
+    순수 조회라 자주 폴링해도 안전하다."""
     return {"round": round_index, "distribution": prediction_engine.live_distribution(round_index)}
 
 
@@ -916,34 +802,28 @@ async def predict_me(token: str) -> dict[str, Any]:
     session = _require_session()
     pid = _resolve_pid_from_token(token)
     if not session.predictions_enabled:
-        # 예측/베팅 게임이 꺼진 순수 레이싱 세션 -- 카드를 만들 필요가
-        # 없다(만들어봐야 라운드가 영원히 열리지 않는 죽은 데이터가 된다).
-        return {"predictions_enabled": False, "mode": None, "card": None, "participant_id": pid}
-    engine = _active_engine(session)
-    card = engine.get_or_create_card(pid)
-    open_rounds = [r for r, s in engine.round_state.items() if s == "open"]
+        # 예측 게임이 꺼진 순수 레이싱 세션 -- 카드를 만들 필요가 없다
+        # (만들어봐야 라운드가 영원히 열리지 않는 죽은 데이터가 된다).
+        return {"predictions_enabled": False, "card": None, "participant_id": pid}
+    card = prediction_engine.get_or_create_card(pid)
+    open_rounds = [r for r, s in prediction_engine.round_state.items() if s == "open"]
     return {
         "predictions_enabled": True,
-        "mode": session.prediction_mode,
         "card": card.to_dict(),
-        "round_state": engine.round_state,
-        "round_candidates": engine.round_candidates,
-        "live": {str(r): _live_stats(session, r) for r in open_rounds},
+        "round_state": prediction_engine.round_state,
+        "round_candidates": prediction_engine.round_candidates,
+        "live": {str(r): _live_stats(r) for r in open_rounds},
     }
 
 
 @app.get("/api/predict/live")
 async def predict_live() -> dict[str, Any]:
-    """공개(토큰 불필요) 실시간 분포/배당률 조회 -- Stage 화면이 주기적으로
-    폴링해 "표가 몰립니다"/배당률 요동 연출에 쓴다."""
+    """공개(토큰 불필요) 실시간 선택 분포 조회 -- Stage 화면이 주기적으로
+    폴링해 "표가 몰립니다" 연출에 쓴다."""
     session = _require_session()
     _require_predictions_enabled(session)
-    engine = _active_engine(session)
-    open_rounds = [r for r, s in engine.round_state.items() if s == "open"]
-    return {
-        "mode": session.prediction_mode,
-        "rounds": {str(r): _live_stats(session, r) for r in open_rounds},
-    }
+    open_rounds = [r for r, s in prediction_engine.round_state.items() if s == "open"]
+    return {"rounds": {str(r): _live_stats(r) for r in open_rounds}}
 
 
 class PredictAllocateRequest(BaseModel):
@@ -951,15 +831,9 @@ class PredictAllocateRequest(BaseModel):
     alloc: dict[int, int]
 
 
-def _require_confidence_mode(session: Session) -> None:
-    if session.prediction_mode != "confidence":
-        raise HTTPException(status_code=400, detail="이 세션은 확신도 배분 모드가 아닙니다(갬블링 모드 -- /api/bet/* 사용).")
-
-
 @app.post("/api/predict/allocate")
 async def predict_allocate(payload: PredictAllocateRequest) -> dict[str, Any]:
-    session = _require_session()
-    _require_confidence_mode(session)
+    _require_session()
     pid = _resolve_pid_from_token(payload.token)
     try:
         card = prediction_engine.set_allocation(pid, payload.alloc)
@@ -977,8 +851,7 @@ class PredictChooseRequest(BaseModel):
 
 @app.post("/api/predict/choose")
 async def predict_choose(payload: PredictChooseRequest) -> dict[str, Any]:
-    session = _require_session()
-    _require_confidence_mode(session)
+    _require_session()
     pid = _resolve_pid_from_token(payload.token)
     try:
         card = prediction_engine.set_target(pid, payload.round, payload.target)
@@ -998,45 +871,23 @@ def _random_valid_alloc() -> dict[int, int]:
     return {1: predictions.MIN_ALLOC + extra[0], 2: predictions.MIN_ALLOC + extra[1], 3: predictions.MIN_ALLOC + extra[2]}
 
 
-def _bot_random_bet_amount(balance: int) -> int:
-    """잔액의 10~40%를 무작위로 건다 -- 매번 전액 몰빵하면 데모에서
-    부자연스럽고, 몇 라운드 안 가 다들 파산해 화면이 밋밋해진다."""
-    if balance <= 0:
-        return 0
-    lo = max(1, int(balance * 0.1))
-    hi = max(lo, int(balance * 0.4))
-    return random.randint(lo, hi)
-
-
-def _bot_play_open_rounds(participant_id: str, session: Session) -> None:
-    """데모 봇 한 명이 현재 열려 있는 라운드(들)에 참여한다. 활성 모드에
-    따라 확신도 배분(무작위 alloc+대상) 또는 갬블링(무작위 베팅)으로 분기한다."""
-    if session.prediction_mode == "gambling":
-        for round_index, state in gambling_engine.round_state.items():
-            if state != "open":
-                continue
-            card = gambling_engine.get_or_create_card(participant_id)
-            candidates = gambling_engine.round_candidates[round_index]
-            if not candidates:
-                continue
-            amount = _bot_random_bet_amount(card.balance)
-            if amount > 0:
-                gambling_engine.place_bet(participant_id, round_index, random.choice(candidates), amount)
-    else:
-        card = prediction_engine.get_or_create_card(participant_id)
-        card.alloc = _random_valid_alloc()
-        for round_index, state in prediction_engine.round_state.items():
-            if state == "open" and not card.locked[round_index]:
-                candidates = prediction_engine.round_candidates[round_index]
-                if candidates:
-                    prediction_engine.set_target(participant_id, round_index, random.choice(candidates))
+def _bot_play_open_rounds(participant_id: str) -> None:
+    """데모 봇 한 명이 현재 열려 있는 라운드(들)에 참여한다 -- 무작위
+    확신도 배분 + 무작위 대상 선택."""
+    card = prediction_engine.get_or_create_card(participant_id)
+    card.alloc = _random_valid_alloc()
+    for round_index, state in prediction_engine.round_state.items():
+        if state == "open" and not card.locked[round_index]:
+            candidates = prediction_engine.round_candidates[round_index]
+            if candidates:
+                prediction_engine.set_target(participant_id, round_index, random.choice(candidates))
 
 
 @app.post("/api/predict/bots/fill")
 async def predict_bots_fill() -> dict[str, Any]:
     """데모 모드 전용: 아직 참여하지 않은 참가자를 자동 참여시켜 분포·
-    리더보드 요동을 재현한다(확신도 배분/갬블링 모두 지원). 행사 당일에는
-    호출하지 않는다(admin.html에 "데모 전용"으로 표기)."""
+    리더보드 요동을 재현한다. 행사 당일에는 호출하지 않는다(admin.html에
+    "데모 전용"으로 표기)."""
     session = _require_session()
     _require_predictions_enabled(session)
 
@@ -1047,9 +898,9 @@ async def predict_bots_fill() -> dict[str, Any]:
             continue
         token = uuid.uuid4().hex
         predict_tokens[token] = participant.id
-        _bot_play_open_rounds(participant.id, session)
+        _bot_play_open_rounds(participant.id)
         filled += 1
-    _save_active_snapshot(session)
+    save_prediction_snapshot()
     return {"filled": filled}
 
 
@@ -1071,57 +922,9 @@ async def predict_leaderboard(top_n: int = 10) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# 사이버머니 갬블링 (승인됨): 패리뮤추얼 베팅. prediction_mode="gambling"인
-# 세션에서만 쓰인다 -- 확신도 배분과 동시에 참가자에게 강요하지 않는다.
-# ---------------------------------------------------------------------------
-
-
-def _require_gambling_mode(session: Session) -> None:
-    if session.prediction_mode != "gambling":
-        raise HTTPException(status_code=400, detail="이 세션은 갬블링 모드가 아닙니다.")
-
-
-class BetPlaceRequest(BaseModel):
-    token: str
-    round: int
-    target: str
-    amount: int
-
-
-@app.post("/api/bet/place")
-async def bet_place(payload: BetPlaceRequest) -> dict[str, Any]:
-    session = _require_session()
-    _require_gambling_mode(session)
-    pid = _resolve_pid_from_token(payload.token)
-    try:
-        card = gambling_engine.place_bet(pid, payload.round, payload.target, payload.amount)
-    except gambling.GamblingError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    save_gambling_snapshot()
-    return card.to_dict()
-
-
-@app.get("/api/bet/leaderboard")
-async def bet_leaderboard(top_n: int = 10) -> dict[str, Any]:
-    session = store.get_session()
-    by_id = {p.id: p for p in session.participants} if session else {}
-    top = gambling_engine.leaderboard(top_n)
-    return {
-        "top": [
-            {
-                "participant_id": c.participant_id,
-                "name": by_id[c.participant_id].name if c.participant_id in by_id else c.participant_id,
-                "balance": c.balance,
-            }
-            for c in top
-        ]
-    }
-
-
-# ---------------------------------------------------------------------------
 # 캐릭터/카트 선택: 참가자가 자기 카트의 특수능력을 직접 고른다(순수 연출).
 # 고르지 않은 참가자는 부서 기반 자동 배정으로 폴백한다(static/stage.js).
-# 예측/베팅 게임과 무관하게, 레이싱 세션이기만 하면 선택할 수 있다.
+# 예측 게임과 무관하게, 레이싱 세션이기만 하면 선택할 수 있다.
 # ---------------------------------------------------------------------------
 
 
@@ -1230,16 +1033,13 @@ class DemoStartRequest(BaseModel):
     total_seconds: float = 600.0
     with_bots: bool = True
     reserved_for_human: int = 5
-    prediction_mode: str = "confidence"
 
 
 @app.post("/api/demo/start")
 async def demo_start(payload: DemoStartRequest) -> dict[str, Any]:
-    """원클릭 데모: 샘플 명단 생성 -> 레이싱+예측/갬블링 세션 생성 -> 커밋 ->
+    """원클릭 데모: 샘플 명단 생성 -> 레이싱+예측 세션 생성 -> 커밋 ->
     (선택) 봇으로 채우기 -> 레이스 자동 시작까지 한 번에 수행한다.
     심사자가 배포 주소에 접속해 버튼 하나로 전체 흐름을 체험하기 위함."""
-    if payload.prediction_mode not in VALID_PREDICTION_MODES:
-        raise HTTPException(status_code=400, detail=f"prediction_mode는 {VALID_PREDICTION_MODES} 중 하나여야 합니다.")
     try:
         director.build_runbook(total_seconds=payload.total_seconds, predictions_enabled=True)
     except director.DirectorError as exc:
@@ -1247,7 +1047,7 @@ async def demo_start(payload: DemoStartRequest) -> dict[str, Any]:
 
     async with state_lock:
         store.clear()
-        _reset_prediction_and_gambling_state()
+        _reset_prediction_state()
 
         participants = roster.generate_sample_participants(count=payload.participant_count)
         session = Session(
@@ -1257,7 +1057,6 @@ async def demo_start(payload: DemoStartRequest) -> dict[str, Any]:
             mode="racing",
             total_seconds=payload.total_seconds,
             predictions_enabled=True,
-            prediction_mode=payload.prediction_mode,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
         store.set_session(session)
@@ -1292,9 +1091,9 @@ async def demo_start(payload: DemoStartRequest) -> dict[str, Any]:
                     continue
                 token = uuid.uuid4().hex
                 predict_tokens[token] = participant.id
-                _bot_play_open_rounds(participant.id, session)
+                _bot_play_open_rounds(participant.id)
                 filled += 1
-            _save_active_snapshot(session)
+            save_prediction_snapshot()
 
     task = asyncio.create_task(run_racing_sequence(session.session_id, 0, session.total_seconds))
     active_race_tasks[session.session_id] = task

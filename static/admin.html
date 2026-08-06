@@ -39,18 +39,10 @@ P002,김철수,영업팀"></textarea>
         <button id="btn-create-session">세션 생성</button>
       </div>
       <p id="total-seconds-hint" class="status"></p>
-      <div id="prediction-mode-row" class="row hidden">
-        <label>예측 게임 종류
-          <select id="prediction-mode-select">
-            <option value="confidence">확신도 배분 (무손실 -- 기본)</option>
-            <option value="gambling">사이버머니 갬블링 (승인 필요)</option>
-          </select>
-        </label>
-      </div>
-      <p id="gambling-warning" class="warnings hidden">
-        ⚠ 갬블링 모드는 실제로 사이버머니를 잃을 수 있는 모드입니다. 사내 승인(인사/법무)을
-        받은 뒤에만 사용하세요. 실물 경품 당첨자 결정과는 완전히 분리되어 있습니다
-        (별도 리더보드일 뿐, draw.winners에는 영향을 주지 않습니다).
+      <p id="prediction-note" class="status hidden">
+        예측 게임은 <strong>무손실</strong>입니다 -- 확신도 100점을 세 라운드에 나눠 걸고,
+        빗나가도 차감이 없습니다. 순위가 가까울수록 점수가 크고 참여만 해도 최소 점수가
+        들어가므로, 첫 라운드에 빗나간 참가자도 끝까지 역전을 노릴 수 있습니다.
       </p>
     </section>
 

@@ -25,23 +25,14 @@ const CHEER_EMOJI = ["🔥", "👏", "🎉", "💪", "😱", "⚡", "❤️", "�
 
 const ROUND_LABELS = { 1: "1라운드", 2: "2라운드", 3: "3라운드" };
 const STATE_LABELS = { pending: "대기 중", open: "선택 중", locked: "확정" };
-const BET_STATE_LABELS = { pending: "대기 중", open: "베팅 중", locked: "정산됨" };
 
 let departmentsData = {};
 let characterRoster = [];
 let myToken = localStorage.getItem(TOKEN_KEY);
 let myParticipantId = null;
 let myName = "";
-let myMode = "confidence"; // "confidence" | "gambling" -- /api/predict/join, /api/predict/me 응답에서 갱신
 let myCharacterId = null;
 let liveRefreshTimer = null;
-
-// 베팅 창이 열려 있는 동안 2.5초마다 배당률을 폴링하는데, 그때마다 카드
-// DOM을 통째로 다시 그리기 때문에 "팀을 고르고 금액을 입력하는 중"이던
-// 선택이 매번 날아가 베팅 자체가 불가능했다(사용자 신고). 아직 서버에
-// 보내지 않은 진행 중 입력을 여기에 보관해 두고 재렌더 때 복원한다.
-const pendingBetTarget = { 1: null, 2: null, 3: null };
-const pendingBetAmount = { 1: null, 2: null, 3: null };
 
 function showOnboarding() {
   onboardingViewEl.classList.remove("hidden");
@@ -194,7 +185,6 @@ async function join(participantId, name) {
     });
     myToken = result.token;
     myParticipantId = result.participant_id;
-    myMode = result.mode || "confidence";
     myName = name;
     localStorage.setItem(TOKEN_KEY, myToken);
     await showCharacterStep();
@@ -212,7 +202,6 @@ async function tryRestoreSession() {
   try {
     const me = await fetchJSON(`/api/predict/me?token=${encodeURIComponent(myToken)}`);
     myParticipantId = me.participant_id;
-    myMode = me.mode || "confidence";
     showGame();
     renderMe(me);
     await refreshMyCharacter();
@@ -324,116 +313,6 @@ async function chooseTarget(round, target) {
 }
 
 // ---------------------------------------------------------------------------
-// 사이버머니 갬블링(승인됨) 카드 렌더링 -- 패리뮤추얼 베팅
-// ---------------------------------------------------------------------------
-
-// 라운드별 성과 보상 내역(베팅 손익과 별개). 서버가 card.rewards에
-// 항목별로 남겨준 값을 그대로 보여준다 -- "왜 얼마를 더 받았는지"가
-// 폰에서 바로 보여야 한다는 사용자 요청.
-const TEAM_RANK_LABEL = { 1: "🥇 우리 팀 1위", 2: "🥈 우리 팀 2위", 3: "🥉 우리 팀 3위" };
-
-function renderRewardBreakdown(me, round) {
-  const reward = me.card.rewards ? me.card.rewards[round] : null;
-  if (!reward) return "";
-  const items = [];
-  if (reward.finish) items.push(`<li>🏁 결승선 통과 <b>+${reward.finish}</b></li>`);
-  if (reward.team_bonus) {
-    const label = TEAM_RANK_LABEL[reward.team_rank] || "우리 팀 순위 보상";
-    items.push(`<li>${label} <b>+${reward.team_bonus}</b></li>`);
-  }
-  if (reward.final) items.push(`<li>🏆 결선 당첨 <b>+${reward.final}</b></li>`);
-  if (!items.length) return "";
-  return `
-    <div class="reward-box">
-      <div class="reward-title">이번 라운드 보상 <span class="reward-total">+${reward.total}</span></div>
-      <ul class="reward-list">${items.join("")}</ul>
-    </div>
-  `;
-}
-
-function renderBetCard(me, round) {
-  const state = cardStateFor(me, round);
-  const bet = me.card.bets[round]; // {target, amount} | null
-  const net = me.card.net ? me.card.net[round] : undefined;
-
-  let bodyHtml = "";
-  if (state === "pending") {
-    bodyHtml = `<p>이 라운드가 시작되면 베팅할 수 있습니다.</p>`;
-  } else if (state === "open") {
-    const candidates = me.round_candidates[round] || [];
-    const live = (me.live && me.live[round]) || { odds: {} };
-    const maxBet = me.card.balance + (bet ? bet.amount : 0);
-    // 아직 서버에 안 보낸 진행 중 선택이 있으면 그걸 우선한다(폴링 재렌더로
-    // 사용자의 입력이 날아가지 않게 하는 것이 핵심 -- pendingBet* 참고).
-    const selectedTarget = pendingBetTarget[round] || (bet ? bet.target : null);
-    const amountValue =
-      pendingBetAmount[round] !== null && pendingBetAmount[round] !== undefined
-        ? pendingBetAmount[round]
-        : bet
-        ? bet.amount
-        : Math.min(50, me.card.balance);
-    const oddsHtml = candidates
-      .map((c) => {
-        const odds = live.odds ? live.odds[c] : null;
-        const label = odds ? `${odds}배` : "최초 베팅";
-        const isSelected = selectedTarget === c;
-        return `<button class="choice-btn bet-target-btn ${isSelected ? "selected" : ""}" data-round="${round}" data-target="${c}">
-          <span class="bet-target-name">${c}</span><span class="odds-label">${label}</span>
-        </button>`;
-      })
-      .join("");
-    bodyHtml = `
-      <p class="balance-line">보유 사이버머니: <strong>${me.card.balance}</strong></p>
-      ${bet ? `<p class="hint-line">현재 베팅: <strong>${bet.target}</strong>에 ${bet.amount} -- 0으로 다시 걸면 취소됩니다</p>` : `<p class="hint-line">지금 베팅하세요! 몰리는 쪽은 배당이 낮아집니다.</p>`}
-      <div class="choice-list odds-list">${oddsHtml}</div>
-      <div class="bet-amount-row">
-        <input type="number" min="0" max="${maxBet}" step="10" value="${amountValue}" id="bet-amount-${round}" />
-        <button class="btn-bet-submit" data-round="${round}">베팅하기</button>
-      </div>
-    `;
-  } else {
-    if (bet) {
-      const resultLabel =
-        net === undefined
-          ? "정산 대기 중..."
-          : net >= 0
-          ? `<span class="net-win">+${net} 획득</span>`
-          : `<span class="net-lose">${net} 손실</span>`;
-      bodyHtml = `<p>베팅: <strong>${bet.target}</strong>에 ${bet.amount} -- ${resultLabel}</p>`;
-    } else {
-      bodyHtml = `<p>이번 라운드는 베팅하지 않았습니다(구경만 했어요).</p>`;
-    }
-  }
-
-  return `
-    <div class="pred-card bet-card state-${state}">
-      <div class="pred-card-header">
-        <strong>${ROUND_LABELS[round]}</strong>
-        <span class="pred-card-badge">${BET_STATE_LABELS[state]}</span>
-      </div>
-      ${bodyHtml}
-      ${renderRewardBreakdown(me, round)}
-    </div>
-  `;
-}
-
-async function placeBet(round, target, amount) {
-  try {
-    await fetchJSON("/api/bet/place", {
-      method: "POST",
-      body: JSON.stringify({ token: myToken, round, target, amount }),
-    });
-    // 서버에 반영됐으니 진행 중 입력 보관분은 비운다 -- 이후로는 서버가
-    // 돌려준 실제 베팅 내용이 선택 상태의 근거가 된다.
-    pendingBetTarget[round] = null;
-    pendingBetAmount[round] = null;
-    await refreshMe();
-  } catch (e) {
-    alert(e.message);
-  }
-}
-
-// ---------------------------------------------------------------------------
 // 공용 렌더/새로고침
 // ---------------------------------------------------------------------------
 
@@ -454,64 +333,28 @@ function renderMe(me) {
   predictionsOffNoteEl.classList.add("hidden");
   leaderboardPanelEl.classList.remove("hidden");
 
-  myMode = me.mode || myMode;
-  myScoreEl.textContent =
-    myMode === "gambling" ? `보유 사이버머니: ${me.card.balance}` : `내 점수: ${me.card.score}점`;
+  myScoreEl.textContent = `내 점수: ${me.card.score}점`;
 
-  if (myMode === "gambling") {
-    // 금액을 입력하는 중(포커스가 카드 안에 있음)이면 이번 폴링 재렌더는
-    // 건너뛴다 -- 값은 pendingBetAmount로 지켜지지만, 재렌더 자체가 키보드
-    // 포커스를 빼앗아 입력이 끊기기 때문이다. 배당률은 다음 주기에 갱신된다.
-    if (cardsEl.contains(document.activeElement) && document.activeElement !== document.body) {
-      updateLiveRefreshTimer(me);
-      return;
-    }
-    cardsEl.innerHTML = [1, 2, 3].map((r) => renderBetCard(me, r)).join("");
-    for (const btn of cardsEl.querySelectorAll(".bet-target-btn")) {
-      btn.addEventListener("click", () => {
-        const round = parseInt(btn.dataset.round, 10);
-        for (const b of cardsEl.querySelectorAll(`.bet-target-btn[data-round="${round}"]`)) {
-          b.classList.remove("selected");
-        }
-        btn.classList.add("selected");
-        // 배당률 폴링이 카드를 다시 그려도 이 선택이 살아남도록 보관한다.
-        pendingBetTarget[round] = btn.dataset.target;
-      });
-    }
-    for (const input of cardsEl.querySelectorAll(".bet-amount-row input")) {
-      input.addEventListener("input", () => {
-        const round = parseInt(input.id.replace("bet-amount-", ""), 10);
-        pendingBetAmount[round] = input.value;
-      });
-    }
-    for (const btn of cardsEl.querySelectorAll(".btn-bet-submit")) {
-      btn.addEventListener("click", () => {
-        const round = parseInt(btn.dataset.round, 10);
-        const input = document.getElementById(`bet-amount-${round}`);
-        const amount = parseInt(input.value, 10) || 0;
-        const selected = cardsEl.querySelector(`.bet-target-btn.selected[data-round="${round}"]`);
-        const target = selected ? selected.dataset.target : pendingBetTarget[round];
-        if (!target) {
-          alert("먼저 베팅할 대상을 선택하세요.");
-          return;
-        }
-        placeBet(round, target, amount);
-      });
-    }
-  } else {
-    cardsEl.innerHTML =
-      [1, 2, 3].map((r) => renderConfidenceCard(me, r)).join("") +
-      `<button id="btn-save-alloc">확신도 저장</button>`;
-    document.getElementById("btn-save-alloc").addEventListener("click", () => saveAllocation(me));
-    for (const btn of cardsEl.querySelectorAll(".target-btn")) {
-      btn.addEventListener("click", () => chooseTarget(parseInt(btn.dataset.round, 10), btn.dataset.target));
-    }
+  // 확신도를 입력하는 중(포커스가 카드 안에 있음)이면 이번 폴링 재렌더는
+  // 건너뛴다 -- 재렌더가 키보드 포커스를 빼앗아 입력이 끊기기 때문이다.
+  // 분포는 다음 주기에 갱신된다.
+  if (cardsEl.contains(document.activeElement) && document.activeElement !== document.body) {
+    updateLiveRefreshTimer(me);
+    return;
+  }
+
+  cardsEl.innerHTML =
+    [1, 2, 3].map((r) => renderConfidenceCard(me, r)).join("") +
+    `<button id="btn-save-alloc">확신도 저장</button>`;
+  document.getElementById("btn-save-alloc").addEventListener("click", () => saveAllocation(me));
+  for (const btn of cardsEl.querySelectorAll(".target-btn")) {
+    btn.addEventListener("click", () => chooseTarget(parseInt(btn.dataset.round, 10), btn.dataset.target));
   }
 
   updateLiveRefreshTimer(me);
 }
 
-// 베팅/선택 창이 열려 있는 동안에는 다른 참가자의 선택으로 배당률·분포가
+// 선택 창이 열려 있는 동안에는 다른 참가자의 선택으로 분포가
 // 계속 바뀐다. 서버가 실시간으로 밀어주지 않으므로(브로드캐스트 폭주 방지),
 // 창이 열려 있을 때만 짧은 주기로 폴링해 "표가 몰립니다" 감각을 살린다.
 function anyRoundOpen(me) {
@@ -565,15 +408,10 @@ async function refreshMe() {
 
 async function refreshLeaderboard() {
   try {
-    const endpoint = myMode === "gambling" ? "/api/bet/leaderboard" : "/api/predict/leaderboard";
-    const result = await fetchJSON(endpoint);
-    leaderboardTitleEl.textContent = myMode === "gambling" ? "사이버머니 리더보드" : "리더보드";
+    const result = await fetchJSON("/api/predict/leaderboard");
+    leaderboardTitleEl.textContent = "리더보드";
     leaderboardListEl.innerHTML = result.top
-      .map((entry) =>
-        myMode === "gambling"
-          ? `<li>${entry.name} - ${entry.balance}</li>`
-          : `<li>${entry.name} - ${entry.score}점</li>`
-      )
+      .map((entry) => `<li>${entry.name} - ${entry.score}점</li>`)
       .join("");
   } catch (e) {
     console.error(e);
@@ -585,11 +423,11 @@ const ws = connectWS((data) => {
     // 관리자가 세션을 초기화하면 서버는 predict_tokens를 전부 지운다.
     // 폴링이 다음 401을 잡을 때까지(참여 창이 닫혀 있으면 폴링 자체가
     // 없어서 영영 안 잡힐 수도 있음) 기다리지 않고 즉시 온보딩으로
-    // 되돌린다 -- 안 그러면 화면이 리셋 전 점수/베팅카드를 계속 보여준다.
+    // 되돌린다 -- 안 그러면 화면이 리셋 전 점수/예측카드를 계속 보여준다.
     resetToOnboarding();
     return;
   }
-  if (["phase", "prediction_window", "round_revealed", "gambling_result"].includes(data.type)) {
+  if (["phase", "prediction_window", "round_revealed"].includes(data.type)) {
     refreshMe();
   }
   if (data.type === "prediction_leaderboard" || data.type === "round_revealed") {

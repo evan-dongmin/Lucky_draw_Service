@@ -7,19 +7,13 @@ const drawCountEl = document.getElementById("draw-count");
 const totalSecondsEl = document.getElementById("total-seconds");
 const totalSecondsHintEl = document.getElementById("total-seconds-hint");
 const predictionsEnabledEl = document.getElementById("predictions-enabled");
-const predictionModeRowEl = document.getElementById("prediction-mode-row");
-const predictionModeSelectEl = document.getElementById("prediction-mode-select");
-const gamblingWarningEl = document.getElementById("gambling-warning");
+const predictionNoteEl = document.getElementById("prediction-note");
 
-function updatePredictionModeVisibility() {
-  const enabled = predictionsEnabledEl.checked;
-  predictionModeRowEl.classList.toggle("hidden", !enabled);
-  const isGambling = enabled && predictionModeSelectEl.value === "gambling";
-  gamblingWarningEl.classList.toggle("hidden", !isGambling);
+function updatePredictionNoteVisibility() {
+  predictionNoteEl.classList.toggle("hidden", !predictionsEnabledEl.checked);
 }
-predictionsEnabledEl.addEventListener("change", updatePredictionModeVisibility);
-predictionModeSelectEl.addEventListener("change", updatePredictionModeVisibility);
-updatePredictionModeVisibility();
+predictionsEnabledEl.addEventListener("change", updatePredictionNoteVisibility);
+updatePredictionNoteVisibility();
 
 // Director의 하한(app/director.py MIN_TOTAL_SECONDS_WITH/WITHOUT_PREDICTIONS)과
 // 반드시 같은 값을 유지해야 한다. 서버가 최종 검증을 하지만, 그 전에 화면에서
@@ -145,7 +139,6 @@ document.getElementById("btn-create-session").addEventListener("click", async ()
         mode: "racing",
         total_seconds: parseFloat(totalSecondsEl.value),
         predictions_enabled: predictionsEnabledEl.checked,
-        prediction_mode: predictionModeSelectEl.value,
       }),
     });
     await refreshSession();
@@ -243,10 +236,8 @@ function renderSession(session) {
     commitDisplayEl.innerHTML = "";
     return;
   }
-  const predictionModeLabel = session.predictions_enabled
-    ? ` · 예측게임 ${session.prediction_mode === "gambling" ? "🎰갬블링" : "확신도배분"}`
-    : "";
-  sessionInfoEl.innerHTML = `참가자 ${session.participants.length}명 · 당첨 인원 ${session.draw_count}명 · 제외 ${session.excluded_ids.length}명 · 모드 ${session.mode}${predictionModeLabel}`;
+  const predictionLabel = session.predictions_enabled ? " · 예측게임 ON" : "";
+  sessionInfoEl.innerHTML = `참가자 ${session.participants.length}명 · 당첨 인원 ${session.draw_count}명 · 제외 ${session.excluded_ids.length}명 · 모드 ${session.mode}${predictionLabel}`;
 
   const latest = session.draws[session.draws.length - 1];
   if (!latest) {
@@ -259,18 +250,17 @@ function renderSession(session) {
       return p ? participantLabel(p) : id;
     };
     const raceNames = latest.winners.map(labelFor).join(", ");
-    // 예측/갬블링이 켜진 세션은 레이스 결과(winners)와 실제 경품 당첨자
+    // 예측 게임이 켜진 세션은 레이스 결과(winners)와 실제 경품 당첨자
     // (prize_winners, 최종 리더보드 기준)가 다를 수 있다 -- 조기에 레이스
     // 결과만 보고 상품을 잘못 나눠주지 않도록 실제 당첨자를 먼저, 더 크게
     // 보여준다. prize_winners는 라운드 3 최종 채점이 끝나야 채워지므로
     // 그 전까지는 "채점 대기 중"으로 표시한다.
     let prizeLine;
     if (!latest.prize_winners) {
-      prizeLine = `<strong>실제 경품 당첨자:</strong> 예측/갬블링 최종 채점 대기 중...<br>`;
+      prizeLine = `<strong>실제 경품 당첨자:</strong> 예측 게임 최종 채점 대기 중...<br>`;
     } else {
-      const basisLabel =
-        latest.prize_basis === "gambling" ? "사이버머니 갬블링 리더보드" : latest.prize_basis === "confidence" ? "확신도 예측 리더보드" : "레이스 결과";
-      const prizeNames = latest.prize_winners.map(labelFor).join(", ") || "(없음 -- 예측/갬블링 참여자가 부족합니다)";
+      const basisLabel = latest.prize_basis === "prediction" ? "예측 게임 리더보드" : "레이스 결과";
+      const prizeNames = latest.prize_winners.map(labelFor).join(", ") || "(없음 -- 예측 게임 참여자가 부족합니다)";
       prizeLine = `<strong>실제 경품 당첨자(${basisLabel} 기준, ${latest.prize_winners.length}명):</strong> ${prizeNames}<br>`;
     }
     const raceLine =

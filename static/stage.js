@@ -128,9 +128,8 @@ const MC_ENERGY = {
   elimination: { rate: 0.94, pitch: 0.96 },
   prediction_open: { rate: 1.06, pitch: 1.04 },
   ability_trigger: { rate: 1.16, pitch: 1.1 },
-  gambling_open: { rate: 1.1, pitch: 1.06 },
-  gambling_result: { rate: 1.12, pitch: 1.08 },
-  gambling_champion: { rate: 1.1, pitch: 1.08 },
+  prediction_result: { rate: 1.12, pitch: 1.08 },
+  prediction_champion: { rate: 1.1, pitch: 1.08 },
   final_announce: { rate: 1.08, pitch: 1.06 },
   podium: { rate: 1.0, pitch: 1.04 },
   verification: { rate: 0.96, pitch: 0.99 },
@@ -370,56 +369,51 @@ async function playRouletteSequence(draw) {
 // 레이싱 모드: 부서 통과율 실시간 랭킹 + 라운드 진행 상태머신
 // ---------------------------------------------------------------------------
 
-function renderPredictionLeaderboard(top, mode) {
+function renderPredictionLeaderboard(top) {
   if (!top || !top.length) return;
   predictionLeaderboardEl.classList.remove("hidden");
   const titleEl = predictionLeaderboardEl.querySelector("h3");
-  if (titleEl) titleEl.textContent = mode === "gambling" ? "사이버머니 리더보드" : "예측 리더보드";
+  if (titleEl) titleEl.textContent = "예측 리더보드";
   predictionLeaderboardListEl.innerHTML = top
-    .map((entry) =>
-      mode === "gambling"
-        ? `<li>${entry.participant_id} - ${entry.balance}</li>`
-        : `<li>${entry.participant_id} - ${entry.score}점</li>`
-    )
+    .map((entry) => `<li>${entry.participant_id} - ${entry.score}점</li>`)
     .join("");
 }
 
 // ---------------------------------------------------------------------------
-// 갬블링 실시간 배당률 패널(우측) -- 베팅/선택 창이 열려 있는 동안만 폴링한다.
+// 실시간 선택 분포 패널(우측) -- 선택 창이 열려 있는 동안만 폴링한다.
+// "지금 표가 어디로 몰리고 있는가"가 무대 화면에서 바로 보여야, MC가
+// "○○ 부서에 표가 쏠립니다!"로 받아칠 수 있다.
 // ---------------------------------------------------------------------------
 
-let sessionPredictionMode = "confidence";
-let liveOddsTimer = null;
-const gamblingOddsPanelEl = document.getElementById("gambling-odds-panel");
-const gamblingOddsListEl = document.getElementById("gambling-odds-list");
+let liveDistributionTimer = null;
+const liveDistributionPanelEl = document.getElementById("live-distribution-panel");
+const liveDistributionListEl = document.getElementById("live-distribution-list");
 
-async function pollLiveOdds() {
+async function pollLiveDistribution() {
   try {
     const data = await fetchJSON("/api/predict/live");
-    if (data.mode !== "gambling") {
-      stopLiveOddsPolling();
-      return;
-    }
     const rounds = data.rounds || {};
     const roundKeys = Object.keys(rounds);
     if (!roundKeys.length) {
-      gamblingOddsPanelEl.classList.add("hidden");
+      liveDistributionPanelEl.classList.add("hidden");
       return;
     }
-    gamblingOddsPanelEl.classList.remove("hidden");
-    gamblingOddsListEl.innerHTML = roundKeys
+    liveDistributionPanelEl.classList.remove("hidden");
+    liveDistributionListEl.innerHTML = roundKeys
       .map((r) => {
-        const stat = rounds[r];
-        const rows = Object.entries(stat.pool || {})
+        const dist = rounds[r].distribution || {};
+        const rows = Object.entries(dist)
           .sort((a, b) => b[1] - a[1])
           .map(
-            ([target, amount]) =>
-              `<div class="odds-row"><span>${target}</span><span>${amount}</span><span>${
-                stat.odds && stat.odds[target] ? stat.odds[target] + "배" : "-"
-              }</span></div>`
+            ([target, share]) =>
+              `<div class="dist-row"><span>${target}</span><span class="dist-bar"><i style="width:${Math.round(
+                share * 100
+              )}%"></i></span><span>${Math.round(share * 100)}%</span></div>`
           )
           .join("");
-        return `<div class="odds-round-block"><div class="odds-round-title">R${r} · 총 판돈 ${stat.total_pool}</div>${rows}</div>`;
+        return `<div class="dist-round-block"><div class="dist-round-title">R${r} 선택 분포</div>${
+          rows || '<div class="dist-empty">아직 선택이 없습니다</div>'
+        }</div>`;
       })
       .join("");
   } catch (e) {
@@ -427,25 +421,18 @@ async function pollLiveOdds() {
   }
 }
 
-function startLiveOddsPolling() {
-  if (liveOddsTimer) return;
-  liveOddsTimer = setInterval(pollLiveOdds, 2000);
-  pollLiveOdds();
+function startLiveDistributionPolling() {
+  if (liveDistributionTimer) return;
+  liveDistributionTimer = setInterval(pollLiveDistribution, 2000);
+  pollLiveDistribution();
 }
 
-function stopLiveOddsPolling() {
-  if (liveOddsTimer) {
-    clearInterval(liveOddsTimer);
-    liveOddsTimer = null;
+function stopLiveDistributionPolling() {
+  if (liveDistributionTimer) {
+    clearInterval(liveDistributionTimer);
+    liveDistributionTimer = null;
   }
-  gamblingOddsPanelEl.classList.add("hidden");
-}
-
-async function handleGamblingResult(data) {
-  showBanner(`ROUND ${data.round} 베팅 정산!`, `총 판돈 ${data.total_pool}`, 2200);
-  SFX.pass();
-  FX.ring(window.innerWidth / 2, window.innerHeight * 0.5, "#ff9f45", 220);
-  showMcLine("gambling_result", { round: data.round });
+  liveDistributionPanelEl.classList.add("hidden");
 }
 
 let currentLeaderDept = null;
@@ -1709,8 +1696,7 @@ function handleRacingEvent(data) {
     if (data.phase === "race_r3") showMcLine("race_progress");
     if (data.phase === "score_r1_select_r2" || data.phase === "score_r2_select_r3") {
       if (lastPredictionWindow && lastPredictionWindow.state === "open") {
-        const tag = lastPredictionWindow.mode === "gambling" ? "gambling_open" : "prediction_open";
-        showMcLine(tag, { round: lastPredictionWindow.round });
+        showMcLine("prediction_open", { round: lastPredictionWindow.round });
       }
     }
   } else if (data.type === "race_tick") {
@@ -1759,17 +1745,12 @@ const RACE_ROUND_INDEX_LOCAL = { race_r1: 1, race_r2: 2, race_r3: 3 };
 // ---------------------------------------------------------------------------
 
 const PRIZE_BASIS_LABEL = {
-  gambling: "사이버머니 갬블링 최종 리더보드 기준 당첨자입니다 -- 레이스 순위와 다를 수 있습니다",
-  confidence: "확신도 예측 최종 리더보드 기준 당첨자입니다 -- 레이스 순위와 다를 수 있습니다",
+  prediction: "예측 게임 최종 리더보드 기준 당첨자입니다 -- 레이스 순위와 다를 수 있습니다",
 };
 
-// 당첨 근거가 된 최종 성적의 단위(갬블링=사이버머니, 확신도=점수).
-const PRIZE_SCORE_UNIT = { gambling: "사이버머니", confidence: "점" };
-
-function formatPrizeScore(score, basis) {
+function formatPrizeScore(score) {
   if (score === undefined || score === null) return "";
-  const n = Number(score).toLocaleString("ko-KR");
-  return basis === "gambling" ? `💰 ${n}` : `${n}점`;
+  return `${Number(score).toLocaleString("ko-KR")}점`;
 }
 
 function buildPodium(winnerIds, nameById, basis, scores) {
@@ -1789,7 +1770,7 @@ function buildPodium(winnerIds, nameById, basis, scores) {
       const rank = rankOf(id);
       const label = nameById[id] || id;
       const medal = rank === 1 ? "🥇" : rank === 2 ? "🥈" : "🥉";
-      const scoreText = formatPrizeScore(scoreOf(id), basis);
+      const scoreText = formatPrizeScore(scoreOf(id));
       return `<div class="podium-slot" data-rank="${rank}" style="animation-delay:${i * 0.15}s">
         <div class="podium-name">${label}</div>
         ${scoreText ? `<div class="podium-score">${scoreText}</div>` : ""}
@@ -1799,7 +1780,7 @@ function buildPodium(winnerIds, nameById, basis, scores) {
     .join("");
   podiumRestEl.innerHTML = rest
     .map((id) => {
-      const scoreText = formatPrizeScore(scoreOf(id), basis);
+      const scoreText = formatPrizeScore(scoreOf(id));
       return `<li>${nameById[id] || id}${
         scoreText ? ` <span class="podium-rest-score">${scoreText}</span>` : ""
       }</li>`;
@@ -1842,17 +1823,16 @@ function render(session) {
     return;
   }
 
-  sessionPredictionMode = session.prediction_mode || "confidence";
-  if (session.mode === "racing" && sessionPredictionMode === "gambling") {
-    startLiveOddsPolling();
+  if (session.mode === "racing" && session.predictions_enabled) {
+    startLiveDistributionPolling();
   }
 
   if (session.mode === "racing") {
     ensureGroupLookup(latest, latest.commit);
     if (latest.revealed) {
-      stopLiveOddsPolling();
+      stopLiveDistributionPolling();
       if (!latest.prize_winners) {
-        // 레이스는 리빌됐지만 예측/갬블링 라운드 3 최종 채점이 아직 안
+        // 레이스는 리빌됐지만 예측 게임 라운드 3 최종 채점이 아직 안
         // 끝났다 -- 실제 당첨자가 확정될 때까지는 시상대를 띄우지 않는다
         // (막판까지 리더보드가 뒤집힐 수 있다는 게 이 설계의 핵심이라,
         // 레이스 리빌 순간과 최종 당첨자 발표 순간을 일부러 분리했다).
@@ -1863,10 +1843,11 @@ function render(session) {
         const nameById = Object.fromEntries(
           latest.snapshot.participants.map((p) => [p.id, participantLabel(p)])
         );
+        const hasPrediction = latest.prize_basis === "prediction";
         playFinalReveal(latest.prize_winners, nameById, latest.prize_basis, latest.prize_scores)
           .then(() => delay(2500))
-          .then(() => (sessionPredictionMode === "gambling" ? showMcLine("gambling_champion") : Promise.resolve()))
-          .then(() => delay(sessionPredictionMode === "gambling" ? 2500 : 0))
+          .then(() => (hasPrediction ? showMcLine("prediction_champion") : Promise.resolve()))
+          .then(() => delay(hasPrediction ? 2500 : 0))
           .then(() => showMcLine("verification"));
       } else if (overlays.podium.classList.contains("hidden") && bannerHideTimer === null) {
         // 새로고침 등으로 재진입한 경우 이미 지나간 연출 없이 바로 시상대만 표시
@@ -1921,16 +1902,13 @@ function render(session) {
   }
 }
 
-async function startDemo(button, predictionMode) {
+async function startDemo(button) {
   unlockAudioOnce();
   const originalText = button.textContent;
   button.disabled = true;
   button.textContent = "데모 준비 중...";
   try {
-    await fetchJSON("/api/demo/start", {
-      method: "POST",
-      body: JSON.stringify({ prediction_mode: predictionMode }),
-    });
+    await fetchJSON("/api/demo/start", { method: "POST", body: JSON.stringify({}) });
   } catch (e) {
     alert(e.message);
     button.disabled = false;
@@ -1938,10 +1916,7 @@ async function startDemo(button, predictionMode) {
   }
 }
 
-document.getElementById("btn-demo-start").addEventListener("click", (e) => startDemo(e.target, "confidence"));
-document
-  .getElementById("btn-demo-start-gambling")
-  .addEventListener("click", (e) => startDemo(e.target, "gambling"));
+document.getElementById("btn-demo-start").addEventListener("click", (e) => startDemo(e.target));
 
 async function refresh() {
   try {
@@ -1977,8 +1952,7 @@ const ws = connectWS((data) => {
     shownLightsForRound.clear();
     stopRenderLoop();
     SFX.stopScene(); // 다음 render()가 idle 오버레이를 다시 켜면서 idle 장면으로 자연스럽게 복귀한다
-    stopLiveOddsPolling();
-    sessionPredictionMode = "confidence";
+    stopLiveDistributionPolling();
     raceCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
     FX.clear();
     overtakeLayer.innerHTML = "";
@@ -2002,15 +1976,12 @@ const ws = connectWS((data) => {
     handleRacingEvent(data);
   }
   if (data.type === "prediction_leaderboard") {
-    renderPredictionLeaderboard(data.top, data.mode);
-  }
-  if (data.type === "gambling_result") {
-    handleGamblingResult(data);
+    renderPredictionLeaderboard(data.top);
   }
   if (data.type === "prediction_window") {
     lastPredictionWindow = data;
     if (data.state === "open") {
-      showMcLine(data.mode === "gambling" ? "gambling_open" : "prediction_open", { round: data.round });
+      showMcLine("prediction_open", { round: data.round });
     }
   }
   refresh();

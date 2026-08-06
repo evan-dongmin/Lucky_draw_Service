@@ -1,7 +1,7 @@
 from app.characters import CHARACTER_ROSTER
 
 
-def _create_racing_session(client, count=20, predictions_enabled=False, prediction_mode="confidence"):
+def _create_racing_session(client, count=20, predictions_enabled=False):
     sample = client.get("/api/roster/sample", params={"count": count}).json()
     resp = client.post(
         "/api/session",
@@ -11,7 +11,6 @@ def _create_racing_session(client, count=20, predictions_enabled=False, predicti
             "mode": "racing",
             "total_seconds": 300.0,
             "predictions_enabled": predictions_enabled,
-            "prediction_mode": prediction_mode,
         },
     )
     assert resp.status_code == 200
@@ -142,9 +141,10 @@ def test_session_reset_clears_character_choices(client):
     assert resp.json()["choices"] == {}
 
 
-def test_character_selection_coexists_with_gambling_mode(client):
-    """캐릭터 선택은 예측 모드와 무관하게 동작해야 한다(갬블링 모드에서도)."""
-    session = _create_racing_session(client, predictions_enabled=True, prediction_mode="gambling")
+def test_character_selection_coexists_with_prediction_game(client):
+    """캐릭터 선택은 예측 게임과 별개 축이라, 예측 게임이 켜진 세션에서도
+    똑같이 동작해야 한다(둘 다 같은 토큰 하나를 공유한다)."""
+    session = _create_racing_session(client, predictions_enabled=True)
     pid = session["participants"][0]["id"]
     token = client.post("/api/predict/join", json={"participant_id": pid}).json()["token"]
 
@@ -152,8 +152,8 @@ def test_character_selection_coexists_with_gambling_mode(client):
     assert resp.status_code == 200
 
     me = client.get("/api/predict/me", params={"token": token}).json()
-    assert me["mode"] == "gambling"
-    assert me["card"]["balance"] is not None
+    assert me["predictions_enabled"] is True
+    assert me["card"]["score"] == 0
 
     char_me = client.get("/api/character/me", params={"token": token}).json()
     assert char_me["character_id"] == "wave"
