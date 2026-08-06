@@ -363,6 +363,7 @@ const gamblingOddsPanelEl = document.getElementById("gambling-odds-panel");
 const gamblingOddsListEl = document.getElementById("gambling-odds-list");
 
 async function pollLiveOdds() {
+  fetchUpgradeInfo(); // 배당률 폴링과 같은 주기로 업그레이드 현황도 갱신(실패해도 서로 독립적)
   try {
     const data = await fetchJSON("/api/predict/live");
     if (data.mode !== "gambling") {
@@ -507,6 +508,28 @@ function abilityForParticipant(pid) {
   return group ? abilityForDepartment(group) : ABILITY_ROSTER[0];
 }
 
+// 갬블링 모드 업그레이드 상점(순수 코스메틱 -- 글로우만 강해진다, 순위·
+// 통과 여부에는 영향 없음). /api/bet/upgrades를 폴링해 반영한다.
+let teamUpgradeLevelByDept = {};
+let personalUpgradeLevelByPid = {};
+
+async function fetchUpgradeInfo() {
+  try {
+    const data = await fetchJSON("/api/bet/upgrades");
+    teamUpgradeLevelByDept = data.team_level || {};
+    personalUpgradeLevelByPid = data.personal_level || {};
+    if (lastLegendGroupNames.length) renderTeamLegend(lastLegendGroupNames);
+  } catch (e) {
+    /* 다음 폴링에서 자연 복구 */
+  }
+}
+
+function upgradeGlowLevelFor(pid, group) {
+  const team = group ? teamUpgradeLevelByDept[group] || 0 : 0;
+  const personal = personalUpgradeLevelByPid[pid] || 0;
+  return Math.min(4, team + personal);
+}
+
 const departmentColorCache = new Map();
 const departmentAbilityCache = new Map();
 let currentPidToGroup = {};
@@ -560,15 +583,20 @@ function ensureGroupLookup(latest, drawKey) {
   fetchCharacterChoices();
 }
 
+let lastLegendGroupNames = [];
+
 function renderTeamLegend(groupNames) {
+  lastLegendGroupNames = groupNames;
   const el = document.getElementById("team-legend");
   if (!el) return;
   el.innerHTML = groupNames
     .map((name) => {
       const ability = abilityForDepartment(name);
+      const level = teamUpgradeLevelByDept[name] || 0;
+      const stars = level > 0 ? ` <span class="legend-upgrade">${"⭐".repeat(level)}</span>` : "";
       return `<span class="legend-item"><span class="legend-swatch" style="background:${colorForDepartment(
         name
-      )}"></span>${name} <span class="legend-ability" title="${ability.label}">${ability.emoji}</span></span>`;
+      )}"></span>${name} <span class="legend-ability" title="${ability.label}">${ability.emoji}</span>${stars}</span>`;
     })
     .join("");
 }
@@ -1132,8 +1160,9 @@ function kartSpriteFor(color, glow) {
   return sprite;
 }
 
-function drawKart(ctx, x, y, h, angle, color, glow, isLeader, atRisk, pulse, wobble) {
+function drawKart(ctx, x, y, h, angle, color, glow, isLeader, atRisk, pulse, wobble, upgradeLevel) {
   const w = h * (SPRITE_W / SPRITE_H);
+  const boost = upgradeLevel || 0; // 업그레이드 상점(코스메틱) -- 순위에는 영향 없음
   // 장애물 근처를 지날 때의 "부딪힌 척" 흔들림 -- 순수 연출, 위치 데이터는 불변
   const wobbleAngle = wobble ? Math.sin(performance.now() * 0.045) * 0.22 * wobble : 0;
   const wobbleScale = wobble ? 1 - 0.08 * wobble : 1;
@@ -1145,7 +1174,8 @@ function drawKart(ctx, x, y, h, angle, color, glow, isLeader, atRisk, pulse, wob
 
   // 배기 연기 / 속도 자국. 진행 방향 반대쪽(로컬 -x)에 그려 회전해도 항상 뒤쪽에 남는다.
   if (h >= 9) {
-    for (let t = 1; t <= 3; t++) {
+    const trailCount = 3 + Math.min(3, boost); // 레벨이 높을수록 배기 트레일이 길어진다
+    for (let t = 1; t <= trailCount; t++) {
       ctx.globalAlpha = 0.14 / t;
       ctx.fillStyle = glow;
       ctx.beginPath();
@@ -1157,10 +1187,13 @@ function drawKart(ctx, x, y, h, angle, color, glow, isLeader, atRisk, pulse, wob
 
   if (isLeader) {
     ctx.shadowColor = glow;
-    ctx.shadowBlur = 16;
+    ctx.shadowBlur = 16 + boost * 4;
   } else if (atRisk) {
     ctx.shadowColor = "#ff5252";
     ctx.shadowBlur = 5 + pulse * 9;
+  } else if (boost > 0) {
+    ctx.shadowColor = glow;
+    ctx.shadowBlur = 3 + boost * 5;
   }
 
   ctx.drawImage(kartSpriteFor(color, glow), -w / 2, -h / 2, w, h);
@@ -1325,7 +1358,8 @@ function drawFrame(positions, tick) {
       isLeader,
       atRisk,
       pulse,
-      wobble
+      wobble,
+      upgradeGlowLevelFor(pid, group)
     );
   }
   raceCtx.globalAlpha = 1;
@@ -1695,6 +1729,8 @@ const ws = connectWS((data) => {
     currentDrawKeyForGroups = null;
     currentPidToGroup = {};
     characterChoiceByPid = {};
+    teamUpgradeLevelByDept = {};
+    personalUpgradeLevelByPid = {};
     previousTickPositions = {};
     previousTickOrder = [];
     previousTickRound = null;

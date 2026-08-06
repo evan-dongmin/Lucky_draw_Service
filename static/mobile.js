@@ -20,12 +20,18 @@ const leaderboardListEl = document.getElementById("leaderboard-list");
 const characterOverlayEl = document.getElementById("character-overlay");
 const characterOverlayListEl = document.getElementById("character-overlay-list");
 const cheerButtonsEl = document.getElementById("cheer-buttons");
+const upgradePanelEl = document.getElementById("upgrade-panel");
+const personalUpgradeStatusEl = document.getElementById("personal-upgrade-status");
+const teamUpgradeStatusEl = document.getElementById("team-upgrade-status");
 
 const CHEER_EMOJI = ["🔥", "👏", "🎉", "💪", "😱", "⚡", "❤️", "😂"]; // app/main.py CHEER_EMOJI_ALLOWLIST와 반드시 일치시킬 것
 
 const ROUND_LABELS = { 1: "1라운드", 2: "2라운드", 3: "3라운드" };
 const STATE_LABELS = { pending: "대기 중", open: "선택 중", locked: "확정" };
 const BET_STATE_LABELS = { pending: "대기 중", open: "베팅 중", locked: "정산됨" };
+// app/gambling.py의 PERSONAL_UPGRADE_COST와 반드시 같은 값을 유지할 것
+// (다음 레벨 비용을 안내 문구에 미리 보여주기 위한 클라이언트 사본).
+const PERSONAL_UPGRADE_COST = [100, 200, 300];
 
 let departmentsData = {};
 let characterRoster = [];
@@ -35,6 +41,7 @@ let myName = "";
 let myMode = "confidence"; // "confidence" | "gambling" -- /api/predict/join, /api/predict/me 응답에서 갱신
 let myCharacterId = null;
 let liveRefreshTimer = null;
+let teamUpgradeInfo = { pool: 0, level: 0 };
 
 function showOnboarding() {
   onboardingViewEl.classList.remove("hidden");
@@ -60,6 +67,89 @@ async function loadDepartments() {
     btn.addEventListener("click", () => selectDepartment(btn.dataset.dept));
   }
 }
+
+// ---------------------------------------------------------------------------
+// 업그레이드 상점(코스메틱 전용 -- 순위에는 영향 없음). 갬블링 모드에서만
+// 보인다. 개인 강화는 즉시 구매, 팀 업그레이드는 소속 부서 공동 풀에
+// 기여하는 방식(십시일반)이라 다른 팀원의 기여도 함께 반영해 보여준다.
+// ---------------------------------------------------------------------------
+
+async function ensureDepartmentsLoaded() {
+  if (Object.keys(departmentsData).length) return;
+  try {
+    departmentsData = await fetchJSON("/api/predict/departments");
+  } catch (e) {
+    /* 조회 실패해도 업그레이드 구매 자체는 가능하다 -- 표시용 정보일 뿐 */
+  }
+}
+
+function myTeamName() {
+  for (const [dept, members] of Object.entries(departmentsData)) {
+    if (members.some((m) => m.id === myParticipantId)) return dept;
+  }
+  return null;
+}
+
+async function refreshTeamUpgradeInfo() {
+  try {
+    const data = await fetchJSON("/api/bet/upgrades");
+    await ensureDepartmentsLoaded();
+    const team = myTeamName();
+    teamUpgradeInfo = {
+      pool: (team && data.team_pool[team]) || 0,
+      level: (team && data.team_level[team]) || 0,
+    };
+  } catch (e) {
+    /* 폴링 실패는 치명적이지 않다 -- 다음 갱신에서 자연 복구 */
+  }
+}
+
+function renderUpgradePanel(me) {
+  if (myMode !== "gambling") {
+    upgradePanelEl.classList.add("hidden");
+    return;
+  }
+  upgradePanelEl.classList.remove("hidden");
+
+  const level = me.card.personal_upgrade_level || 0;
+  const maxed = level >= PERSONAL_UPGRADE_COST.length;
+  personalUpgradeStatusEl.textContent = maxed
+    ? `레벨 ${level}/${PERSONAL_UPGRADE_COST.length} (최대)`
+    : `레벨 ${level}/${PERSONAL_UPGRADE_COST.length} · 다음 레벨 비용 ${PERSONAL_UPGRADE_COST[level]}`;
+  document.getElementById("btn-buy-personal-upgrade").disabled = maxed;
+
+  teamUpgradeStatusEl.textContent =
+    `내 기여 ${me.card.team_upgrade_contributed || 0} · 팀 풀 ${teamUpgradeInfo.pool} (레벨 ${teamUpgradeInfo.level}/3)`;
+}
+
+async function buyPersonalUpgrade() {
+  try {
+    await fetchJSON("/api/bet/upgrade/personal", {
+      method: "POST",
+      body: JSON.stringify({ token: myToken }),
+    });
+    await refreshMe();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+async function contributeTeamUpgrade() {
+  const amount = parseInt(document.getElementById("team-upgrade-amount").value, 10) || 0;
+  try {
+    await fetchJSON("/api/bet/upgrade/team", {
+      method: "POST",
+      body: JSON.stringify({ token: myToken, amount }),
+    });
+    await refreshTeamUpgradeInfo();
+    await refreshMe();
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+document.getElementById("btn-buy-personal-upgrade").addEventListener("click", buyPersonalUpgrade);
+document.getElementById("btn-contribute-team-upgrade").addEventListener("click", contributeTeamUpgrade);
 
 function selectDepartment(name) {
   const members = departmentsData[name] || [];
@@ -401,6 +491,7 @@ function renderMe(me) {
     cardsEl.innerHTML = "";
     predictionsOffNoteEl.classList.remove("hidden");
     leaderboardPanelEl.classList.add("hidden");
+    upgradePanelEl.classList.add("hidden");
     if (liveRefreshTimer) {
       clearInterval(liveRefreshTimer);
       liveRefreshTimer = null;
@@ -441,7 +532,10 @@ function renderMe(me) {
         placeBet(round, target, amount);
       });
     }
+    renderUpgradePanel(me);
+    refreshTeamUpgradeInfo().then(() => renderUpgradePanel(me));
   } else {
+    upgradePanelEl.classList.add("hidden");
     cardsEl.innerHTML =
       [1, 2, 3].map((r) => renderConfidenceCard(me, r)).join("") +
       `<button id="btn-save-alloc">확신도 저장</button>`;

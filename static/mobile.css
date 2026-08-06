@@ -328,3 +328,47 @@ button {
   margin-top: 0.8rem;
   background: #2a3242;
 }
+
+/* -- 업그레이드 상점 ----------------------------------------------------- */
+
+.upgrade-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0;
+  border-top: 1px solid #2a3242;
+}
+
+.upgrade-row:first-of-type {
+  border-top: none;
+}
+
+.upgrade-info {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.upgrade-info span {
+  font-size: 0.85rem;
+  color: #c7cedb;
+}
+
+#team-upgrade-amount {
+  width: 4.5rem;
+  padding: 0.5rem;
+  border-radius: 0.5rem;
+  border: 1px solid #2a3242;
+  background: #0b0e14;
+  color: #f5f7fa;
+  font-family: "Consolas", monospace;
+}
+
+#btn-buy-personal-upgrade,
+#btn-contribute-team-upgrade {
+  background: #ffd166;
+  color: #1a0d0d;
+  font-weight: 700;
+  white-space: nowrap;
+}

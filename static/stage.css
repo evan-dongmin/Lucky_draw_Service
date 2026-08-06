@@ -535,6 +535,12 @@ html, body {
   filter: drop-shadow(0 0 3px rgba(255, 209, 102, 0.6));
 }
 
+.legend-upgrade {
+  font-size: 0.7rem;
+  margin-left: 0.1rem;
+  filter: drop-shadow(0 0 3px rgba(255, 209, 102, 0.8));
+}
+
 #gambling-odds-list {
   display: flex;
   flex-direction: column;

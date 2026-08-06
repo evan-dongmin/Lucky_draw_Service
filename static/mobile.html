@@ -48,6 +48,26 @@
         이번 세션은 예측/베팅 게임이 없습니다 -- 카트만 골라주시면 됩니다!
       </p>
 
+      <div id="upgrade-panel" class="panel hidden">
+        <h2>🛠 카트 업그레이드</h2>
+        <p class="hint-line">사이버머니로 카트 시각 효과를 강화합니다(순위에는 영향 없음).</p>
+        <div class="upgrade-row">
+          <div class="upgrade-info">
+            <strong>내 카트 강화</strong>
+            <span id="personal-upgrade-status"></span>
+          </div>
+          <button id="btn-buy-personal-upgrade">강화하기</button>
+        </div>
+        <div class="upgrade-row">
+          <div class="upgrade-info">
+            <strong>우리 팀 업그레이드</strong>
+            <span id="team-upgrade-status"></span>
+          </div>
+          <input type="number" id="team-upgrade-amount" min="10" step="10" value="50" />
+          <button id="btn-contribute-team-upgrade">기여하기</button>
+        </div>
+      </div>
+
       <div id="leaderboard-panel" class="panel">
         <h2 id="leaderboard-title">리더보드</h2>
         <ol id="leaderboard-list"></ol>
