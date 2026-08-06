@@ -20,18 +20,12 @@ const leaderboardListEl = document.getElementById("leaderboard-list");
 const characterOverlayEl = document.getElementById("character-overlay");
 const characterOverlayListEl = document.getElementById("character-overlay-list");
 const cheerButtonsEl = document.getElementById("cheer-buttons");
-const upgradePanelEl = document.getElementById("upgrade-panel");
-const personalUpgradeStatusEl = document.getElementById("personal-upgrade-status");
-const teamUpgradeStatusEl = document.getElementById("team-upgrade-status");
 
 const CHEER_EMOJI = ["🔥", "👏", "🎉", "💪", "😱", "⚡", "❤️", "😂"]; // app/main.py CHEER_EMOJI_ALLOWLIST와 반드시 일치시킬 것
 
 const ROUND_LABELS = { 1: "1라운드", 2: "2라운드", 3: "3라운드" };
 const STATE_LABELS = { pending: "대기 중", open: "선택 중", locked: "확정" };
 const BET_STATE_LABELS = { pending: "대기 중", open: "베팅 중", locked: "정산됨" };
-// app/gambling.py의 PERSONAL_UPGRADE_COST와 반드시 같은 값을 유지할 것
-// (다음 레벨 비용을 안내 문구에 미리 보여주기 위한 클라이언트 사본).
-const PERSONAL_UPGRADE_COST = [100, 200, 300];
 
 let departmentsData = {};
 let characterRoster = [];
@@ -41,7 +35,13 @@ let myName = "";
 let myMode = "confidence"; // "confidence" | "gambling" -- /api/predict/join, /api/predict/me 응답에서 갱신
 let myCharacterId = null;
 let liveRefreshTimer = null;
-let teamUpgradeInfo = { pool: 0, level: 0 };
+
+// 베팅 창이 열려 있는 동안 2.5초마다 배당률을 폴링하는데, 그때마다 카드
+// DOM을 통째로 다시 그리기 때문에 "팀을 고르고 금액을 입력하는 중"이던
+// 선택이 매번 날아가 베팅 자체가 불가능했다(사용자 신고). 아직 서버에
+// 보내지 않은 진행 중 입력을 여기에 보관해 두고 재렌더 때 복원한다.
+const pendingBetTarget = { 1: null, 2: null, 3: null };
+const pendingBetAmount = { 1: null, 2: null, 3: null };
 
 function showOnboarding() {
   onboardingViewEl.classList.remove("hidden");
@@ -67,89 +67,6 @@ async function loadDepartments() {
     btn.addEventListener("click", () => selectDepartment(btn.dataset.dept));
   }
 }
-
-// ---------------------------------------------------------------------------
-// 업그레이드 상점(코스메틱 전용 -- 순위에는 영향 없음). 갬블링 모드에서만
-// 보인다. 개인 강화는 즉시 구매, 팀 업그레이드는 소속 부서 공동 풀에
-// 기여하는 방식(십시일반)이라 다른 팀원의 기여도 함께 반영해 보여준다.
-// ---------------------------------------------------------------------------
-
-async function ensureDepartmentsLoaded() {
-  if (Object.keys(departmentsData).length) return;
-  try {
-    departmentsData = await fetchJSON("/api/predict/departments");
-  } catch (e) {
-    /* 조회 실패해도 업그레이드 구매 자체는 가능하다 -- 표시용 정보일 뿐 */
-  }
-}
-
-function myTeamName() {
-  for (const [dept, members] of Object.entries(departmentsData)) {
-    if (members.some((m) => m.id === myParticipantId)) return dept;
-  }
-  return null;
-}
-
-async function refreshTeamUpgradeInfo() {
-  try {
-    const data = await fetchJSON("/api/bet/upgrades");
-    await ensureDepartmentsLoaded();
-    const team = myTeamName();
-    teamUpgradeInfo = {
-      pool: (team && data.team_pool[team]) || 0,
-      level: (team && data.team_level[team]) || 0,
-    };
-  } catch (e) {
-    /* 폴링 실패는 치명적이지 않다 -- 다음 갱신에서 자연 복구 */
-  }
-}
-
-function renderUpgradePanel(me) {
-  if (myMode !== "gambling") {
-    upgradePanelEl.classList.add("hidden");
-    return;
-  }
-  upgradePanelEl.classList.remove("hidden");
-
-  const level = me.card.personal_upgrade_level || 0;
-  const maxed = level >= PERSONAL_UPGRADE_COST.length;
-  personalUpgradeStatusEl.textContent = maxed
-    ? `레벨 ${level}/${PERSONAL_UPGRADE_COST.length} (최대)`
-    : `레벨 ${level}/${PERSONAL_UPGRADE_COST.length} · 다음 레벨 비용 ${PERSONAL_UPGRADE_COST[level]}`;
-  document.getElementById("btn-buy-personal-upgrade").disabled = maxed;
-
-  teamUpgradeStatusEl.textContent =
-    `내 기여 ${me.card.team_upgrade_contributed || 0} · 팀 풀 ${teamUpgradeInfo.pool} (레벨 ${teamUpgradeInfo.level}/3)`;
-}
-
-async function buyPersonalUpgrade() {
-  try {
-    await fetchJSON("/api/bet/upgrade/personal", {
-      method: "POST",
-      body: JSON.stringify({ token: myToken }),
-    });
-    await refreshMe();
-  } catch (e) {
-    alert(e.message);
-  }
-}
-
-async function contributeTeamUpgrade() {
-  const amount = parseInt(document.getElementById("team-upgrade-amount").value, 10) || 0;
-  try {
-    await fetchJSON("/api/bet/upgrade/team", {
-      method: "POST",
-      body: JSON.stringify({ token: myToken, amount }),
-    });
-    await refreshTeamUpgradeInfo();
-    await refreshMe();
-  } catch (e) {
-    alert(e.message);
-  }
-}
-
-document.getElementById("btn-buy-personal-upgrade").addEventListener("click", buyPersonalUpgrade);
-document.getElementById("btn-contribute-team-upgrade").addEventListener("click", contributeTeamUpgrade);
 
 function selectDepartment(name) {
   const members = departmentsData[name] || [];
@@ -410,6 +327,30 @@ async function chooseTarget(round, target) {
 // 사이버머니 갬블링(승인됨) 카드 렌더링 -- 패리뮤추얼 베팅
 // ---------------------------------------------------------------------------
 
+// 라운드별 성과 보상 내역(베팅 손익과 별개). 서버가 card.rewards에
+// 항목별로 남겨준 값을 그대로 보여준다 -- "왜 얼마를 더 받았는지"가
+// 폰에서 바로 보여야 한다는 사용자 요청.
+const TEAM_RANK_LABEL = { 1: "🥇 우리 팀 1위", 2: "🥈 우리 팀 2위", 3: "🥉 우리 팀 3위" };
+
+function renderRewardBreakdown(me, round) {
+  const reward = me.card.rewards ? me.card.rewards[round] : null;
+  if (!reward) return "";
+  const items = [];
+  if (reward.finish) items.push(`<li>🏁 결승선 통과 <b>+${reward.finish}</b></li>`);
+  if (reward.team_bonus) {
+    const label = TEAM_RANK_LABEL[reward.team_rank] || "우리 팀 순위 보상";
+    items.push(`<li>${label} <b>+${reward.team_bonus}</b></li>`);
+  }
+  if (reward.final) items.push(`<li>🏆 결선 당첨 <b>+${reward.final}</b></li>`);
+  if (!items.length) return "";
+  return `
+    <div class="reward-box">
+      <div class="reward-title">이번 라운드 보상 <span class="reward-total">+${reward.total}</span></div>
+      <ul class="reward-list">${items.join("")}</ul>
+    </div>
+  `;
+}
+
 function renderBetCard(me, round) {
   const state = cardStateFor(me, round);
   const bet = me.card.bets[round]; // {target, amount} | null
@@ -422,13 +363,21 @@ function renderBetCard(me, round) {
     const candidates = me.round_candidates[round] || [];
     const live = (me.live && me.live[round]) || { odds: {} };
     const maxBet = me.card.balance + (bet ? bet.amount : 0);
-    const defaultAmount = bet ? bet.amount : Math.min(50, me.card.balance);
+    // 아직 서버에 안 보낸 진행 중 선택이 있으면 그걸 우선한다(폴링 재렌더로
+    // 사용자의 입력이 날아가지 않게 하는 것이 핵심 -- pendingBet* 참고).
+    const selectedTarget = pendingBetTarget[round] || (bet ? bet.target : null);
+    const amountValue =
+      pendingBetAmount[round] !== null && pendingBetAmount[round] !== undefined
+        ? pendingBetAmount[round]
+        : bet
+        ? bet.amount
+        : Math.min(50, me.card.balance);
     const oddsHtml = candidates
       .map((c) => {
         const odds = live.odds ? live.odds[c] : null;
         const label = odds ? `${odds}배` : "최초 베팅";
-        const isMine = bet && bet.target === c;
-        return `<button class="choice-btn bet-target-btn ${isMine ? "selected" : ""}" data-round="${round}" data-target="${c}">
+        const isSelected = selectedTarget === c;
+        return `<button class="choice-btn bet-target-btn ${isSelected ? "selected" : ""}" data-round="${round}" data-target="${c}">
           <span class="bet-target-name">${c}</span><span class="odds-label">${label}</span>
         </button>`;
       })
@@ -438,7 +387,7 @@ function renderBetCard(me, round) {
       ${bet ? `<p class="hint-line">현재 베팅: <strong>${bet.target}</strong>에 ${bet.amount} -- 0으로 다시 걸면 취소됩니다</p>` : `<p class="hint-line">지금 베팅하세요! 몰리는 쪽은 배당이 낮아집니다.</p>`}
       <div class="choice-list odds-list">${oddsHtml}</div>
       <div class="bet-amount-row">
-        <input type="number" min="0" max="${maxBet}" step="10" value="${defaultAmount}" id="bet-amount-${round}" />
+        <input type="number" min="0" max="${maxBet}" step="10" value="${amountValue}" id="bet-amount-${round}" />
         <button class="btn-bet-submit" data-round="${round}">베팅하기</button>
       </div>
     `;
@@ -463,6 +412,7 @@ function renderBetCard(me, round) {
         <span class="pred-card-badge">${BET_STATE_LABELS[state]}</span>
       </div>
       ${bodyHtml}
+      ${renderRewardBreakdown(me, round)}
     </div>
   `;
 }
@@ -473,6 +423,10 @@ async function placeBet(round, target, amount) {
       method: "POST",
       body: JSON.stringify({ token: myToken, round, target, amount }),
     });
+    // 서버에 반영됐으니 진행 중 입력 보관분은 비운다 -- 이후로는 서버가
+    // 돌려준 실제 베팅 내용이 선택 상태의 근거가 된다.
+    pendingBetTarget[round] = null;
+    pendingBetAmount[round] = null;
     await refreshMe();
   } catch (e) {
     alert(e.message);
@@ -491,7 +445,6 @@ function renderMe(me) {
     cardsEl.innerHTML = "";
     predictionsOffNoteEl.classList.remove("hidden");
     leaderboardPanelEl.classList.add("hidden");
-    upgradePanelEl.classList.add("hidden");
     if (liveRefreshTimer) {
       clearInterval(liveRefreshTimer);
       liveRefreshTimer = null;
@@ -506,6 +459,13 @@ function renderMe(me) {
     myMode === "gambling" ? `보유 사이버머니: ${me.card.balance}` : `내 점수: ${me.card.score}점`;
 
   if (myMode === "gambling") {
+    // 금액을 입력하는 중(포커스가 카드 안에 있음)이면 이번 폴링 재렌더는
+    // 건너뛴다 -- 값은 pendingBetAmount로 지켜지지만, 재렌더 자체가 키보드
+    // 포커스를 빼앗아 입력이 끊기기 때문이다. 배당률은 다음 주기에 갱신된다.
+    if (cardsEl.contains(document.activeElement) && document.activeElement !== document.body) {
+      updateLiveRefreshTimer(me);
+      return;
+    }
     cardsEl.innerHTML = [1, 2, 3].map((r) => renderBetCard(me, r)).join("");
     for (const btn of cardsEl.querySelectorAll(".bet-target-btn")) {
       btn.addEventListener("click", () => {
@@ -514,8 +474,14 @@ function renderMe(me) {
           b.classList.remove("selected");
         }
         btn.classList.add("selected");
-        const input = document.getElementById(`bet-amount-${round}`);
-        if (input) input.dataset.target = btn.dataset.target;
+        // 배당률 폴링이 카드를 다시 그려도 이 선택이 살아남도록 보관한다.
+        pendingBetTarget[round] = btn.dataset.target;
+      });
+    }
+    for (const input of cardsEl.querySelectorAll(".bet-amount-row input")) {
+      input.addEventListener("input", () => {
+        const round = parseInt(input.id.replace("bet-amount-", ""), 10);
+        pendingBetAmount[round] = input.value;
       });
     }
     for (const btn of cardsEl.querySelectorAll(".btn-bet-submit")) {
@@ -524,7 +490,7 @@ function renderMe(me) {
         const input = document.getElementById(`bet-amount-${round}`);
         const amount = parseInt(input.value, 10) || 0;
         const selected = cardsEl.querySelector(`.bet-target-btn.selected[data-round="${round}"]`);
-        const target = selected ? selected.dataset.target : input.dataset.target;
+        const target = selected ? selected.dataset.target : pendingBetTarget[round];
         if (!target) {
           alert("먼저 베팅할 대상을 선택하세요.");
           return;
@@ -532,10 +498,7 @@ function renderMe(me) {
         placeBet(round, target, amount);
       });
     }
-    renderUpgradePanel(me);
-    refreshTeamUpgradeInfo().then(() => renderUpgradePanel(me));
   } else {
-    upgradePanelEl.classList.add("hidden");
     cardsEl.innerHTML =
       [1, 2, 3].map((r) => renderConfidenceCard(me, r)).join("") +
       `<button id="btn-save-alloc">확신도 저장</button>`;

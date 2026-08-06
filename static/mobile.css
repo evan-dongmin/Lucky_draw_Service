@@ -329,46 +329,44 @@ button {
   background: #2a3242;
 }
 
-/* -- 업그레이드 상점 ----------------------------------------------------- */
+/* -- 라운드별 성과 보상 내역 ---------------------------------------------- */
 
-.upgrade-row {
+.reward-box {
+  margin-top: 0.7rem;
+  padding: 0.6rem 0.7rem;
+  border-radius: 0.6rem;
+  background: rgba(124, 242, 156, 0.09);
+  border: 1px solid rgba(124, 242, 156, 0.28);
+}
+
+.reward-title {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.6rem 0;
-  border-top: 1px solid #2a3242;
+  justify-content: space-between;
+  font-size: 0.85rem;
+  font-weight: 700;
+  color: #c7cedb;
+  margin-bottom: 0.35rem;
 }
 
-.upgrade-row:first-of-type {
-  border-top: none;
+.reward-total {
+  color: #7cf29c;
+  font-size: 1.05rem;
+  font-variant-numeric: tabular-nums;
 }
 
-.upgrade-info {
-  flex: 1;
+.reward-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  gap: 0.2rem;
+  font-size: 0.88rem;
+  color: #e7ecf3;
 }
 
-.upgrade-info span {
-  font-size: 0.85rem;
-  color: #c7cedb;
-}
-
-#team-upgrade-amount {
-  width: 4.5rem;
-  padding: 0.5rem;
-  border-radius: 0.5rem;
-  border: 1px solid #2a3242;
-  background: #0b0e14;
-  color: #f5f7fa;
-  font-family: "Consolas", monospace;
-}
-
-#btn-buy-personal-upgrade,
-#btn-contribute-team-upgrade {
-  background: #ffd166;
-  color: #1a0d0d;
-  font-weight: 700;
-  white-space: nowrap;
+.reward-list b {
+  color: #7cf29c;
+  font-variant-numeric: tabular-nums;
 }

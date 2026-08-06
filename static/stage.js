@@ -209,7 +209,27 @@ window.addEventListener("keydown", (e) => {
 // MC 자막 + 음성
 // ---------------------------------------------------------------------------
 
+// MC 멘트는 네트워크 왕복(멘트 조회) 뒤에 재생되므로, 요청을 보낸 뒤
+// 도착하기 전에 장면이 바뀌면 "이미 끝난 레이스를 계속 중계하는" 상황이
+// 벌어진다(사용자 신고). 장면이 바뀔 때마다 세대(epoch)를 올리고, 응답이
+// 늦게 도착한 이전 세대의 멘트는 자막·음성 모두 조용히 버린다.
+let mcEpoch = 0;
+
+function cancelPendingMcLines({ clearCaption = false } = {}) {
+  mcEpoch += 1;
+  lastMcLiveCallAt = 0;
+  if (ttsSupported) {
+    try {
+      window.speechSynthesis.cancel();
+    } catch (e) {
+      /* 취소 실패는 무시 -- 다음 발화가 어차피 cancel()로 시작한다 */
+    }
+  }
+  if (clearCaption) mcCaptionEl.textContent = "";
+}
+
 async function showMcLine(tag, params) {
+  const epoch = mcEpoch;
   try {
     const qs = params
       ? "?" +
@@ -219,6 +239,7 @@ async function showMcLine(tag, params) {
           .join("&")
       : "";
     const result = await fetchJSON(`/api/mc/line/${tag}${qs}`);
+    if (epoch !== mcEpoch) return ""; // 그 사이 장면이 바뀌었다 -- 흘러간 멘트는 버린다
     if (result.text) {
       mcCaptionEl.textContent = `"${result.text}"`;
       speak(result.text, tag);
@@ -227,7 +248,7 @@ async function showMcLine(tag, params) {
     }
     return result.text;
   } catch (e) {
-    mcCaptionEl.textContent = "";
+    if (epoch === mcEpoch) mcCaptionEl.textContent = "";
     return "";
   }
 }
@@ -235,8 +256,14 @@ async function showMcLine(tag, params) {
 // 레이스 도중 이벤트(선두 교체·추월)마다 매번 호출하면 자막이 정신없이
 // 바뀌므로, 최소 간격을 두고 그 사이 이벤트는 걸러낸다.
 const MC_LIVE_COOLDOWN_MS = 4500;
+// 레이스 막판에 실황 멘트를 새로 띄우면, 그 멘트가 도착할 즈음엔 이미
+// 결과 발표로 넘어가 있다 -- 진행률이 이 값을 넘으면 실황 멘트를 멈춘다.
+const MC_LIVE_STOP_PROGRESS = 0.9;
 let lastMcLiveCallAt = 0;
+let liveMcSuppressed = false;
+
 function tryShowLiveMcLine(tag, params) {
+  if (liveMcSuppressed) return;
   const now = Date.now();
   if (now - lastMcLiveCallAt < MC_LIVE_COOLDOWN_MS) return;
   lastMcLiveCallAt = now;
@@ -363,7 +390,6 @@ const gamblingOddsPanelEl = document.getElementById("gambling-odds-panel");
 const gamblingOddsListEl = document.getElementById("gambling-odds-list");
 
 async function pollLiveOdds() {
-  fetchUpgradeInfo(); // 배당률 폴링과 같은 주기로 업그레이드 현황도 갱신(실패해도 서로 독립적)
   try {
     const data = await fetchJSON("/api/predict/live");
     if (data.mode !== "gambling") {
@@ -508,28 +534,6 @@ function abilityForParticipant(pid) {
   return group ? abilityForDepartment(group) : ABILITY_ROSTER[0];
 }
 
-// 갬블링 모드 업그레이드 상점(순수 코스메틱 -- 글로우만 강해진다, 순위·
-// 통과 여부에는 영향 없음). /api/bet/upgrades를 폴링해 반영한다.
-let teamUpgradeLevelByDept = {};
-let personalUpgradeLevelByPid = {};
-
-async function fetchUpgradeInfo() {
-  try {
-    const data = await fetchJSON("/api/bet/upgrades");
-    teamUpgradeLevelByDept = data.team_level || {};
-    personalUpgradeLevelByPid = data.personal_level || {};
-    if (lastLegendGroupNames.length) renderTeamLegend(lastLegendGroupNames);
-  } catch (e) {
-    /* 다음 폴링에서 자연 복구 */
-  }
-}
-
-function upgradeGlowLevelFor(pid, group) {
-  const team = group ? teamUpgradeLevelByDept[group] || 0 : 0;
-  const personal = personalUpgradeLevelByPid[pid] || 0;
-  return Math.min(4, team + personal);
-}
-
 const departmentColorCache = new Map();
 const departmentAbilityCache = new Map();
 let currentPidToGroup = {};
@@ -543,14 +547,89 @@ let roundParticipantsTotal = 0;
 let finalLapShownForRound = null;
 let photoFinishShownForRound = null;
 
-// -- 장애물(연출 전용 -- 순위/progress 값에는 절대 영향 없음) --------------
+// ---------------------------------------------------------------------------
+// 장애물 (연출 전용 -- 순위/progress 값에는 절대 영향 없음)
+//
+// 사용자 요청으로 종류·크기·개수를 늘리고, 부딪히면 스핀아웃/정지/감속처럼
+// 눈에 띄는 변수가 생기도록 했다. **다만 실제 통과 판정은 서버가 보낸
+// positions[pid]로만 결정되므로, 여기서 만드는 효과는 전부 "보이는 위치"에만
+// 적용되는 일시적 오프셋이고 반드시 0으로 되돌아온다**:
+//   - 각 효과는 자기 지속시간 안에서 감쇠해 사라진다.
+//   - 그와 별개로 레이스 막판(EFFECT_FADE_TAIL 구간)에는 전체 효과 강도에
+//     0으로 수렴하는 페이드를 곱한다 -> 결승선 통과 시점(ratio=1.0)에는
+//     보이는 위치와 실제 위치가 정확히 일치한다(통과선 판정과 어긋날 수 없음).
+// ---------------------------------------------------------------------------
 let activeObstacles = [];
 let nextObstacleSpawnAt = 0;
 let obstacleSeq = 0;
-let kartWobbleUntil = {};
-const OBSTACLE_MAX_ACTIVE = 3;
-const OBSTACLE_TYPES = ["oil", "cone", "tire"];
-const WOBBLE_DURATION_MS = 260;
+let kartEffects = {}; // pid -> { kind, until, duration, lag, lateral, spin }
+
+// 종류별 스프라이트/크기/충돌 효과. severity가 클수록 크게 밀린다.
+const OBSTACLE_DEFS = {
+  cone: { emoji: "🚧", size: 0.9, kind: "wobble", duration: 300, lag: 0, lateral: 0.25, spin: 0.2 },
+  oil: { emoji: "🛢️", size: 1.05, kind: "slow", duration: 900, lag: 0.012, lateral: 0.5, spin: 0.5 },
+  tire: { emoji: "🛞", size: 1.0, kind: "slow", duration: 700, lag: 0.008, lateral: 0.7, spin: 0.35 },
+  banana: { emoji: "🍌", size: 0.85, kind: "spin", duration: 1100, lag: 0.010, lateral: 1.2, spin: 6.3 },
+  puddle: { emoji: "💧", size: 1.15, kind: "slide", duration: 800, lag: 0.005, lateral: 1.6, spin: 0.3 },
+  rock: { emoji: "🪨", size: 1.25, kind: "stall", duration: 1000, lag: 0.020, lateral: 0.4, spin: 0.8 },
+  bomb: { emoji: "💣", size: 1.1, kind: "stall", duration: 1300, lag: 0.026, lateral: 1.4, spin: 9.4 },
+  ice: { emoji: "🧊", size: 1.0, kind: "slide", duration: 1000, lag: 0.006, lateral: 1.9, spin: 1.2 },
+};
+const OBSTACLE_TYPES = Object.keys(OBSTACLE_DEFS);
+
+// 라운드별 동시 활성 개수 -- R1은 250대가 한 화면에 있어 너무 많으면
+// 화면이 빽빽해지므로 적당히, 카트가 적어 여백이 많은 R2/R3는 넉넉히.
+const OBSTACLE_MAX_ACTIVE_BY_ROUND = { 1: 7, 2: 10, 3: 12 };
+
+// 레이스 막판 이 비율 구간에서 모든 시각 효과를 0으로 수렴시킨다
+// (결승선에서 보이는 위치 = 실제 위치 보장).
+const EFFECT_FADE_TAIL = 0.12;
+
+function effectFadeFor(progressRatio) {
+  const remain = 1 - Math.min(1, Math.max(0, progressRatio));
+  return Math.min(1, remain / EFFECT_FADE_TAIL);
+}
+
+// 카트가 장애물에 닿았을 때 효과를 건다. 이미 더 센 효과가 걸려 있으면
+// 덮어쓰지 않는다(연달아 스치며 영원히 멈춰 있는 것을 방지).
+function applyKartEffect(pid, type, now) {
+  const def = OBSTACLE_DEFS[type];
+  if (!def) return;
+  const current = kartEffects[pid];
+  if (current && current.until > now && current.lag >= def.lag) return;
+  kartEffects[pid] = {
+    kind: def.kind,
+    until: now + def.duration,
+    duration: def.duration,
+    lag: def.lag,
+    lateral: def.lateral,
+    spin: def.spin,
+    dir: Math.random() < 0.5 ? -1 : 1,
+  };
+}
+
+// 남은 시간 비율(1 -> 0)로 감쇠한 현재 효과 강도. 없으면 null.
+function kartEffectStateFor(pid, now, fade) {
+  const e = kartEffects[pid];
+  if (!e) return null;
+  const remain = e.until - now;
+  if (remain <= 0) {
+    delete kartEffects[pid];
+    return null;
+  }
+  const t = remain / e.duration; // 1 -> 0
+  const strength = t * fade;
+  return {
+    kind: e.kind,
+    strength,
+    // 감속/정지는 "뒤로 처져 보였다가 따라잡는" 형태 -- 진행률에서 잠시 뺀다
+    lag: e.lag * strength,
+    // 코스 이탈: 옆으로 밀렸다가 제자리로 복귀
+    lateral: e.lateral * strength * e.dir,
+    // 스핀: 남은 시간 동안 회전하고 멈춘다
+    spin: e.spin * strength * e.dir,
+  };
+}
 
 function colorForDepartment(name) {
   const entry = departmentColorCache.get(name);
@@ -592,11 +671,9 @@ function renderTeamLegend(groupNames) {
   el.innerHTML = groupNames
     .map((name) => {
       const ability = abilityForDepartment(name);
-      const level = teamUpgradeLevelByDept[name] || 0;
-      const stars = level > 0 ? ` <span class="legend-upgrade">${"⭐".repeat(level)}</span>` : "";
       return `<span class="legend-item"><span class="legend-swatch" style="background:${colorForDepartment(
         name
-      )}"></span>${name} <span class="legend-ability" title="${ability.label}">${ability.emoji}</span>${stars}</span>`;
+      )}"></span>${name} <span class="legend-ability" title="${ability.label}">${ability.emoji}</span></span>`;
     })
     .join("");
 }
@@ -632,28 +709,37 @@ function jitterFor(pid) {
 // 라운드마다 트랙을 다르게 둔다(사용자 요청 -- 매번 같은 맵이면 지루하다).
 // R1은 250대가 한눈에 들어와야 하니 완만하게, R2는 중간, R3(결선·클로즈업
 // 카메라)는 가장 굴곡지게 -- 세 세트 전부 위 ΔY/ΔT 안전 규칙을 지킨다.
+// 라운드마다 트랙이 "확실히 달라 보여야" 한다(사용자 피드백: 맵이 다 똑같다).
+// 예전 정의는 모양은 조금씩 달랐지만 halfWidthFrac이 0.48~0.55로 다 넓어서,
+// 코스 굴곡(진폭 ±0.2~0.34)보다 트랙 폭이 2~3배 크다 보니 셋 다 "굵고
+// 뭉툭한 띠"로 뭉개져 사실상 구분이 안 됐다. 그래서 라운드별로 성격을
+// 명확히 갈랐다:
+//   R1 = 넓고 곧은 고속 스피드웨이 (250대가 한 화면에 들어와야 함)
+//   R2 = 폭이 절반인 지그재그 시케인 (약 100대)
+//   R3 = 가장 좁고 굴곡이 심한 서킷 (5~10대, 클로즈업 카메라)
+// 폭이 좁아질수록 급커브에서 연석이 겹치는 문제도 함께 줄어들기 때문에,
+// 진폭을 키우면서 폭을 줄이는 조합이 안전하다.
 const TRACK_DEFS = {
   1: {
-    // 웨이포인트 수를 줄이고 간격을 넓혀 방향 전환 지점(=곡률이 가장
-    // 큰 지점)의 곡률 자체를 낮췄다 -- ΔY/ΔT 비율을 낮춰도 halfWidth가
-    // 넓으면 커브 스트라이프(외곽 연석)가 방향 전환 지점에서 서로
-    // 겹쳐 보이는 걸 스크린샷으로 실제 확인했다(리본 자체가 아니라
-    // 연석 사각형들이 급격한 회전 때문에 겹치는 문제). 250대가 한눈에
-    // 들어와야 하는 R1은 어차피 시각 디테일보다 가독성이 중요하므로
-    // 가장 완만하게 뒀다.
-    t: [0, 0.25, 0.5, 0.75, 1.0],
-    yFrac: [0, -0.2, 0.2, -0.15, 0],
-    halfWidthFrac: 0.55,
+    // 완만한 롱 스트레이트 + 큰 곡선 두 개. 250대가 한눈에 들어와야
+    // 하므로 폭을 가장 넓게 유지한다(차선 수가 많아야 카트가 안 겹침).
+    t: [0, 0.3, 0.55, 0.8, 1.0],
+    yFrac: [0, -0.16, 0.2, -0.12, 0.04],
+    halfWidthFrac: 0.52,
   },
   2: {
-    t: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0],
-    yFrac: [0, -0.2, -0.34, -0.16, 0.18, 0.34, 0.18, -0.14, -0.3, -0.1, 0],
-    halfWidthFrac: 0.5,
+    // 지그재그 시케인 -- 진폭을 키우고 폭은 절반 가까이 줄여 "굽이치는
+    // 길"로 읽히게 한다.
+    t: [0, 0.14, 0.28, 0.42, 0.56, 0.7, 0.85, 1.0],
+    yFrac: [0, -0.52, 0.46, -0.44, 0.5, -0.36, 0.3, 0],
+    halfWidthFrac: 0.26,
   },
   3: {
-    t: [0, 0.08, 0.16, 0.24, 0.32, 0.42, 0.52, 0.62, 0.72, 0.82, 0.91, 1.0],
-    yFrac: [0, -0.16, -0.3, -0.1, 0.17, 0.32, 0.12, -0.22, -0.32, -0.08, 0.22, 0],
-    halfWidthFrac: 0.48,
+    // 결선 전용 테크니컬 서킷 -- 가장 좁고 가장 많이 꺾인다. 카트가
+    // 5~10대뿐이라 좁아도 충분히 크게 보인다.
+    t: [0, 0.09, 0.19, 0.29, 0.39, 0.5, 0.61, 0.72, 0.83, 0.92, 1.0],
+    yFrac: [0, -0.44, 0.52, -0.58, 0.38, -0.5, 0.56, -0.4, 0.46, -0.24, 0],
+    halfWidthFrac: 0.17,
   },
 };
 const TRACK_LUT_SIZE = 400;
@@ -1160,21 +1246,27 @@ function kartSpriteFor(color, glow) {
   return sprite;
 }
 
-function drawKart(ctx, x, y, h, angle, color, glow, isLeader, atRisk, pulse, wobble, upgradeLevel) {
+// 충돌 효과 종류별 표식 -- 뭘 밟았는지 한눈에 보이게 한다(연출 전용).
+const EFFECT_MARK = { stall: "💥", spin: "💫", slide: "🌀", slow: "🐌", wobble: "" };
+
+function drawKart(ctx, x, y, h, angle, color, glow, isLeader, atRisk, pulse, effect) {
   const w = h * (SPRITE_W / SPRITE_H);
-  const boost = upgradeLevel || 0; // 업그레이드 상점(코스메틱) -- 순위에는 영향 없음
-  // 장애물 근처를 지날 때의 "부딪힌 척" 흔들림 -- 순수 연출, 위치 데이터는 불변
-  const wobbleAngle = wobble ? Math.sin(performance.now() * 0.045) * 0.22 * wobble : 0;
-  const wobbleScale = wobble ? 1 - 0.08 * wobble : 1;
+  // 장애물 충돌 연출(스핀아웃/정지/미끄러짐) -- 전부 보이는 각도·크기만
+  // 건드리며, 위치 데이터(progress)는 drawFrame에서 이미 분리해 두었다.
+  const s = effect ? effect.strength : 0;
+  const spinAngle = effect ? effect.spin : 0;
+  const shakeAngle = s ? Math.sin(performance.now() * 0.045) * 0.22 * s : 0;
+  const squash = s ? 1 - 0.12 * s : 1;
 
   ctx.save();
   ctx.translate(x, y);
-  ctx.rotate(angle + wobbleAngle);
-  ctx.scale(wobbleScale, wobbleScale);
+  ctx.rotate(angle + spinAngle + shakeAngle);
+  ctx.scale(squash, squash);
 
   // 배기 연기 / 속도 자국. 진행 방향 반대쪽(로컬 -x)에 그려 회전해도 항상 뒤쪽에 남는다.
+  // 감속·정지 중에는 트레일을 줄여 "속도를 잃었다"는 게 보이게 한다.
   if (h >= 9) {
-    const trailCount = 3 + Math.min(3, boost); // 레벨이 높을수록 배기 트레일이 길어진다
+    const trailCount = Math.max(0, 3 - Math.round(s * 3));
     for (let t = 1; t <= trailCount; t++) {
       ctx.globalAlpha = 0.14 / t;
       ctx.fillStyle = glow;
@@ -1187,13 +1279,10 @@ function drawKart(ctx, x, y, h, angle, color, glow, isLeader, atRisk, pulse, wob
 
   if (isLeader) {
     ctx.shadowColor = glow;
-    ctx.shadowBlur = 16 + boost * 4;
+    ctx.shadowBlur = 16;
   } else if (atRisk) {
     ctx.shadowColor = "#ff5252";
     ctx.shadowBlur = 5 + pulse * 9;
-  } else if (boost > 0) {
-    ctx.shadowColor = glow;
-    ctx.shadowBlur = 3 + boost * 5;
   }
 
   ctx.drawImage(kartSpriteFor(color, glow), -w / 2, -h / 2, w, h);
@@ -1202,23 +1291,35 @@ function drawKart(ctx, x, y, h, angle, color, glow, isLeader, atRisk, pulse, wob
   // 선두 왕관 -- 회전을 상쇄해 항상 위를 향한다.
   if (isLeader && h >= 14) {
     ctx.save();
-    ctx.rotate(-(angle + wobbleAngle));
+    ctx.rotate(-(angle + spinAngle + shakeAngle));
     ctx.font = `${Math.round(h * 0.8)}px serif`;
     ctx.textAlign = "center";
     ctx.fillText("👑", 0, -h * 0.9);
     ctx.restore();
   }
+
+  // 피격 표식 -- 회전을 상쇄해 항상 똑바로 보이게 한다.
+  if (effect && s > 0.25 && h >= 10 && EFFECT_MARK[effect.kind]) {
+    ctx.save();
+    ctx.rotate(-(angle + spinAngle + shakeAngle));
+    ctx.globalAlpha = Math.min(1, s * 1.6);
+    ctx.font = `${Math.round(h * 0.85)}px serif`;
+    ctx.textAlign = "center";
+    ctx.fillText(EFFECT_MARK[effect.kind], 0, -h * 0.75);
+    ctx.restore();
+    ctx.globalAlpha = 1;
+  }
   ctx.restore();
 }
 
 // ---------------------------------------------------------------------------
-// 장애물: 마블 레이스 느낌의 움직이는 방해물(연출 전용). 트랙 위를 살짝
-// 좌우로 요동치며 떠 있다가, 카트가 근처를 지나면 drawKart의 wobble 흔들림만
-// 유발한다 -- positions[pid](순위 판정 값)는 이 파일 어디서도 바꾸지 않는다.
+// 장애물 렌더/스폰: 마블 레이스 느낌의 움직이는 방해물(연출 전용). 트랙 위를
+// 좌우로 요동치며 떠 있다가, 카트가 닿으면 applyKartEffect로 스핀/정지/감속
+// 효과를 건다 -- positions[pid](순위 판정 값)는 이 파일 어디서도 바꾸지 않고,
+// 효과는 결승선 전에 반드시 0으로 수렴한다(EFFECT_FADE_TAIL 참고).
 // ---------------------------------------------------------------------------
 
 const obstacleSpriteCache = new Map();
-const OBSTACLE_EMOJI = { oil: "🛢️", cone: "🚧", tire: "🛞" };
 
 function buildObstacleSprite(type) {
   const c = document.createElement("canvas");
@@ -1228,7 +1329,7 @@ function buildObstacleSprite(type) {
   g.font = "40px serif";
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.fillText(OBSTACLE_EMOJI[type] || "🚧", 28, 30);
+  g.fillText((OBSTACLE_DEFS[type] || OBSTACLE_DEFS.cone).emoji, 28, 30);
   return c;
 }
 
@@ -1241,32 +1342,42 @@ function obstacleSpriteFor(type) {
   return sprite;
 }
 
-function drawObstacle(ctx, x, y, size, type) {
+function drawObstacle(ctx, o, size) {
   ctx.save();
   ctx.globalAlpha = 0.94;
   ctx.shadowColor = "rgba(0,0,0,0.5)";
   ctx.shadowBlur = 4;
-  ctx.drawImage(obstacleSpriteFor(type), x - size / 2, y - size / 2, size, size);
+  ctx.translate(o.x, o.y);
+  ctx.rotate(o.spinPhase);
+  const s = size * o.sizeScale;
+  ctx.drawImage(obstacleSpriteFor(o.type), -s / 2, -s / 2, s, s);
   ctx.restore();
 }
 
 // 리더 진행률 기준으로 앞쪽에 장애물을 스폰하고, 리더가 한참 지나친 것은
-// 제거한다. 동시 활성 개수를 참가자 수·라운드와 무관하게 소수로 고정해
-// R1(최대 250대, 와이드 뷰)에서도 화면이 안 빽빽하게 유지한다.
-function maybeSpawnObstacle(now, leaderProgress) {
-  activeObstacles = activeObstacles.filter((o) => leaderProgress - o.spawnProgress < 0.06);
-  if (activeObstacles.length >= OBSTACLE_MAX_ACTIVE) return;
+// 제거한다. 라운드별 상한(OBSTACLE_MAX_ACTIVE_BY_ROUND)으로 R1(250대,
+// 와이드 뷰)에서도 화면이 빽빽해지지 않게 조절한다.
+function maybeSpawnObstacle(now, leaderProgress, round) {
+  activeObstacles = activeObstacles.filter((o) => leaderProgress - o.spawnProgress < 0.08);
+  const maxActive = OBSTACLE_MAX_ACTIVE_BY_ROUND[round] || 7;
+  if (activeObstacles.length >= maxActive) return;
   if (now < nextObstacleSpawnAt) return;
+  const type = OBSTACLE_TYPES[Math.floor(Math.random() * OBSTACLE_TYPES.length)];
   activeObstacles.push({
     id: `obs-${obstacleSeq++}`,
-    type: OBSTACLE_TYPES[Math.floor(Math.random() * OBSTACLE_TYPES.length)],
-    spawnProgress: Math.min(0.97, leaderProgress + 0.12 + Math.random() * 0.12),
+    type,
+    // 같은 종류라도 크기를 흔들어 "다양한 크기"가 실제로 보이게 한다
+    sizeScale: OBSTACLE_DEFS[type].size * (0.75 + Math.random() * 0.7),
+    spawnProgress: Math.min(0.97, leaderProgress + 0.1 + Math.random() * 0.16),
     laneCenter: Math.random() * lastLaneCount,
-    weaveAmp: 1.5 + Math.random() * 2,
-    weaveSpeed: 0.0015 + Math.random() * 0.0012,
+    weaveAmp: 1.5 + Math.random() * 3,
+    weaveSpeed: 0.0015 + Math.random() * 0.0018,
+    spinPhase: Math.random() * Math.PI * 2,
+    spinSpeed: (Math.random() - 0.5) * 0.0025,
     spawnedAt: now,
   });
-  nextObstacleSpawnAt = now + 2200 + Math.random() * 1800;
+  // 이전보다 훨씬 자주 뿌린다(사용자 요청: 장애물 수를 많게)
+  nextObstacleSpawnAt = now + 420 + Math.random() * 700;
 }
 
 function obstacleScreenPoints(now, laneCount, laneWidth, round) {
@@ -1276,7 +1387,12 @@ function obstacleScreenPoints(now, laneCount, laneWidth, round) {
     const center = trackPointAt(o.spawnProgress, round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);
-    return { ...o, x: center.x + nx * laneOffset, y: center.y + ny * laneOffset };
+    return {
+      ...o,
+      spinPhase: o.spinPhase + (now - o.spawnedAt) * o.spinSpeed,
+      x: center.x + nx * laneOffset,
+      y: center.y + ny * laneOffset,
+    };
   });
 }
 
@@ -1305,42 +1421,54 @@ function drawFrame(positions, tick) {
   drawTrackSurface(raceCtx, W, H, lut, halfWidth, tick.pass_line, leaderPos, trackLength, tick.round);
   drawFinishLine(raceCtx, trackPointAt(tick.pass_line, tick.round), halfWidth);
 
-  const laneCount = Math.max(6, Math.min(36, ids.length));
+  // 트랙이 라운드마다 좁아지므로 차선 수도 폭에 맞춘다 -- 좁은 트랙에서
+  // 36차선을 그대로 쓰면 카트가 점처럼 작아져 아무것도 안 보인다.
+  const laneCount = Math.max(6, Math.min(36, ids.length, Math.floor((halfWidth * 2) / 11)));
   lastLaneCount = laneCount;
   const laneWidth = (halfWidth * 2) / laneCount;
-  const kartH = Math.max(5, Math.min(64, laneWidth * 0.82));
+  const kartH = Math.max(6, Math.min(64, laneWidth * 0.82));
 
-  maybeSpawnObstacle(now, leaderPos);
+  maybeSpawnObstacle(now, leaderPos, tick.round);
   const obstaclePoints = obstacleScreenPoints(now, laneCount, laneWidth, tick.round);
-  const obstacleSize = Math.max(16, kartH * 1.4);
+  const obstacleSize = Math.max(18, kartH * 1.5);
   for (const o of obstaclePoints) {
-    drawObstacle(raceCtx, o.x, o.y, obstacleSize, o.type);
+    drawObstacle(raceCtx, o, obstacleSize);
   }
-  const hitRadius = Math.max(14, kartH * 1.3);
+  const hitRadius = Math.max(14, kartH * 1.2);
+  // 결승선 근처에서는 모든 충돌 효과를 0으로 수렴시켜, 보이는 위치가
+  // 서버가 정한 실제 위치와 정확히 일치하게 만든다(통과 판정 불일치 방지).
+  const fade = effectFadeFor(tick.progress_ratio);
 
   let riskCount = 0;
   for (let i = sorted.length - 1; i >= 0; i--) {
     const pid = sorted[i];
     const p = positions[pid];
+    const effect = kartEffectStateFor(pid, now, fade);
+
+    // 충돌 효과는 "보이는 위치"에만 적용한다 -- p(순위 판정 값)는 불변.
+    const shownP = Math.max(0, p - (effect ? effect.lag : 0));
     const lane = laneFor(pid, laneCount);
-    const laneOffset = (lane - (laneCount - 1) / 2) * laneWidth + jitterFor(pid) * laneWidth * 0.5;
-    const center = trackPointAt(p, tick.round);
+    const lateral = effect ? effect.lateral * laneWidth : 0;
+    const laneOffset =
+      (lane - (laneCount - 1) / 2) * laneWidth + jitterFor(pid) * laneWidth * 0.5 + lateral;
+    const center = trackPointAt(shownP, tick.round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);
     const x = center.x + nx * laneOffset;
     const y = center.y + ny * laneOffset;
 
-    // 장애물 근처를 지나면 짧게 흔들리는 연출만 유발한다 -- p(진행률)는 불변
-    for (const o of obstaclePoints) {
-      const dx = x - o.x;
-      const dy = y - o.y;
-      if (dx * dx + dy * dy < hitRadius * hitRadius) {
-        kartWobbleUntil[pid] = now + WOBBLE_DURATION_MS;
-        break;
+    // 장애물에 닿으면 종류별 효과(스핀아웃/정지/감속/미끄러짐)를 건다.
+    if (fade > 0) {
+      for (const o of obstaclePoints) {
+        const dx = x - o.x;
+        const dy = y - o.y;
+        const r = hitRadius + (obstacleSize * o.sizeScale) / 2;
+        if (dx * dx + dy * dy < r * r) {
+          applyKartEffect(pid, o.type, now);
+          break;
+        }
       }
     }
-    const wobbleRemain = kartWobbleUntil[pid] ? kartWobbleUntil[pid] - now : 0;
-    const wobble = wobbleRemain > 0 ? wobbleRemain / WOBBLE_DURATION_MS : 0;
 
     const group = currentPidToGroup[pid];
     const isLeader = i === 0;
@@ -1358,8 +1486,7 @@ function drawFrame(positions, tick) {
       isLeader,
       atRisk,
       pulse,
-      wobble,
-      upgradeGlowLevelFor(pid, group)
+      effect
     );
   }
   raceCtx.globalAlpha = 1;
@@ -1373,6 +1500,12 @@ function drawFrame(positions, tick) {
   FX.setSpeedLines(Math.min(1, tick.progress_ratio * 1.1));
   SFX.setRpm(speedIntensity);
   SFX.setSceneIntensity(speedIntensity);
+
+  // 레이스 막판에 새로 띄운 실황 멘트는 도착할 즈음 이미 결과 발표로
+  // 넘어가 있다 -- 진행률이 임계값을 넘으면 실황 멘트를 잠근다(라운드
+  // 시작 시 다시 열린다). FINAL LAP/포토피니시 같은 "그 순간의 연출"은
+  // 이 잠금과 무관하게 그대로 나간다.
+  if (tick.progress_ratio >= MC_LIVE_STOP_PROGRESS) liveMcSuppressed = true;
 
   // 클로즈콜: 통과선 근처에 여러 대가 몰려 있으면 긴장 멘트 + 심장박동
   if (riskCount >= 3) {
@@ -1489,8 +1622,12 @@ function handleRacingEvent(data) {
       PHASE_LABELS[data.phase] || data.phase,
       RACE_ROUND_INDEX_LOCAL[data.phase]
     );
+    // 장면이 바뀌었다 -- 아직 도착하지 않은 이전 장면의 멘트는 전부 버린다
+    // (레이스가 끝났는데 계속 레이스를 중계하던 문제).
+    cancelPendingMcLines();
     if (["race_r1", "race_r2", "race_r3"].includes(data.phase)) {
       currentLeaderDept = null;
+      liveMcSuppressed = false; // 새 레이스가 시작됐으니 실황 멘트를 다시 허용
       const roundIndex = RACE_ROUND_INDEX_LOCAL[data.phase];
       finalLapShownForRound = null;
       if (roundIndex === 3) photoFinishShownForRound = null;
@@ -1526,11 +1663,19 @@ function handleRacingEvent(data) {
     );
     SFX.pass();
     FX.ring(window.innerWidth / 2, window.innerHeight * 0.5, "#7cf29c", 220);
-    showMcLine("round_pass_announce", { pass_count: data.pass_ids ? data.pass_ids.length : undefined }).then(
-      () => delay(2200)
-    ).then(() => showMcLine("elimination"));
+    // 후속 멘트("elimination")는 2.2초 뒤에 나가는데, 그 사이 다음 구간으로
+    // 넘어갔으면 흘러간 멘트이므로 내보내지 않는다.
+    const revealEpoch = mcEpoch;
+    showMcLine("round_pass_announce", { pass_count: data.pass_ids ? data.pass_ids.length : undefined })
+      .then(() => delay(2200))
+      .then(() => {
+        if (revealEpoch === mcEpoch) showMcLine("elimination");
+      });
   } else if (data.type === "racing_complete") {
     if (countdownTimer) clearInterval(countdownTimer);
+    // 진행이 끝났는데 뒤늦게 도착한 레이스 중계 멘트가 흘러나오지 않도록 한다.
+    cancelPendingMcLines({ clearCaption: true });
+    liveMcSuppressed = true;
     phaseLabelEl.textContent = "진행 완료";
     phaseTimerEl.textContent = "--";
     phaseTimerEl.classList.remove("urgent");
@@ -1554,8 +1699,22 @@ const PRIZE_BASIS_LABEL = {
   confidence: "확신도 예측 최종 리더보드 기준 당첨자입니다 -- 레이스 순위와 다를 수 있습니다",
 };
 
-function buildPodium(winnerIds, nameById, basis) {
+// 당첨 근거가 된 최종 성적의 단위(갬블링=사이버머니, 확신도=점수).
+const PRIZE_SCORE_UNIT = { gambling: "사이버머니", confidence: "점" };
+
+function formatPrizeScore(score, basis) {
+  if (score === undefined || score === null) return "";
+  const n = Number(score).toLocaleString("ko-KR");
+  return basis === "gambling" ? `💰 ${n}` : `${n}점`;
+}
+
+function buildPodium(winnerIds, nameById, basis, scores) {
   if (podiumBasisHintEl) podiumBasisHintEl.textContent = PRIZE_BASIS_LABEL[basis] || "";
+  const scoreList = scores || [];
+  const scoreOf = (id) => {
+    const i = winnerIds.indexOf(id);
+    return i >= 0 ? scoreList[i] : undefined;
+  };
   const top3 = winnerIds.slice(0, 3);
   const rest = winnerIds.slice(3);
   // 시각적 배치: 2위-1위-3위 순서(가운데가 1위)
@@ -1566,20 +1725,29 @@ function buildPodium(winnerIds, nameById, basis) {
       const rank = rankOf(id);
       const label = nameById[id] || id;
       const medal = rank === 1 ? "🥇" : rank === 2 ? "🥈" : "🥉";
+      const scoreText = formatPrizeScore(scoreOf(id), basis);
       return `<div class="podium-slot" data-rank="${rank}" style="animation-delay:${i * 0.15}s">
         <div class="podium-name">${label}</div>
+        ${scoreText ? `<div class="podium-score">${scoreText}</div>` : ""}
         <div class="podium-block">${medal}</div>
       </div>`;
     })
     .join("");
-  podiumRestEl.innerHTML = rest.map((id) => `<li>${nameById[id] || id}</li>`).join("");
+  podiumRestEl.innerHTML = rest
+    .map((id) => {
+      const scoreText = formatPrizeScore(scoreOf(id), basis);
+      return `<li>${nameById[id] || id}${
+        scoreText ? ` <span class="podium-rest-score">${scoreText}</span>` : ""
+      }</li>`;
+    })
+    .join("");
 }
 
-async function playFinalReveal(winnerIds, nameById, basis) {
+async function playFinalReveal(winnerIds, nameById, basis, scores) {
   showBanner("🏆 최종 당첨자 발표!", "", 1500);
   SFX.drumroll(1.4);
   await delay(1500);
-  buildPodium(winnerIds, nameById, basis);
+  buildPodium(winnerIds, nameById, basis, scores);
   showOverlay("podium");
   SFX.fanfare();
   SFX.crowd(0.8, 1.8);
@@ -1630,7 +1798,7 @@ function render(session) {
         const nameById = Object.fromEntries(
           latest.snapshot.participants.map((p) => [p.id, participantLabel(p)])
         );
-        playFinalReveal(latest.prize_winners, nameById, latest.prize_basis)
+        playFinalReveal(latest.prize_winners, nameById, latest.prize_basis, latest.prize_scores)
           .then(() => delay(2500))
           .then(() => (sessionPredictionMode === "gambling" ? showMcLine("gambling_champion") : Promise.resolve()))
           .then(() => delay(sessionPredictionMode === "gambling" ? 2500 : 0))
@@ -1640,7 +1808,7 @@ function render(session) {
         const nameById = Object.fromEntries(
           latest.snapshot.participants.map((p) => [p.id, participantLabel(p)])
         );
-        buildPodium(latest.prize_winners, nameById, latest.prize_basis);
+        buildPodium(latest.prize_winners, nameById, latest.prize_basis, latest.prize_scores);
         showOverlay("podium");
       }
       return;
@@ -1729,8 +1897,6 @@ const ws = connectWS((data) => {
     currentDrawKeyForGroups = null;
     currentPidToGroup = {};
     characterChoiceByPid = {};
-    teamUpgradeLevelByDept = {};
-    personalUpgradeLevelByPid = {};
     previousTickPositions = {};
     previousTickOrder = [];
     previousTickRound = null;
@@ -1740,7 +1906,9 @@ const ws = connectWS((data) => {
     photoFinishShownForRound = null;
     activeObstacles = [];
     nextObstacleSpawnAt = 0;
-    kartWobbleUntil = {};
+    kartEffects = {};
+    cancelPendingMcLines({ clearCaption: true });
+    liveMcSuppressed = false;
     shownLightsForRound.clear();
     stopRenderLoop();
     SFX.stopScene(); // 다음 render()가 idle 오버레이를 다시 켜면서 idle 장면으로 자연스럽게 복귀한다
