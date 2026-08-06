@@ -57,12 +57,16 @@ let currentPhase = null;
 // 오버레이(화면)별 배경음악 장면 매핑. 레이싱 구간(overlay 없음, hideAllOverlays)
 // 은 handleRacingEvent의 phase 분기에서 별도로 처리한다.
 const OVERLAY_BGM_SCENE = {
-  idle: "idle",
-  waiting: "idle",
-  committed: "anticipation",
+  idle: "idle", // 명단조차 없는 초기 화면 -- 가장 조용한 패드
+  waiting: "idle", // 명단 등록 완료, 추첨 시작 대기
+  committed: "standby", // 커밋 완료 -- 곧 출발한다는 긴장감 있는 대기 루프
   roulette: "roulette",
   podium: "victory",
 };
+
+// 레이스 라운드별 BGM. 라운드마다 곡 자체가 달라야 "단계가 올라간다"는
+// 감각이 생긴다(audio.js의 race1/2/3 참고).
+const RACE_BGM_SCENE = { 1: "race1", 2: "race2", 3: "race3" };
 
 function showOverlay(name) {
   for (const key of Object.keys(overlays)) {
@@ -547,6 +551,14 @@ let roundParticipantsTotal = 0;
 let finalLapShownForRound = null;
 let photoFinishShownForRound = null;
 
+// 결승(통과)선을 이미 넘은 카트 -- 통과음을 카트당 한 번만 내기 위한 기록.
+// 라운드가 바뀌면 그 시점에 이미 선을 넘어 있는 카트를 "소리 없이" 채워
+// 넣는다(중간 접속·복구 직후 수십 대의 통과음이 한꺼번에 터지는 것 방지).
+let crossedPassLine = new Set();
+let crossedRound = null;
+let crossedSoundCount = 0;
+const CROSS_SOUND_BUDGET = 24; // 라운드당 통과음 최대 횟수(그 뒤는 조용히 지나간다)
+
 // ---------------------------------------------------------------------------
 // 장애물 (연출 전용 -- 순위/progress 값에는 절대 영향 없음)
 //
@@ -592,11 +604,13 @@ function effectFadeFor(progressRatio) {
 
 // 카트가 장애물에 닿았을 때 효과를 건다. 이미 더 센 효과가 걸려 있으면
 // 덮어쓰지 않는다(연달아 스치며 영원히 멈춰 있는 것을 방지).
+// 새로 효과가 걸렸을 때만 true -- 호출부가 이때만 충돌음을 낸다(같은 카트가
+// 장애물에 붙어 있는 동안 매 프레임 소리가 나면 안 된다).
 function applyKartEffect(pid, type, now) {
   const def = OBSTACLE_DEFS[type];
-  if (!def) return;
+  if (!def) return false;
   const current = kartEffects[pid];
-  if (current && current.until > now && current.lag >= def.lag) return;
+  if (current && current.until > now && current.lag >= def.lag) return false;
   kartEffects[pid] = {
     kind: def.kind,
     until: now + def.duration,
@@ -606,6 +620,15 @@ function applyKartEffect(pid, type, now) {
     spin: def.spin,
     dir: Math.random() < 0.5 ? -1 : 1,
   };
+  return true;
+}
+
+// 장애물 종류 -> 충돌음 종류. 폭탄만 kind가 'stall'이면서도 화면에서는
+// 폭발이므로 별도 사운드로 뺀다.
+function hitSoundKindFor(type) {
+  if (type === "bomb") return "explode";
+  const def = OBSTACLE_DEFS[type];
+  return def ? def.kind : null;
 }
 
 // 남은 시간 비율(1 -> 0)로 감쇠한 현재 효과 강도. 없으면 null.
@@ -1439,6 +1462,12 @@ function drawFrame(positions, tick) {
   // 서버가 정한 실제 위치와 정확히 일치하게 만든다(통과 판정 불일치 방지).
   const fade = effectFadeFor(tick.progress_ratio);
 
+  if (crossedRound !== tick.round) {
+    crossedRound = tick.round;
+    crossedPassLine = new Set(sorted.filter((pid) => positions[pid] >= tick.pass_line));
+    crossedSoundCount = 0;
+  }
+
   let riskCount = 0;
   for (let i = sorted.length - 1; i >= 0; i--) {
     const pid = sorted[i];
@@ -1464,7 +1493,18 @@ function drawFrame(positions, tick) {
         const dy = y - o.y;
         const r = hitRadius + (obstacleSize * o.sizeScale) / 2;
         if (dx * dx + dy * dy < r * r) {
-          applyKartEffect(pid, o.type, now);
+          if (applyKartEffect(pid, o.type, now)) {
+            // 충돌음은 선두권일수록 크게. 250대가 동시에 부딪히는 R1에서도
+            // 소리가 뭉치지 않도록 볼륨을 순위로 깎고, 나머지는 audio.js의
+            // 게이트가 솎아낸다. 화면 밖(카메라 줌 아웃 전) 뒤쪽 집단은
+            // 아주 작게만 들린다.
+            // sorted는 선두가 0번(루프는 겹침 순서 때문에 뒤에서부터 돈다)
+            const scale = i === 0 ? 1.15 : i < 5 ? 0.85 : i < 20 ? 0.5 : 0.28;
+            SFX.hit(hitSoundKindFor(o.type), scale);
+            if (i === 0 && (o.type === "bomb" || o.type === "rock")) {
+              FX.screenShake(o.type === "bomb" ? 8 : 5, 240);
+            }
+          }
           break;
         }
       }
@@ -1474,6 +1514,20 @@ function drawFrame(positions, tick) {
     const isLeader = i === 0;
     const atRisk = !isLeader && p < tick.pass_line && tick.pass_line - p < 0.06;
     if (atRisk) riskCount += 1;
+
+    // 결승(통과)선 통과 -- 선두 통과는 체커기 + 함성으로 크게 가고, 뒤따르는
+    // 카트는 짧은 블립만 낸다. 판정 자체는 서버가 하므로 여기서는 연출만.
+    if (p >= tick.pass_line && !crossedPassLine.has(pid)) {
+      crossedPassLine.add(pid);
+      if (crossedSoundCount < CROSS_SOUND_BUDGET) {
+        crossedSoundCount += 1;
+        SFX.finishCross(i);
+      }
+      if (isLeader) {
+        FX.screenFlash("rgba(255,255,255,0.4)", 200);
+        FX.ring(x, y, "#ffd166", 180);
+      }
+    }
 
     drawKart(
       raceCtx,
@@ -1517,7 +1571,9 @@ function drawFrame(positions, tick) {
     finalLapShownForRound = tick.round;
     showBanner("FINAL LAP", "마지막 스퍼트!", 1500);
     showMcLine("final_lap");
+    SFX.bell(); // 마지막 랩 종
     SFX.heartbeat();
+    SFX.crowd(0.5, 1.4);
   }
 
   // 포토 피니시: 결선(R3)에서 선두 두 대가 초박빙으로 들어올 때
@@ -1531,6 +1587,8 @@ function drawFrame(positions, tick) {
     photoFinishShownForRound = tick.round;
     showBanner("PHOTO FINISH", "", 1600);
     showMcLine("photo_finish");
+    SFX.riser(0.9);
+    SFX.crowd(0.9, 1.6);
     FX.screenFlash("rgba(255,255,255,0.6)", 200);
   }
 }
@@ -1633,14 +1691,19 @@ function handleRacingEvent(data) {
       if (roundIndex === 3) photoFinishShownForRound = null;
       runStartLights(roundIndex);
       SFX.startEngine();
-      SFX.playScene("race", { round: roundIndex });
+      SFX.playScene(RACE_BGM_SCENE[roundIndex] || "race1", { round: roundIndex });
       fetchCharacterChoices(); // 레이스 시작 직전 최종 선택 스냅샷(매 라운드 -- 라운드 사이 선택창에서 바꾼 캐릭터도 반영)
     } else {
       SFX.stopEngine();
       FX.setSpeedLines(0);
-      // 결과 발표 구간(final_announce/verify)은 승리감 있는 장면으로, 그 외
-      // (오프닝/락/선택창)는 다음 결정을 기다리는 긴장감 있는 장면으로.
-      SFX.playScene(data.phase === "final_announce" || data.phase === "verify" ? "victory" : "anticipation");
+      // 구간별 BGM:
+      //  - 결과 발표(final_announce/verify): 승리감 있는 장조 루프
+      //  - 레이스 직전 대기(opening/r1_lock): 출발을 기다리는 그리드 루프
+      //  - 라운드 사이 선택창(score_rX_select_rY): 결정을 기다리는 긴장 루프
+      let scene = "anticipation";
+      if (data.phase === "final_announce" || data.phase === "verify") scene = "victory";
+      else if (data.phase === "opening" || data.phase === "r1_lock") scene = "standby";
+      SFX.playScene(scene);
     }
     if (data.phase === "race_r1") showMcLine("opening");
     if (data.phase === "race_r3") showMcLine("race_progress");
@@ -1662,6 +1725,7 @@ function handleRacingEvent(data) {
       2000
     );
     SFX.pass();
+    SFX.crowd(0.6, 1.5);
     FX.ring(window.innerWidth / 2, window.innerHeight * 0.5, "#7cf29c", 220);
     // 후속 멘트("elimination")는 2.2초 뒤에 나가는데, 그 사이 다음 구간으로
     // 넘어갔으면 흘러간 멘트이므로 내보내지 않는다.
@@ -1746,6 +1810,7 @@ function buildPodium(winnerIds, nameById, basis, scores) {
 async function playFinalReveal(winnerIds, nameById, basis, scores) {
   showBanner("🏆 최종 당첨자 발표!", "", 1500);
   SFX.drumroll(1.4);
+  SFX.riser(1.4); // 드럼롤 위에 상승음을 겹쳐 발표 직전 긴장을 끌어올린다
   await delay(1500);
   buildPodium(winnerIds, nameById, basis, scores);
   showOverlay("podium");
