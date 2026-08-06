@@ -45,11 +45,11 @@ STARTING_BALANCE = 500
 ROUND_BONUS_CHIPS = 80  # 라운드 2·3 개방 시 전원에게 지급(완전 파산 방지)
 ROUNDS = (1, 2, 3)
 
-# 라운드 보상(사용자 요청: "우승한 팀"과 "결승선 통과한 개인"에게 사이버머니
-# 지급) -- 이미 fairness.py가 계산해둔 결과를 읽어서 지급할 뿐이므로 추첨
-# 계산 자체에는 관여하지 않는다.
+# 라운드 보상(사용자 요청: "가장 많이 살아남은 부서원을 가진 팀 순으로
+# 차등 보상 + 결승선을 통과한 개인에게도 별도 보상") -- 이미 fairness.py가
+# 계산해둔 결과를 읽어서 지급할 뿐이므로 추첨 계산 자체에는 관여하지 않는다.
 FINISH_REWARD = 40  # 그 라운드 통과선을 넘은 개인 전원
-TEAM_WIN_REWARD = 60  # 그 라운드 최고 통과율 부서 소속 통과자에게 추가 지급
+TEAM_RANK_REWARDS = [100, 70, 40]  # 그 라운드 통과율 1~3위 부서 소속 통과자에게 순위별 추가 지급(4위 이하 0)
 FINAL_WIN_REWARD = 300  # 결선(R3) 최종 당첨자에게 지급
 
 # 개인 카트 업그레이드: 레벨업마다 비용이 오른다(순수 코스메틱 -- 글로우
@@ -203,23 +203,33 @@ class GamblingEngine:
 
         return self._odds_payload(round_index)
 
-    # -- 라운드 보상: 통과한 개인 + 우승 부서 소속 통과자 + 최종 당첨자 -----
+    # -- 라운드 보상: 통과한 개인 + 부서 순위별 차등 보상 + 최종 당첨자 -----
 
     def award_round_rewards(
-        self, passed_ids: set[str], winning_ids: set[str] | None = None
+        self, passed_ids: set[str], ranked_dept_ids: list[set[str]] | None = None
     ) -> dict[str, int]:
-        """이미 fairness.py가 계산해둔 결과(통과자·우승 부서 소속)를 읽어서
+        """이미 fairness.py가 계산해둔 결과(통과자·부서별 통과율 순위)를 읽어서
         지급할 뿐, 추첨 계산 자체에는 관여하지 않는다. 카드가 없는(한 번도
         참여하지 않은) 참가자에게는 카드를 새로 만들지 않는다 -- 리더보드에
-        아무 행동도 안 한 유령 항목이 뜨는 것을 막기 위함."""
+        아무 행동도 안 한 유령 항목이 뜨는 것을 막기 위함.
+
+        ranked_dept_ids: 그 라운드 통과율 순위대로(1위부터) 정렬된 "부서
+        소속 id 집합" 리스트. TEAM_RANK_REWARDS[i]가 i번째 순위 부서 소속
+        통과자에게 추가 지급된다(리스트 길이를 넘는 순위는 추가 보상 없음).
+        """
+        bonus_by_pid: dict[str, int] = {}
+        if ranked_dept_ids:
+            for rank, dept_ids in enumerate(ranked_dept_ids[: len(TEAM_RANK_REWARDS)]):
+                reward = TEAM_RANK_REWARDS[rank]
+                for pid in dept_ids:
+                    bonus_by_pid[pid] = reward
+
         granted: dict[str, int] = {}
         for pid in passed_ids:
             card = self.cards.get(pid)
             if card is None:
                 continue
-            amount = FINISH_REWARD
-            if winning_ids and pid in winning_ids:
-                amount += TEAM_WIN_REWARD
+            amount = FINISH_REWARD + bonus_by_pid.get(pid, 0)
             card.balance += amount
             granted[pid] = amount
         return granted

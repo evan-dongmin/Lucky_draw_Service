@@ -613,16 +613,16 @@ async def _score_and_open_next(
         if next_candidates is not None:
             gambling_engine.open_round(next_round, next_candidates)
 
-        # 라운드 보상(사용자 요청): 통과한 개인 + 그 라운드 최고 통과율
-        # 부서("우승팀") 소속 통과자에게 추가 지급. 이미 fairness.py가
+        # 라운드 보상(사용자 요청): 통과한 개인 + 그 라운드 통과율 순위별
+        # 부서("팀") 소속 통과자에게 차등 추가 지급. 이미 fairness.py가
         # 계산해둔 결과를 읽어서 지급할 뿐이라 추첨 계산에는 관여하지 않는다.
         if scored_round in (1, 2):
             passed_ids = set(draw.round_pass_ids[scored_round])
             rates = draw.department_pass_rate.get(scored_round, {})
-            winning_dept = next(iter(predictions.top_k_by_rate(rates, 1)), None) if rates else None
             departments = draw.snapshot.get("departments", {})
-            winning_ids = set(departments.get(winning_dept, [])) if winning_dept else set()
-            rewards = gambling_engine.award_round_rewards(passed_ids, winning_ids)
+            ranked_names = [name for name, _ in sorted(rates.items(), key=lambda kv: (-kv[1], kv[0]))]
+            ranked_dept_ids = [set(departments.get(name, [])) for name in ranked_names]
+            rewards = gambling_engine.award_round_rewards(passed_ids, ranked_dept_ids)
         else:
             rewards = gambling_engine.award_final_rewards(set(draw.winners))
 

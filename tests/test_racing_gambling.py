@@ -37,6 +37,14 @@ def _winning_department(draw, round_index: int) -> str:
     return next(iter(top_k_by_rate(rates, 1)))
 
 
+def _department_by_rank(draw, round_index: int, rank: int) -> str:
+    """main.py와 동일한 정렬 규칙(통과율 내림차순, 동률 시 이름 오름차순)으로
+    rank번째(0-based) 부서명을 돌려준다."""
+    rates = draw.department_pass_rate[round_index]
+    ranked = [name for name, _ in sorted(rates.items(), key=lambda kv: (-kv[1], kv[0]))]
+    return ranked[rank]
+
+
 @pytest.mark.asyncio
 async def test_racing_with_gambling_settles_bets_across_all_rounds(monkeypatch):
     participants = generate_sample_participants(40, seed=5)
@@ -172,15 +180,20 @@ async def test_racing_gambling_grants_round_rewards_to_passers_and_winning_team(
     eliminated_after_r1 = r1_pass_set - r2_pass_set  # R1은 통과, R2는 탈락 -- R1 보상만 격리해 검증
     winning_dept = _winning_department(draw, 1)
     winning_dept_ids = set(departments[winning_dept])
+    second_dept = _department_by_rank(draw, 1, 1)
+    second_dept_ids = set(departments[second_dept])
 
     passer_in_winning_dept = next(pid for pid in eliminated_after_r1 if pid in winning_dept_ids)
-    passer_not_in_winning_dept = next(pid for pid in eliminated_after_r1 if pid not in winning_dept_ids)
+    passer_in_second_dept = next(pid for pid in eliminated_after_r1 if pid in second_dept_ids)
+    passer_not_in_winning_dept = next(
+        pid for pid in eliminated_after_r1 if pid not in winning_dept_ids and pid not in second_dept_ids
+    )
     non_passer = next(pid for pid in draw.ranking if pid not in r1_pass_set)
     winner = draw.winners[0]
 
     # 보상 대상이 되려면 카드가 이미 있어야 한다(한 번도 참여 안 한 참가자는
     # 유령 리더보드 항목을 막기 위해 보상하지 않는 설계).
-    for pid in [passer_in_winning_dept, passer_not_in_winning_dept, non_passer, winner]:
+    for pid in [passer_in_winning_dept, passer_in_second_dept, passer_not_in_winning_dept, non_passer, winner]:
         main_module.gambling_engine.get_or_create_card(pid)
 
     monkeypatch.setattr(main_module.director, "build_runbook", lambda **kwargs: list(TINY_SEGMENTS))
@@ -193,7 +206,13 @@ async def test_racing_gambling_grants_round_rewards_to_passers_and_winning_team(
 
     await main_module.run_racing_sequence("reward-race", 0, 300.0)
 
-    from app.gambling import FINAL_WIN_REWARD, FINISH_REWARD, ROUND_BONUS_CHIPS, STARTING_BALANCE, TEAM_WIN_REWARD
+    from app.gambling import (
+        FINAL_WIN_REWARD,
+        FINISH_REWARD,
+        ROUND_BONUS_CHIPS,
+        STARTING_BALANCE,
+        TEAM_RANK_REWARDS,
+    )
 
     cards = main_module.gambling_engine.cards
     # 라운드 2·3 개방 시 전원에게 지급되는 파산 방지 보너스(성과와 무관) --
@@ -202,5 +221,6 @@ async def test_racing_gambling_grants_round_rewards_to_passers_and_winning_team(
 
     assert cards[non_passer].balance == baseline
     assert cards[passer_not_in_winning_dept].balance == baseline + FINISH_REWARD
-    assert cards[passer_in_winning_dept].balance == baseline + FINISH_REWARD + TEAM_WIN_REWARD
+    assert cards[passer_in_winning_dept].balance == baseline + FINISH_REWARD + TEAM_RANK_REWARDS[0]
+    assert cards[passer_in_second_dept].balance == baseline + FINISH_REWARD + TEAM_RANK_REWARDS[1]
     assert cards[winner].balance >= baseline + FINAL_WIN_REWARD

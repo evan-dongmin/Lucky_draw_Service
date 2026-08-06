@@ -8,8 +8,8 @@ from app.gambling import (
     PERSONAL_UPGRADE_COST,
     ROUND_BONUS_CHIPS,
     STARTING_BALANCE,
+    TEAM_RANK_REWARDS,
     TEAM_UPGRADE_THRESHOLD,
-    TEAM_WIN_REWARD,
     GamblingEngine,
     GamblingError,
 )
@@ -253,7 +253,7 @@ def test_load_dict_restores_in_place_keeping_same_instance():
 
 
 # ---------------------------------------------------------------------------
-# 라운드 보상: 통과한 개인 + 우승 부서 소속 통과자 + 최종 당첨자
+# 라운드 보상: 통과한 개인 + 부서 순위별 차등 보상 + 최종 당첨자
 # ---------------------------------------------------------------------------
 
 
@@ -270,24 +270,31 @@ def test_award_round_rewards_grants_finish_bonus_only_to_existing_cards():
     assert "P3" not in engine.cards
 
 
-def test_award_round_rewards_adds_team_win_bonus_on_top_of_finish_bonus():
+def test_award_round_rewards_grants_tiered_team_bonus_by_rank():
     engine = GamblingEngine()
-    engine.get_or_create_card("P1")  # 우승팀 소속 통과자
-    engine.get_or_create_card("P2")  # 통과했지만 우승팀 아님
+    engine.get_or_create_card("P1")  # 1위 부서 소속 통과자
+    engine.get_or_create_card("P2")  # 2위 부서 소속 통과자
+    engine.get_or_create_card("P3")  # 3위 부서 소속 통과자
+    engine.get_or_create_card("P4")  # 4위 부서 소속 통과자(순위표 밖 -- 추가 보상 없음)
 
-    granted = engine.award_round_rewards(passed_ids={"P1", "P2"}, winning_ids={"P1"})
+    granted = engine.award_round_rewards(
+        passed_ids={"P1", "P2", "P3", "P4"},
+        ranked_dept_ids=[{"P1"}, {"P2"}, {"P3"}, {"P4"}],
+    )
 
-    assert granted["P1"] == FINISH_REWARD + TEAM_WIN_REWARD
-    assert granted["P2"] == FINISH_REWARD
-    assert engine.cards["P1"].balance == STARTING_BALANCE + FINISH_REWARD + TEAM_WIN_REWARD
+    assert granted["P1"] == FINISH_REWARD + TEAM_RANK_REWARDS[0]
+    assert granted["P2"] == FINISH_REWARD + TEAM_RANK_REWARDS[1]
+    assert granted["P3"] == FINISH_REWARD + TEAM_RANK_REWARDS[2]
+    assert granted["P4"] == FINISH_REWARD
+    assert engine.cards["P1"].balance == STARTING_BALANCE + FINISH_REWARD + TEAM_RANK_REWARDS[0]
 
 
-def test_team_win_bonus_not_granted_to_winning_team_member_who_did_not_pass():
-    """우승 부서 소속이라도 그 라운드를 통과하지 못했으면(탈락) 보상 대상이 아니다."""
+def test_team_rank_bonus_not_granted_to_ranked_team_member_who_did_not_pass():
+    """순위권 부서 소속이라도 그 라운드를 통과하지 못했으면(탈락) 보상 대상이 아니다."""
     engine = GamblingEngine()
     engine.get_or_create_card("P1")
 
-    granted = engine.award_round_rewards(passed_ids=set(), winning_ids={"P1"})
+    granted = engine.award_round_rewards(passed_ids=set(), ranked_dept_ids=[{"P1"}])
 
     assert granted == {}
     assert engine.cards["P1"].balance == STARTING_BALANCE
