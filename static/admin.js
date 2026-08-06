@@ -4,7 +4,6 @@ const rosterFileEl = document.getElementById("roster-file");
 const rosterWarningsEl = document.getElementById("roster-warnings");
 const rosterPreviewEl = document.getElementById("roster-preview");
 const drawCountEl = document.getElementById("draw-count");
-const modeSelectEl = document.getElementById("mode-select");
 const totalSecondsEl = document.getElementById("total-seconds");
 const totalSecondsHintEl = document.getElementById("total-seconds-hint");
 const predictionsEnabledEl = document.getElementById("predictions-enabled");
@@ -29,10 +28,6 @@ const MIN_SECONDS_WITH_PREDICTIONS = 150;
 const MIN_SECONDS_WITHOUT_PREDICTIONS = 60;
 
 function updateTotalSecondsHint() {
-  if (modeSelectEl.value !== "racing") {
-    totalSecondsHintEl.textContent = "";
-    return;
-  }
   const floor = predictionsEnabledEl.checked
     ? MIN_SECONDS_WITH_PREDICTIONS
     : MIN_SECONDS_WITHOUT_PREDICTIONS;
@@ -43,7 +38,6 @@ function updateTotalSecondsHint() {
       ? `⚠ 레이싱 모드 최소 ${floor}초 필요 (예측 게임 ${predictionsEnabledEl.checked ? "켜짐" : "꺼짐"}) -- 이 값으로는 레이스 시작이 거부됩니다.`
       : `레이싱 모드 최소 ${floor}초 (예측 게임 ${predictionsEnabledEl.checked ? "켜짐" : "꺼짐"})`;
 }
-modeSelectEl.addEventListener("change", updateTotalSecondsHint);
 predictionsEnabledEl.addEventListener("change", updateTotalSecondsHint);
 totalSecondsEl.addEventListener("input", updateTotalSecondsHint);
 updateTotalSecondsHint();
@@ -145,7 +139,10 @@ document.getElementById("btn-create-session").addEventListener("click", async ()
       body: JSON.stringify({
         participants: previewParticipants,
         draw_count: parseInt(drawCountEl.value, 10),
-        mode: modeSelectEl.value,
+        // 룰렛 모드는 운영 콘솔에서 제거했다(사용자 요청) -- 실제 행사는
+        // 항상 레이싱 모드로 진행한다. 백엔드는 여전히 두 모드를 지원하지만
+        // 콘솔에서는 선택지를 노출하지 않는다.
+        mode: "racing",
         total_seconds: parseFloat(totalSecondsEl.value),
         predictions_enabled: predictionsEnabledEl.checked,
         prediction_mode: predictionModeSelectEl.value,
@@ -176,15 +173,6 @@ document.getElementById("btn-apply-exclude").addEventListener("click", async () 
 document.getElementById("btn-commit").addEventListener("click", async () => {
   try {
     await fetchJSON("/api/draw/commit", { method: "POST" });
-    await refreshSession();
-  } catch (e) {
-    alert(e.message);
-  }
-});
-
-document.getElementById("btn-reveal").addEventListener("click", async () => {
-  try {
-    await fetchJSON("/api/draw/reveal", { method: "POST", body: JSON.stringify({}) });
     await refreshSession();
   } catch (e) {
     alert(e.message);

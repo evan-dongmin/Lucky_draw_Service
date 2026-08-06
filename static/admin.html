@@ -34,14 +34,8 @@ P002,김철수,영업팀"></textarea>
       <h2>2. 세션 생성</h2>
       <div class="row">
         <label>당첨 인원수 <input type="number" id="draw-count" value="3" min="1" /></label>
-        <label>모드
-          <select id="mode-select">
-            <option value="roulette">룰렛 (안전망 MVP)</option>
-            <option value="racing">레이싱 (부서 대항 퍼널)</option>
-          </select>
-        </label>
         <label>총 진행 시간(초) <input type="number" id="total-seconds" value="600" min="60" /></label>
-        <label><input type="checkbox" id="predictions-enabled" /> 참여형 예측 게임 활성화 (레이싱 모드 전용)</label>
+        <label><input type="checkbox" id="predictions-enabled" /> 참여형 예측 게임 활성화</label>
         <button id="btn-create-session">세션 생성</button>
       </div>
       <p id="total-seconds-hint" class="status"></p>
@@ -74,8 +68,7 @@ P002,김철수,영업팀"></textarea>
 
       <div class="row">
         <button id="btn-commit">① 커밋 생성</button>
-        <button id="btn-reveal">② 추첨 시작(리빌) - 룰렛 모드</button>
-        <button id="btn-start-racing">② 레이스 시작 - 레이싱 모드</button>
+        <button id="btn-start-racing">② 레이스 시작</button>
         <button id="btn-bots-fill">예측 봇으로 채우기 (데모 전용)</button>
       </div>
       <div id="commit-display" class="commit-box"></div>
