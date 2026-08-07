@@ -105,8 +105,12 @@ document.getElementById("btn-upload-file").addEventListener("click", async () =>
 });
 
 document.getElementById("btn-sample").addEventListener("click", async () => {
-  const result = await fetchJSON("/api/roster/sample?count=250");
-  renderPreview(result);
+  try {
+    const result = await fetchJSON("/api/roster/sample?count=250");
+    renderPreview(result);
+  } catch (e) {
+    alert(e.message);
+  }
 });
 
 document.getElementById("btn-mc-pregenerate").addEventListener("click", async () => {

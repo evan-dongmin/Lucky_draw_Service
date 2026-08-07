@@ -47,6 +47,23 @@ async def lifespan(_: FastAPI):
 app = FastAPI(title="타추위 추첨 프로그램", lifespan=lifespan)
 
 
+@app.middleware("http")
+async def no_cache_static(request: Request, call_next):
+    """정적 파일(HTML/JS/CSS)에 캐시 방지 헤더를 강제한다.
+
+    StaticFiles/FileResponse는 Cache-Control을 안 붙이므로 브라우저가
+    자체 휴리스틱으로 오래 캐싱할 수 있다 -- 배포 후에도 운영 콘솔이
+    새로고침 없이는 예전 admin.js를 계속 쓰다가(HTML은 새 버전인데 JS만
+    옛 버전이라 DOM 참조가 어긋나는 등) 버튼이 조용히 먹통이 되는 사고로
+    이어진다. ETag/Last-Modified 기반 재검증은 그대로 유지돼 매번 새로
+    다운로드하지는 않는다.
+    """
+    response = await call_next(request)
+    if request.url.path == "/" or request.url.path.startswith("/static/") or request.url.path in ("/admin", "/verify", "/mobile"):
+        response.headers["Cache-Control"] = "no-cache"
+    return response
+
+
 class ConnectionHub:
     """WS 연결 관리: stage/admin/mobile 화면 간 상태 브로드캐스트.
 
