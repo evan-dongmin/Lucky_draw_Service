@@ -92,14 +92,31 @@ let audioUnlocked = false;
 const ttsSupported = typeof window !== "undefined" && "speechSynthesis" in window;
 let koVoice = null;
 
+// 실제 스포츠 중계 캐스터처럼 들리게 하려면 **남성 음성**이 먼저다
+// (사용자 요청). Web Speech API는 성별 정보를 표준으로 주지 않으므로,
+// OS/브라우저별로 알려진 한국어 남성 음성 이름을 목록으로 두고 우선
+// 고른다. 못 찾으면 기존 우선순위(네트워크 음성 -> 아무거나)로 폴백하고,
+// 그 경우에도 아래 MC_VOICE_PITCH_SHIFT로 피치를 낮춰 최대한 중저음
+// 캐스터 톤에 가깝게 만든다.
+const KO_MALE_VOICE_HINTS = [
+  "injoon", "injun", "인준",
+  "minseo", // 일부 환경에서 남성으로 매핑
+  "hyunsu", "현수",
+  "jinho", "진호",
+  "male",
+  "google 한국의", // Chrome 한국어 음성(환경에 따라 남성)
+];
+
 function pickKoreanVoice() {
   if (!ttsSupported) return;
   const voices = window.speechSynthesis.getVoices();
   const koVoices = voices.filter((v) => v.lang && v.lang.toLowerCase().startsWith("ko"));
-  // 로컬 OS 내장 음성(예: Windows "Heami")은 대체로 단조롭다. 브라우저가
-  // 함께 제공하는 네트워크 기반 음성(예: Chrome의 "Google 한국어")은
-  // 억양이 더 자연스러운 경우가 많아 있으면 우선한다.
+  const isMale = (v) => {
+    const n = (v.name || "").toLowerCase();
+    return KO_MALE_VOICE_HINTS.some((h) => n.includes(h));
+  };
   koVoice =
+    koVoices.find(isMale) ||
     koVoices.find((v) => /google/i.test(v.name)) ||
     koVoices.find((v) => !v.localService) ||
     koVoices[0] ||
@@ -136,6 +153,14 @@ const MC_ENERGY = {
 };
 const MC_ENERGY_DEFAULT = { rate: 1.05, pitch: 1.02 };
 
+// 남성 스포츠 캐스터 톤(사용자 요청). 위 표의 피치는 "상황별 상대 텐션"을
+// 나타내는 값이라 그대로 두고, 최종 발화에서 일괄로 낮춘다. 남성 음성을
+// 못 찾아 여성 음성으로 폴백된 환경에서도 이 보정 덕분에 중저음 중계
+// 톤에 훨씬 가깝게 들린다. 속도는 살짝 올려 실황 중계 특유의 몰아치는
+// 호흡을 준다.
+const MC_VOICE_PITCH_SHIFT = -0.28;
+const MC_VOICE_RATE_SHIFT = 0.06;
+
 function speak(text, tag) {
   if (!ttsSupported || !voiceOn || !text) return;
   try {
@@ -145,8 +170,10 @@ function speak(text, tag) {
     if (koVoice) utter.voice = koVoice;
     const energy = MC_ENERGY[tag] || MC_ENERGY_DEFAULT;
     const jitter = () => (Math.random() - 0.5) * 0.07;
-    utter.rate = Math.min(1.5, Math.max(0.8, energy.rate + jitter()));
-    utter.pitch = Math.min(1.6, Math.max(0.75, energy.pitch + jitter()));
+    utter.rate = Math.min(1.5, Math.max(0.8, energy.rate + MC_VOICE_RATE_SHIFT + jitter()));
+    // 하한을 0.55까지 열어 둬야 중저음 캐스터 톤이 실제로 나온다
+    // (기존 하한 0.75에서는 보정을 걸어도 바닥에 걸려 효과가 없었다).
+    utter.pitch = Math.min(1.6, Math.max(0.55, energy.pitch + MC_VOICE_PITCH_SHIFT + jitter()));
     // 느낌표로 끝나는 절규/환호 문구는 살짝 더 크게 -- 평서문과 대비를 준다
     utter.volume = /[!]\s*$/.test(text.trim()) ? 1.0 : 0.92;
     utter.onstart = () => SFX.duck();

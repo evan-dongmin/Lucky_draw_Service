@@ -571,6 +571,59 @@ const SFX = (() => {
     sceneNoiseHit(at, gain, 8000, 0.9, dur, "highpass");
   }
 
+  // -- 레이싱 BGM 전용 음색 ------------------------------------------------
+  // 사용자 피드백("BGM이 여전히 박진감이 없다") 반영. 단일 오실레이터
+  // sceneTone만으로는 아무리 빠르게 쳐도 얇고 장난감 같은 소리가 난다.
+  // 레이싱 게임 BGM 특유의 두꺼운 추진력은 대부분 **디튠된 톱니파 스택
+  // (supersaw) + 필터 엔벨로프**에서 나온다.
+
+  /** 디튠 톱니 3개를 로우패스에 통과시킨 두꺼운 음. 레이싱 BGM의 핵심 음색. */
+  function sceneSuperSaw(freq, dur, gain, at, detune = 14, cutoff = 2600) {
+    if (!isReady() || !sceneGain) return;
+    const t = now() + at;
+    const lp = ctx.createBiquadFilter();
+    lp.type = "lowpass";
+    lp.frequency.setValueAtTime(cutoff, t);
+    // 필터가 닫히며 "웅-" 하고 빠지는 느낌 -> 추진력의 정체
+    lp.frequency.exponentialRampToValueAtTime(Math.max(220, cutoff * 0.35), t + dur);
+    lp.Q.value = 6;
+    const g = ctx.createGain();
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0002, gain), t + 0.012);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + Math.max(0.06, dur));
+    lp.connect(g);
+    g.connect(sceneGain);
+    for (const cents of [-detune, 0, detune]) {
+      const osc = ctx.createOscillator();
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(freq, t);
+      osc.detune.setValueAtTime(cents, t);
+      osc.connect(lp);
+      osc.start(t);
+      osc.stop(t + dur + 0.05);
+    }
+  }
+
+  /** 클릭 + 서브가 함께 있는 강한 킥. 기존 sceneKick보다 훨씬 앞으로 나온다. */
+  function scenePunchKick(at, gain = 0.11) {
+    if (!isReady() || !sceneGain) return;
+    const t = now() + at;
+    // 서브 바디
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(190, t);
+    osc.frequency.exponentialRampToValueAtTime(41, t + 0.11);
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + 0.26);
+    osc.connect(g);
+    g.connect(sceneGain);
+    osc.start(t);
+    osc.stop(t + 0.3);
+    // 어택 클릭 -- 큰 스피커에서 킥이 "때리는" 느낌을 만든다
+    sceneNoiseHit(at, gain * 0.5, 2600, 0.7, 0.028, "highpass");
+  }
+
   function sceneSnare(at, gain = 0.045) {
     sceneNoiseHit(at, gain, 1900, 0.8, 0.13);
     sceneTone(hz("D3"), 0.07, "triangle", gain * 0.5, at);
@@ -646,83 +699,90 @@ const SFX = (() => {
     // 무게를 키운다. 세 곡 모두 setSceneIntensity(0..1: 진행률+접전도)로
     // 템포와 리드 음량이 실시간으로 올라간다.
 
-    // R1 -- D장조, 밝고 경쾌한 오프닝 레이스.
+    // R1 -- D장조. 4/4 four-on-the-floor + 16분 하이햇 + 디튠 톱니 베이스.
+    // 예전엔 8분 베이스에 킥 2개뿐이라 "달리는" 느낌이 없었다.
     race1: {
-      gain: 0.55,
+      gain: 0.62,
       playBar(at, params, bar) {
-        const beat = 60 / (126 + sceneIntensity * 12);
-        const bass = ["D2", "D2", "A2", "D2", "F#2", "D2", "A2", "C#3"];
-        bass.forEach((n, i) => sceneTone(hz(n), beat * 0.4, "sawtooth", 0.06, at + i * beat * 0.5));
-        const lead = ["D4", "F#4", "A4", "F#4"];
-        const leadGain = 0.026 + sceneIntensity * 0.038;
-        lead.forEach((n, i) => sceneTone(hz(n), beat * 0.45, "square", leadGain, at + i * beat));
-        for (let i = 0; i < 8; i++) sceneHat(at + i * beat * 0.5, i % 2 ? 0.012 : 0.02);
-        sceneKick(at, 0.075);
-        sceneKick(at + beat * 2, 0.07);
-        sceneSnare(at + beat, 0.035);
-        sceneSnare(at + beat * 3, 0.035);
-        if (sceneIntensity > 0.72) sceneTone(hz("D5"), beat * 1.4, "triangle", 0.028, at + beat * 2.5);
-        if (bar % 4 === 3) sceneTone(hz("A4"), beat * 0.9, "triangle", 0.03, at + beat * 3.2);
+        const beat = 60 / (150 + sceneIntensity * 14);
+        // 16분 드라이빙 베이스(디튠 톱니) -- 추진력의 몸통
+        const bass = ["D2", "D2", "D2", "A2", "D2", "D2", "F#2", "A2"];
+        bass.forEach((n, i) =>
+          sceneSuperSaw(hz(n), beat * 0.26, 0.075, at + i * beat * 0.5, 12, 1500)
+        );
+        // 리드
+        const lead = bar % 2 === 0 ? ["D4", "F#4", "A4", "F#4"] : ["E4", "G4", "B4", "A4"];
+        const leadGain = 0.03 + sceneIntensity * 0.04;
+        lead.forEach((n, i) => sceneSuperSaw(hz(n), beat * 0.7, leadGain, at + i * beat, 18, 3400));
+        // 4분 킥(four-on-the-floor) + 16분 하이햇
+        for (let i = 0; i < 4; i++) scenePunchKick(at + i * beat, 0.105);
+        for (let i = 0; i < 16; i++) sceneHat(at + i * beat * 0.25, i % 4 === 2 ? 0.02 : 0.011);
+        sceneSnare(at + beat, 0.048);
+        sceneSnare(at + beat * 3, 0.048);
+        if (bar % 4 === 3) {
+          for (let i = 0; i < 4; i++) sceneSnare(at + beat * 3 + i * beat * 0.25, 0.03 + i * 0.008);
+        }
         return beat * 4;
       },
     },
-    // R2 -- A단조, 싱코페이션 베이스에 오프비트 스탭. 쫓고 쫓기는 추격전.
+    // R2 -- A단조. 싱코페이션 베이스 + 오프비트 스탭으로 쫓고 쫓기는 추격전.
     race2: {
-      gain: 0.57,
+      gain: 0.64,
       playBar(at, params, bar) {
-        const beat = 60 / (136 + sceneIntensity * 14);
-        const bass = ["A1", "A1", "C2", "A1", "G1", "G1", "E2", "G1"];
-        bass.forEach((n, i) => sceneTone(hz(n), beat * 0.36, "sawtooth", 0.07, at + i * beat * 0.5));
+        const beat = 60 / (160 + sceneIntensity * 16);
+        const bass = ["A1", "A1", "A1", "C2", "G1", "G1", "G1", "E2"];
+        bass.forEach((n, i) =>
+          sceneSuperSaw(hz(n), beat * 0.24, 0.085, at + i * beat * 0.5, 13, 1400)
+        );
         // 오프비트 스탭 화음 -- 박자를 뒤로 밀어 급한 느낌을 준다
-        const stabGain = 0.024 + sceneIntensity * 0.034;
+        const stabGain = 0.03 + sceneIntensity * 0.036;
         [0.75, 1.75, 2.75, 3.5].forEach((b) => {
-          sceneTone(hz("A3"), beat * 0.3, "square", stabGain, at + beat * b);
-          sceneTone(hz("E4"), beat * 0.3, "square", stabGain * 0.8, at + beat * b);
+          sceneSuperSaw(hz("A3"), beat * 0.26, stabGain, at + beat * b, 20, 3000);
+          sceneSuperSaw(hz("E4"), beat * 0.26, stabGain * 0.75, at + beat * b, 20, 3000);
         });
         const lead = bar % 2 === 0 ? ["E4", "G4", "A4", "C5"] : ["D5", "C5", "A4", "G4"];
         lead.forEach((n, i) =>
-          sceneTone(hz(n), beat * 0.4, "triangle", 0.022 + sceneIntensity * 0.03, at + i * beat)
+          sceneSuperSaw(hz(n), beat * 0.6, 0.028 + sceneIntensity * 0.034, at + i * beat, 16, 3600)
         );
-        for (let i = 0; i < 8; i++) sceneHat(at + i * beat * 0.5, i % 2 ? 0.014 : 0.022);
-        sceneKick(at, 0.085);
-        sceneKick(at + beat * 1.5, 0.06);
-        sceneKick(at + beat * 2, 0.08);
-        sceneSnare(at + beat, 0.042);
-        sceneSnare(at + beat * 3, 0.042);
-        if (sceneIntensity > 0.8) sceneSnare(at + beat * 3.75, 0.03);
+        for (let i = 0; i < 4; i++) scenePunchKick(at + i * beat, 0.11);
+        scenePunchKick(at + beat * 3.5, 0.07);
+        for (let i = 0; i < 16; i++) sceneHat(at + i * beat * 0.25, i % 4 === 2 ? 0.022 : 0.012);
+        sceneSnare(at + beat, 0.055);
+        sceneSnare(at + beat * 3, 0.055);
+        if (sceneIntensity > 0.7) sceneSnare(at + beat * 3.75, 0.036);
         return beat * 4;
       },
     },
-    // R3(결선) -- E단조, 4분 킥 + 16분 아르페지오 + 옥타브 리드. 가장 무겁고
-    // 빠르다. 4마디마다 상승 필인을 넣어 결승선까지 계속 몰아친다.
+    // R3(결선) -- E단조. 가장 빠르고 무겁다. 16분 아르페지오 + 옥타브 리드 +
+    // 4마디마다 상승 필인으로 결승선까지 몰아친다.
     race3: {
-      gain: 0.6,
+      gain: 0.68,
       playBar(at, params, bar) {
-        const beat = 60 / (146 + sceneIntensity * 16);
+        const beat = 60 / (172 + sceneIntensity * 18);
         const roots = ["E1", "E1", "C2", "B1"];
         const root = roots[bar % 4];
         for (let i = 0; i < 8; i++) {
-          sceneTone(hz(root), beat * 0.3, "sawtooth", 0.075, at + i * beat * 0.5);
+          sceneSuperSaw(hz(root), beat * 0.24, 0.095, at + i * beat * 0.5, 14, 1300);
         }
         // 16분 아르페지오 -- 속도감의 핵심
         const arp = ["E3", "G3", "B3", "E4", "B3", "G3", "E3", "G3"];
-        const arpGain = 0.02 + sceneIntensity * 0.028;
+        const arpGain = 0.024 + sceneIntensity * 0.03;
         for (let i = 0; i < 16; i++) {
-          sceneTone(hz(arp[i % arp.length]), beat * 0.18, "square", arpGain, at + i * beat * 0.25);
+          sceneSuperSaw(hz(arp[i % arp.length]), beat * 0.16, arpGain, at + i * beat * 0.25, 10, 4200);
         }
         // 옥타브 리드
         const lead = bar % 2 === 0 ? ["E4", "B4"] : ["D4", "A4"];
         lead.forEach((n, i) =>
-          sceneTone(hz(n), beat * 1.6, "triangle", 0.03 + sceneIntensity * 0.035, at + i * beat * 2)
+          sceneSuperSaw(hz(n), beat * 1.5, 0.034 + sceneIntensity * 0.038, at + i * beat * 2, 22, 3800)
         );
-        for (let i = 0; i < 4; i++) sceneKick(at + i * beat, 0.09);
-        sceneSnare(at + beat, 0.05);
-        sceneSnare(at + beat * 3, 0.05);
-        for (let i = 0; i < 8; i++) sceneHat(at + i * beat * 0.5 + beat * 0.25, 0.016);
+        for (let i = 0; i < 4; i++) scenePunchKick(at + i * beat, 0.12);
+        sceneSnare(at + beat, 0.06);
+        sceneSnare(at + beat * 3, 0.06);
+        for (let i = 0; i < 16; i++) sceneHat(at + i * beat * 0.25, i % 4 === 2 ? 0.024 : 0.013);
         if (bar % 4 === 3) {
           // 상승 필인
-          for (let i = 0; i < 6; i++) {
-            sceneNoiseHit(at + beat * 3 + i * beat * 0.16, 0.03, 1200 + i * 700, 1.2, 0.1);
+          for (let i = 0; i < 8; i++) {
+            sceneNoiseHit(at + beat * 3 + i * beat * 0.125, 0.032, 1100 + i * 620, 1.2, 0.09);
           }
         }
         return beat * 4;
