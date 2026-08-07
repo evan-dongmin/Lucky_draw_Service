@@ -350,6 +350,140 @@ html, body {
 }
 
 /* ---------------------------------------------------------------------
+   라운드 전환기 정보 패널 (선택 창 동안 화면 중앙)
+
+   좌우 사이드 패널과 하단 MC 바를 피해 가운데에만 놓는다. 레이스 중에는
+   숨겨지므로 트랙 시야를 가리지 않는다.
+--------------------------------------------------------------------- */
+
+.round-transition {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 24;
+  width: min(52rem, calc(100vw - 30rem));
+  max-height: 62vh;
+  overflow-y: auto;
+  padding: 1.1rem 1.4rem 1.3rem;
+  border-radius: 1rem;
+  background: rgba(8, 12, 20, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 1.4rem 3rem rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+}
+
+.round-transition-title {
+  margin: 0 0 0.2rem;
+  font-size: 1.5rem;
+  letter-spacing: 0.02em;
+}
+
+.round-transition-summary {
+  margin: 0 0 0.9rem;
+  font-size: 0.95rem;
+  color: #8b95a5;
+}
+
+.rt-row {
+  display: grid;
+  grid-template-columns: 11rem 1fr 5.5rem;
+  align-items: center;
+  gap: 0.7rem;
+  margin-bottom: 0.42rem;
+}
+
+.rt-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.rt-swatch {
+  width: 0.72rem;
+  height: 0.72rem;
+  border-radius: 0.2rem;
+  flex: none;
+}
+
+.rt-track {
+  height: 0.72rem;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.09);
+  overflow: hidden;
+}
+
+.rt-fill {
+  height: 100%;
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.rt-count {
+  text-align: right;
+  font-size: 0.95rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.rt-rate {
+  color: #8b95a5;
+  font-weight: 500;
+  font-size: 0.82rem;
+}
+
+.rt-finalists {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 0.3rem 0.9rem;
+}
+
+.rt-finalist {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr auto;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.28rem 0.5rem;
+  border-radius: 0.4rem;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 0.92rem;
+}
+
+/* 상위 3명은 결선에서 가장 주목받는 자리라 눈에 띄게 둔다. */
+.rt-finalist.rt-top {
+  background: rgba(255, 209, 102, 0.14);
+  border: 1px solid rgba(255, 209, 102, 0.3);
+}
+
+.rt-rank {
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: #ffd166;
+  text-align: right;
+}
+
+.rt-dept {
+  font-size: 0.8rem;
+  color: #8b95a5;
+  white-space: nowrap;
+}
+
+/* 좁은 화면에서는 좌우 패널이 사라지므로 폭 제한도 함께 푼다. */
+@media (max-width: 1100px) {
+  .round-transition {
+    width: calc(100vw - 3rem);
+  }
+}
+
+/* ---------------------------------------------------------------------
    팀 레전드 (하단, MC 바 위)
 --------------------------------------------------------------------- */
 
@@ -515,6 +649,122 @@ html, body {
   margin-top: 1.2rem;
 }
 
+/* ---------------------------------------------------------------------
+   레이스 시작 전 게임 소개 / 참여 방법
+
+   대형 스크린을 처음 보는 사람이 "무슨 게임이고 나는 뭘 하면 되는지"를
+   10초 안에 파악할 수 있어야 한다. 좌(소개) / 우(참여 3단계 + QR)로
+   나눠 시선이 자연스럽게 QR로 흐르게 배치했다.
+--------------------------------------------------------------------- */
+
+.intro-wrap {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2.6rem;
+  margin: 1.6rem 0 0.4rem;
+  text-align: left;
+  max-width: 68rem;
+  flex-wrap: wrap;
+}
+
+.intro-wrap-compact {
+  gap: 2rem;
+  align-items: center;
+  margin-top: 1rem;
+}
+
+.intro-heading {
+  font-size: 1.15rem;
+  color: #ffd166;
+  margin: 0 0 0.6rem;
+  letter-spacing: 0.02em;
+}
+
+.intro-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-width: 30rem;
+  font-size: 1.02rem;
+  line-height: 1.45;
+  color: #c7cedb;
+}
+
+.intro-list li {
+  padding-left: 1.1rem;
+  position: relative;
+}
+
+.intro-list li::before {
+  content: "▸";
+  position: absolute;
+  left: 0;
+  color: #4f8cff;
+}
+
+.intro-list b {
+  color: #e7ecf3;
+}
+
+.intro-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+  font-size: 1rem;
+  line-height: 1.35;
+  color: #c7cedb;
+}
+
+.intro-steps li {
+  display: flex;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.intro-step-no {
+  flex: none;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 50%;
+  background: #4f8cff;
+  color: #fff;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.intro-how {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.intro-how .intro-heading,
+.intro-how .intro-steps {
+  align-self: flex-start;
+}
+
+/* 세로가 짧은 화면(노트북 등)에서는 소개 목록을 접어 QR이 잘리지 않게 한다. */
+@media (max-height: 720px) {
+  .intro-list {
+    font-size: 0.92rem;
+    gap: 0.35rem;
+  }
+  .qr-image {
+    width: 132px;
+    height: 132px;
+    margin-top: 0.8rem;
+  }
+}
+
 .cta-row {
   display: flex;
   gap: 1rem;
@@ -629,33 +879,87 @@ html, body {
    F1 스타트 라이트
 --------------------------------------------------------------------- */
 
+/* 갠트리(라이트를 매단 구조물). 실제 그랑프리처럼 위에서 내려온 프레임에
+   라이트가 달려 있는 형태라야 "출발 신호"로 읽힌다. */
+.lights-gantry {
+  position: relative;
+  padding-top: 1.1rem;
+}
+
+.lights-gantry::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 8%;
+  right: 8%;
+  height: 0.55rem;
+  border-radius: 0.2rem;
+  background: linear-gradient(180deg, #3a4353 0%, #1a1f2a 100%);
+  box-shadow: 0 0.2rem 0.8rem rgba(0, 0, 0, 0.6);
+}
+
 .lights-rig {
   display: flex;
-  gap: 1.4rem;
-  padding: 1.6rem 2.4rem;
-  background: rgba(8, 10, 15, 0.55);
-  border-radius: 1.2rem;
+  gap: clamp(0.8rem, 2vw, 1.6rem);
+  padding: 1.5rem 2rem;
+  background: linear-gradient(180deg, rgba(16, 20, 28, 0.95) 0%, rgba(6, 8, 12, 0.95) 100%);
+  border: 1px solid #232a36;
+  border-radius: 1rem;
+  box-shadow: 0 1.2rem 2.6rem rgba(0, 0, 0, 0.7);
 }
 
+/* 한 열 = 전구 2개(실제 F1 갠트리와 동일). */
 .light {
-  width: clamp(2.6rem, 5vw, 4rem);
-  height: clamp(2.6rem, 5vw, 4rem);
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+.bulb {
+  width: clamp(2.1rem, 3.8vw, 3.1rem);
+  height: clamp(2.1rem, 3.8vw, 3.1rem);
   border-radius: 50%;
-  background: #2a1414;
-  border: 3px solid #4a2020;
-  transition: background 0.15s, box-shadow 0.15s;
+  background: #241010;
+  border: 3px solid #3d1c1c;
+  /* 꺼져 있을 때도 유리알처럼 보이도록 안쪽 하이라이트를 남긴다 */
+  box-shadow: inset 0 0.25rem 0.4rem rgba(255, 255, 255, 0.06);
+  transition: background 0.08s ease-out, box-shadow 0.08s ease-out, border-color 0.08s;
 }
 
-.light.on {
-  background: #ff2b2b;
+/* 점등은 "탁" 하고 즉시 -- 실제 신호등은 서서히 밝아지지 않는다. */
+.light.on .bulb {
+  background: radial-gradient(circle at 38% 32%, #ff8a80 0%, #ff2b2b 55%, #c40000 100%);
   border-color: #ff6b6b;
-  box-shadow: 0 0 34px 10px rgba(255, 43, 43, 0.85);
+  box-shadow:
+    0 0 2.2rem 0.7rem rgba(255, 43, 43, 0.8),
+    inset 0 0.2rem 0.5rem rgba(255, 255, 255, 0.35);
 }
 
-.light.go {
-  background: #2fd35a;
+.light.go .bulb {
+  background: radial-gradient(circle at 38% 32%, #b9f6ca 0%, #2fd35a 55%, #0f9b3c 100%);
   border-color: #7cf29c;
-  box-shadow: 0 0 46px 16px rgba(47, 211, 90, 0.9);
+  box-shadow:
+    0 0 3rem 1rem rgba(47, 211, 90, 0.9),
+    inset 0 0.2rem 0.5rem rgba(255, 255, 255, 0.4);
+}
+
+/* 5등이 다 켜진 뒤 소등을 기다리는 정적 구간 -- 아주 미세하게 맥동해
+   "지금 언제든 꺼진다"는 긴장을 준다. */
+.lights-rig.holding .light.on .bulb {
+  animation: bulb-hold 0.55s ease-in-out infinite alternate;
+}
+
+@keyframes bulb-hold {
+  from {
+    box-shadow:
+      0 0 2.2rem 0.7rem rgba(255, 43, 43, 0.8),
+      inset 0 0.2rem 0.5rem rgba(255, 255, 255, 0.35);
+  }
+  to {
+    box-shadow:
+      0 0 3.1rem 1.1rem rgba(255, 43, 43, 0.95),
+      inset 0 0.2rem 0.5rem rgba(255, 255, 255, 0.5);
+  }
 }
 
 .lights-caption {
@@ -664,6 +968,24 @@ html, body {
   font-weight: 700;
   color: #ffd166;
   letter-spacing: 0.05em;
+}
+
+/* 소등 = 출발 순간의 캡션은 크게 튀어나온다. */
+.lights-caption.go {
+  font-size: clamp(2.6rem, 7vw, 5rem);
+  color: #7cf29c;
+  animation: go-pop 0.42s cubic-bezier(0.18, 1.4, 0.4, 1);
+}
+
+@keyframes go-pop {
+  from {
+    transform: scale(0.4);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 
 /* ---------------------------------------------------------------------

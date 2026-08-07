@@ -36,6 +36,10 @@ const bannerSubEl = document.getElementById("banner-sub");
 const podiumStageEl = document.getElementById("podium-stage");
 const podiumRestEl = document.getElementById("podium-rest");
 const podiumBasisHintEl = document.getElementById("podium-basis-hint");
+const roundTransitionEl = document.getElementById("round-transition");
+const roundTransitionTitleEl = document.getElementById("round-transition-title");
+const roundTransitionSummaryEl = document.getElementById("round-transition-summary");
+const roundTransitionBodyEl = document.getElementById("round-transition-body");
 const btnSound = document.getElementById("btn-sound");
 const btnVoice = document.getElementById("btn-voice");
 const btnFullscreen = document.getElementById("btn-fullscreen");
@@ -326,7 +330,23 @@ function showBanner(text, sub = "", ms = 1800) {
 // ---------------------------------------------------------------------------
 
 const lightEls = Array.from(document.querySelectorAll(".light"));
+const lightsRigEl = document.querySelector(".lights-rig");
 const shownLightsForRound = new Set();
+
+// 실제 그랑프리 스타트 절차를 그대로 따른다(사용자 요청: "빰,빰,빰,빠~~").
+//   1) 엔진 점화 -- 짧은 정적과 공회전음으로 시선을 모은다
+//   2) 빨간 등 5개가 하나씩 "빰" 하고 점등(음이 반음씩 올라간다)
+//   3) **불규칙한 정적** -- F1에서 가장 긴장되는 순간. 언제 꺼질지 모른다
+//   4) 일제 소등 = 출발 "빠~~" (혼 + 타이어 스크리치 + 일제 발진음 + 함성)
+//
+// **서버의 RACE_COUNTDOWN_SECONDS(app/main.py)와 반드시 함께 움직여야 한다.**
+// 아래 총합(최악의 경우)이 그 값을 넘으면 라이트가 켜져 있는 동안 카트가
+// 이미 달려나가는 것이 보인다(과거 버그). 현재: 620 + 5x620 + 최대 1250
+// = 약 4.97초 < 서버 5.2초.
+const LIGHT_INTRO_MS = 620;
+const LIGHT_STEP_MS = 620;
+const LIGHT_HOLD_MIN_MS = 700;
+const LIGHT_HOLD_MAX_MS = 1250;
 
 async function runStartLights(roundIndex) {
   const key = `${currentDrawKeyForGroups}:${roundIndex}`;
@@ -334,23 +354,44 @@ async function runStartLights(roundIndex) {
   shownLightsForRound.add(key);
 
   overlayLightsEl.classList.remove("hidden");
-  lightsCaptionEl.textContent = `ROUND ${roundIndex} -- GET READY`;
+  lightsCaptionEl.classList.remove("go");
+  if (lightsRigEl) lightsRigEl.classList.remove("holding");
   for (const el of lightEls) el.classList.remove("on", "go");
 
+  // 1) 엔진 점화
+  lightsCaptionEl.textContent = `ROUND ${roundIndex} · ENGINES RUNNING`;
+  SFX.startLightsIntro();
+  SFX.engineBlip();
+  await delay(LIGHT_INTRO_MS);
+
+  // 2) 빨간 등 5개 점등
+  lightsCaptionEl.textContent = "GET READY";
   for (let i = 0; i < lightEls.length; i++) {
-    await delay(300);
     lightEls[i].classList.add("on");
     SFX.startLight(i);
+    // 등이 켜질 때마다 화면을 아주 살짝 흔들어 "쿵" 하는 무게를 준다
+    FX.screenShake(2 + i * 0.6, 130);
+    await delay(LIGHT_STEP_MS);
   }
-  await delay(550);
+
+  // 3) 불규칙한 정적 -- 여기가 F1 스타트의 핵심이다
+  if (lightsRigEl) lightsRigEl.classList.add("holding");
+  lightsCaptionEl.textContent = "···";
+  SFX.heartbeat();
+  await delay(LIGHT_HOLD_MIN_MS + Math.random() * (LIGHT_HOLD_MAX_MS - LIGHT_HOLD_MIN_MS));
+
+  // 4) 일제 소등 = 출발
+  if (lightsRigEl) lightsRigEl.classList.remove("holding");
   for (const el of lightEls) el.classList.remove("on");
   for (const el of lightEls) el.classList.add("go");
   lightsCaptionEl.textContent = "GO!!";
+  lightsCaptionEl.classList.add("go");
   SFX.lightsOut();
   FX.screenFlash("rgba(255,255,255,0.9)", 260);
-  FX.screenShake(9, 320);
-  await delay(500);
+  FX.screenShake(11, 380);
+  await delay(520);
   overlayLightsEl.classList.add("hidden");
+  lightsCaptionEl.classList.remove("go");
 }
 
 // ---------------------------------------------------------------------------
@@ -462,6 +503,108 @@ function stopLiveDistributionPolling() {
   liveDistributionPanelEl.classList.add("hidden");
 }
 
+// ---------------------------------------------------------------------------
+// 라운드 전환기 정보 패널 (작업계획서 §12-2)
+//
+// 선택 창이 열려 있는 동안 화면 중앙에 "지금 어떤 상황인지"를 띄운다.
+// - 2라운드 선택 중 -> 팀별 생존 카트 수
+// - 3라운드 선택 중 -> 결선 진출자 등수표
+// - 라운드 종료 직후 -> 통과/탈락 요약(잠깐 띄웠다가 위 화면으로 바뀐다)
+//
+// 데이터는 전부 round_revealed 메시지가 실어다 준 것이고, 이 패널은 순수
+// 표시 전용이다. 참가자가 폰에서 다음 라운드 대상을 고를 때 근거가 되므로
+// 예측 게임의 정보 비대칭을 줄이는 효과도 있다.
+// ---------------------------------------------------------------------------
+
+// 마지막으로 공개된 라운드 결과. 선택 창 phase가 도착했을 때 이 값으로
+// 패널을 그린다(phase와 round_revealed의 도착 순서에 의존하지 않도록
+// 상태로 들고 있는다).
+let lastRoundRevealed = null;
+
+function hideRoundTransition() {
+  roundTransitionEl.classList.add("hidden");
+}
+
+function renderSurvivorPanel(data) {
+  const survivors = data.survivors_by_department || {};
+  const entries = Object.entries(survivors);
+  if (!entries.length) return false;
+  const max = Math.max(...entries.map(([, n]) => n), 1);
+  roundTransitionTitleEl.textContent = `ROUND ${data.round} 결과 — 팀별 생존 카트`;
+  roundTransitionSummaryEl.textContent = `${data.pass_ids ? data.pass_ids.length : "-"}대가 다음 라운드로 진출합니다`;
+  roundTransitionBodyEl.innerHTML = entries
+    .map(([name, count]) => {
+      const rate = data.department_pass_rate ? data.department_pass_rate[name] : undefined;
+      const pct = rate === undefined ? "" : ` <span class="rt-rate">${(rate * 100).toFixed(0)}%</span>`;
+      return `
+        <div class="rt-row">
+          <span class="rt-name"><span class="rt-swatch" style="background:${colorForDepartment(name)}"></span>${name}</span>
+          <div class="rt-track"><div class="rt-fill" style="width:${(count / max) * 100}%; background:${colorForDepartment(name)}"></div></div>
+          <span class="rt-count">${count}대${pct}</span>
+        </div>`;
+    })
+    .join("");
+  return true;
+}
+
+function renderFinalistPanel(data) {
+  const finalists = data.finalists || [];
+  if (!finalists.length) return false;
+  roundTransitionTitleEl.textContent = "결선 진출자 — 2라운드 최종 등수";
+  roundTransitionSummaryEl.textContent = `${finalists.length}대가 결선에서 맞붙습니다`;
+  roundTransitionBodyEl.innerHTML = `<ol class="rt-finalists">${finalists
+    .map((f, i) => {
+      const dept = f.department || "";
+      const swatch = dept
+        ? `<span class="rt-swatch" style="background:${colorForDepartment(dept)}"></span>`
+        : "";
+      return `<li class="rt-finalist${i < 3 ? " rt-top" : ""}">
+        <span class="rt-rank">${i + 1}</span>
+        <span class="rt-name">${swatch}${f.participant_id}</span>
+        <span class="rt-dept">${dept}</span>
+      </li>`;
+    })
+    .join("")}</ol>`;
+  return true;
+}
+
+/** R1 선택 구간용. 아직 아무도 탈락하지 않았으므로 유일한 단서는
+ *  "팀별 참가 카트 수"다. 커밋 스냅샷의 부서 구성에서 바로 그린다. */
+function renderEntryPanel() {
+  const entries = Object.entries(currentGroupSizes || {});
+  if (!entries.length) return false;
+  entries.sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const max = Math.max(...entries.map(([, n]) => n), 1);
+  const total = entries.reduce((sum, [, n]) => sum + n, 0);
+  roundTransitionTitleEl.textContent = "1라운드 승부 예측 — 팀별 참가 카트";
+  roundTransitionSummaryEl.textContent = `총 ${total}대가 출발선에 섭니다 · 폰에서 우승할 팀을 골라주세요`;
+  roundTransitionBodyEl.innerHTML = entries
+    .map(
+      ([name, count]) => `
+        <div class="rt-row">
+          <span class="rt-name"><span class="rt-swatch" style="background:${colorForDepartment(name)}"></span>${name}</span>
+          <div class="rt-track"><div class="rt-fill" style="width:${(count / max) * 100}%; background:${colorForDepartment(name)}"></div></div>
+          <span class="rt-count">${count}대</span>
+        </div>`
+    )
+    .join("");
+  return true;
+}
+
+/** 선택 창 phase에서 호출. 라운드에 맞는 내용을 그리고 패널을 띄운다. */
+function showRoundTransition(kind) {
+  let ok = false;
+  if (kind === "entry") {
+    ok = renderEntryPanel();
+  } else if (lastRoundRevealed) {
+    ok =
+      kind === "finalists"
+        ? renderFinalistPanel(lastRoundRevealed)
+        : renderSurvivorPanel(lastRoundRevealed);
+  }
+  roundTransitionEl.classList.toggle("hidden", !ok);
+}
+
 let currentLeaderDept = null;
 
 function renderDepartmentBars(rates) {
@@ -555,6 +698,7 @@ function abilityForParticipant(pid) {
 const departmentColorCache = new Map();
 const departmentAbilityCache = new Map();
 let currentPidToGroup = {};
+let currentGroupSizes = {}; // 부서명 -> 참가 카트 수(커밋 스냅샷 기준)
 let currentDrawKeyForGroups = null;
 let previousTickPositions = {};
 let previousTickOrder = [];
@@ -691,11 +835,14 @@ function ensureGroupLookup(latest, drawKey) {
   if (currentDrawKeyForGroups === drawKey) return;
   currentDrawKeyForGroups = drawKey;
   const map = {};
+  const sizes = {};
   const departments = (latest.snapshot && latest.snapshot.departments) || {};
   for (const [group, ids] of Object.entries(departments)) {
     for (const id of ids) map[id] = group;
+    sizes[group] = ids.length;
   }
   currentPidToGroup = map;
+  currentGroupSizes = sizes; // R1 예측 구간의 "팀별 참가 카트 수" 패널용
 
   departmentColorCache.clear();
   departmentAbilityCache.clear();
@@ -2074,6 +2221,17 @@ function handleRacingEvent(data) {
       if (lastPredictionWindow && lastPredictionWindow.state === "open") {
         showMcLine("prediction_open", { round: lastPredictionWindow.round });
       }
+      // 라운드 전환기 패널: R2를 고르는 동안은 팀별 생존 카트 수를,
+      // R3를 고르는 동안은 결선 진출자 등수표를 띄운다(작업계획서 §12-2).
+      showRoundTransition(data.phase === "score_r2_select_r3" ? "finalists" : "survivors");
+    } else if (data.phase === "opening") {
+      // R1 선택 창이 실제로 열려 있는 구간(r1_lock에서 잠긴다). 아직 아무도
+      // 탈락하지 않았으니 팀별 참가 카트 수를 보여준다(사용자 요청: 1라운드
+      // 예측에도 판단 지표를 달라). r1_lock부터는 패널을 걷어 스타팅 그리드
+      // 화면을 온전히 보여준다.
+      showRoundTransition("entry");
+    } else {
+      hideRoundTransition();
     }
   } else if (data.type === "race_tick") {
     renderTrack(data);
@@ -2089,6 +2247,10 @@ function handleRacingEvent(data) {
     SFX.pass();
     SFX.crowd(0.6, 1.5);
     FX.ring(window.innerWidth / 2, window.innerHeight * 0.5, "#7cf29c", 220);
+    // 라운드 종료 직후 요약을 바로 띄운다. 곧이어 도착하는 선택 창 phase가
+    // 같은 패널을 라운드에 맞는 내용(생존 수 / 결선 등수)으로 갈아끼운다.
+    lastRoundRevealed = data;
+    showRoundTransition("survivors");
     // 후속 멘트("elimination")는 2.2초 뒤에 나가는데, 그 사이 다음 구간으로
     // 넘어갔으면 흘러간 멘트이므로 내보내지 않는다.
     const revealEpoch = mcEpoch;
@@ -2105,6 +2267,7 @@ function handleRacingEvent(data) {
     phaseLabelEl.textContent = "진행 완료";
     phaseTimerEl.textContent = "--";
     phaseTimerEl.classList.remove("urgent");
+    hideRoundTransition();
     if (rafHandle !== null) {
       cancelAnimationFrame(rafHandle);
       rafHandle = null;
@@ -2326,6 +2489,8 @@ const ws = connectWS((data) => {
     cancelPendingMcLines({ clearCaption: true });
     liveMcSuppressed = false;
     shownLightsForRound.clear();
+    lastRoundRevealed = null;
+    hideRoundTransition();
     stopGridPreview();
     resetCameraState();
     stopRenderLoop();

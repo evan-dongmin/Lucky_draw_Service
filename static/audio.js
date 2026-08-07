@@ -179,17 +179,67 @@ const SFX = (() => {
 
   // -- 상황별 효과음 --------------------------------------------------------
 
-  /** F1 스타트 라이트: 빨간 등이 하나씩 켜질 때마다. */
-  function startLight(index) {
-    tone({ freq: 520, dur: 0.16, type: "square", gain: 0.16 });
-    tone({ freq: 260, dur: 0.2, type: "sine", gain: 0.1, at: 0.005 });
+  /**
+   * F1 스타트 라이트: 빨간 등이 하나씩 켜질 때마다 나는 "빰".
+   *
+   * 실제 F1 중계의 그 소리는 짧은 전자음 하나가 아니라 **묵직한 저음 임팩트 +
+   * 단단한 중음 톤**이 겹친 소리다. 등이 하나씩 늘어날수록 음이 반음씩
+   * 올라가게 해서(index), 다섯 번째에서 가장 긴장이 높아진 채로 소등을
+   * 맞이하게 만든다 -- 소리만 듣고도 몇 번째 등인지 알 수 있다.
+   */
+  function startLight(index = 0) {
+    const step = Math.max(0, Math.min(4, index));
+    const base = 440 * Math.pow(2, step / 12); // 반음씩 상승
+    // 저역 임팩트("쿵")
+    tone({ freq: 132, dur: 0.34, type: "sine", gain: 0.24, sweepTo: 66 });
+    // 중음 본체("빰") -- 사각파 + 삼각파를 겹쳐 단단하게
+    tone({ freq: base, dur: 0.3, type: "square", gain: 0.15 });
+    tone({ freq: base * 2, dur: 0.22, type: "triangle", gain: 0.07, at: 0.004 });
+    // 어택을 또렷하게 만드는 짧은 노이즈 클릭
+    noise({ dur: 0.05, gain: 0.09, freq: 3200, q: 1.2, filter: "highpass" });
+    // 등이 늘어날수록 잔향처럼 깔리는 관중 웅성거림
+    if (step >= 2) crowd(0.16 + step * 0.06, 0.9);
   }
 
-  /** 라이트 소등 = 출발. 화면에서 가장 강한 순간이므로 소리도 가장 크게. */
+  /**
+   * 라이트 소등 = 출발("빠~~"). 화면에서 가장 강한 순간이므로 소리도 가장 크다.
+   *
+   * 구성: (1) 소등을 알리는 낮고 긴 혼 -- 5도 화음으로 쌓아 "빠~~" 하고
+   * 뻗는 느낌, (2) 타이어가 노면을 긁는 스크리치, (3) 일제히 튀어나가는
+   * 엔진 굉음(저역 스윕), (4) 관중 함성. 서로 조금씩 어긋나게 시작해
+   * 한 덩어리로 뭉치지 않게 했다.
+   */
   function lightsOut() {
-    tone({ freq: 880, dur: 0.5, type: "square", gain: 0.26 });
-    tone({ freq: 440, dur: 0.6, type: "sawtooth", gain: 0.2, at: 0.01 });
-    noise({ dur: 0.7, gain: 0.22, freq: 400, sweepTo: 4000, q: 0.7 });
+    // (1) 출발 혼 -- 밑음 + 5도 + 옥타브
+    tone({ freq: 330, dur: 1.1, type: "sawtooth", gain: 0.2 });
+    tone({ freq: 495, dur: 1.05, type: "sawtooth", gain: 0.13, at: 0.02 });
+    tone({ freq: 660, dur: 0.95, type: "square", gain: 0.1, at: 0.04 });
+    tone({ freq: 165, dur: 1.2, type: "sine", gain: 0.22 });
+    // (2) 타이어 스크리치
+    noise({ dur: 0.55, gain: 0.14, freq: 3600, sweepTo: 1100, q: 7, at: 0.06 });
+    // (3) 일제 발진 굉음
+    noise({ dur: 0.9, gain: 0.2, freq: 300, sweepTo: 3600, q: 0.7, at: 0.05 });
+    tone({ freq: 70, dur: 0.9, type: "sawtooth", gain: 0.18, sweepTo: 240, at: 0.05 });
+    // (4) 함성
+    crowd(0.95, 2.0);
+  }
+
+  /**
+   * 스타트 라이트 직전의 정적. 엔진 공회전이 잦아들면서 "곧 시작한다"는
+   * 신호를 준다 -- 아무 소리 없이 갑자기 첫 등이 켜지는 것보다, 한 번
+   * 훑고 지나가는 리버스 스윕이 있으면 시선이 화면으로 모인다.
+   */
+  function startLightsIntro() {
+    noise({ dur: 0.9, gain: 0.1, freq: 5000, sweepTo: 300, q: 0.8 });
+    tone({ freq: 220, dur: 0.9, type: "sine", gain: 0.08, sweepTo: 110 });
+    crowd(0.35, 1.4);
+  }
+
+  /** 부정 출발/대기 상태 없이 그리드에 정렬될 때의 공회전 블립. */
+  function engineBlip() {
+    tone({ freq: 90, dur: 0.28, type: "sawtooth", gain: 0.14, sweepTo: 190 });
+    tone({ freq: 45, dur: 0.32, type: "square", gain: 0.09, sweepTo: 95 });
+    noise({ dur: 0.26, gain: 0.06, freq: 700, sweepTo: 1800, q: 1 });
   }
 
   /** 추월/부스터. 지나가는 소리(도플러 흉내: 밴드패스 스윕). */
@@ -882,6 +932,8 @@ const SFX = (() => {
     unduck,
     startLight,
     lightsOut,
+    startLightsIntro,
+    engineBlip,
     whoosh,
     warn,
     pass,
