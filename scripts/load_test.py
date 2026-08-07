@@ -50,16 +50,6 @@ async def simulate_participant(base_url: str, participant: dict, round1_candidat
         return {"ok": False, "stage": "join", "status": status, "latencies": latencies}
     token = joined["token"]
 
-    status, _, elapsed = await http_call_async(
-        base_url,
-        "POST",
-        "/api/predict/allocate",
-        {"token": token, "alloc": {1: 20, 2: 30, 3: 50}},
-    )
-    latencies["allocate"] = elapsed
-    if status != 200:
-        return {"ok": False, "stage": "allocate", "status": status, "latencies": latencies}
-
     target = round1_candidates[hash(participant["id"]) % len(round1_candidates)]
     status, _, elapsed = await http_call_async(
         base_url, "POST", "/api/predict/choose", {"token": token, "round": 1, "target": target}
@@ -135,7 +125,7 @@ async def main() -> None:
     ws_success = sum(1 for r in ws_results if r)
     print(f"  성공 {ws_success}/{args.count} (총 {ws_elapsed:.2f}초)")
 
-    print(f"[4/5] {args.count}명 동시 참여(join) + 확신도 배분 + 1라운드 선택")
+    print(f"[4/5] {args.count}명 동시 참여(join) + 1라운드 선택")
     api_start = time.perf_counter()
     results = await asyncio.gather(
         *[simulate_participant(base_url, p, departments) for p in sample["participants"]]
@@ -153,7 +143,7 @@ async def main() -> None:
             by_stage[r["stage"]] = by_stage.get(r["stage"], 0) + 1
         print(f"  실패 단계별: {by_stage}")
 
-    for stage in ("join", "allocate", "choose"):
+    for stage in ("join", "choose"):
         summarize(stage, [r["latencies"][stage] for r in ok_results if stage in r["latencies"]])
 
     status, leaderboard = http_call(base_url, "GET", f"/api/predict/leaderboard?top_n={args.count}")
