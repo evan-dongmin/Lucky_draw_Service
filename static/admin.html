@@ -11,8 +11,16 @@
     <h1>운영 콘솔</h1>
     <p id="ws-status" class="status">연결 대기 중...</p>
 
+    <ol class="steps-guide">
+      <li><strong>명단 등록</strong> — 아래에 참가자 명단을 붙여넣거나 파일을 올리고 미리보기로 확인하세요.</li>
+      <li><strong>세션 생성</strong> — 당첨 인원수·진행 시간을 확인하고 세션을 만드세요.</li>
+      <li><strong>커밋 생성 → 레이스 시작</strong> — 순서대로 눌러야 진행됩니다(먼저 커밋해야 레이스를 시작할 수 있어요).</li>
+      <li><strong>필요할 때만</strong> 재추첨·초기화·조기 종료 버튼을 사용하세요.</li>
+    </ol>
+
     <section id="section-roster" class="panel">
       <h2>1. 참가자 명단</h2>
+      <p class="hint">오늘 행사의 추첨 대상 명단입니다. 붙여넣기/파일 업로드/샘플 생성 중 하나로 채운 뒤, 반드시 미리보기로 내용을 확인하세요.</p>
       <div class="row">
         <textarea id="roster-text" rows="6" placeholder="사번,이름,팀
 P001,홍길동,개발팀
@@ -23,8 +31,6 @@ P002,김철수,영업팀"></textarea>
         <input type="file" id="roster-file" accept=".csv,.xlsx" />
         <button id="btn-upload-file">파일 업로드 미리보기</button>
         <button id="btn-sample">샘플 250명 생성</button>
-        <button id="btn-mc-pregenerate">MC 멘트 사전생성</button>
-        <span id="mc-status" class="status"></span>
       </div>
       <div id="roster-warnings" class="warnings"></div>
       <div id="roster-preview" class="preview"></div>
@@ -32,15 +38,15 @@ P002,김철수,영업팀"></textarea>
 
     <section id="section-session" class="panel">
       <h2>2. 세션 생성</h2>
+      <p class="hint">명단 미리보기를 마쳤다면 당첨 인원수와 진행 시간을 정하고 세션을 생성하세요.</p>
       <div class="row">
         <label>당첨 인원수 <input type="number" id="draw-count" value="3" min="1" /></label>
         <label>총 진행 시간(초) <input type="number" id="total-seconds" value="600" min="60" /></label>
-        <label><input type="checkbox" id="predictions-enabled" /> 참여형 예측 게임 활성화</label>
         <button id="btn-create-session">세션 생성</button>
       </div>
       <p id="total-seconds-hint" class="status"></p>
-      <p id="prediction-note" class="status hidden">
-        예측 게임은 <strong>무손실</strong>입니다 -- 확신도 100점을 세 라운드에 나눠 걸고,
+      <p class="status">
+        참여형 예측 게임은 항상 켜져 있습니다 -- <strong>무손실</strong>입니다 -- 확신도 100점을 세 라운드에 나눠 걸고,
         빗나가도 차감이 없습니다. 순위가 가까울수록 점수가 크고 참여만 해도 최소 점수가
         들어가므로, 첫 라운드에 빗나간 참가자도 끝까지 역전을 노릴 수 있습니다.
       </p>
@@ -50,14 +56,13 @@ P002,김철수,영업팀"></textarea>
       <h2>3. 진행</h2>
       <div id="session-info" class="info">세션 없음</div>
 
+      <p class="hint">특정 인원을 이번 추첨에서 빼려면 아래에 사번을 적고 적용하세요(생략 가능).</p>
       <div class="row">
-        <label>제외할 참가자 ID (쉼표/줄바꿈 구분)</label>
-      </div>
-      <div class="row">
-        <textarea id="exclude-ids" rows="2"></textarea>
+        <textarea id="exclude-ids" rows="2" placeholder="제외할 참가자 ID (쉼표/줄바꿈 구분)"></textarea>
         <button id="btn-apply-exclude">제외 적용</button>
       </div>
 
+      <p class="hint">① 커밋으로 결과를 미리 봉인·공개하고, ② 레이스 시작으로 진행을 시작하세요.</p>
       <div class="row">
         <button id="btn-commit">① 커밋 생성</button>
         <button id="btn-start-racing">② 레이스 시작</button>
@@ -66,6 +71,7 @@ P002,김철수,영업팀"></textarea>
       <div id="commit-display" class="commit-box"></div>
       <div id="racing-status" class="commit-box"></div>
 
+      <p class="hint">무대 화면 카메라는 라운드별로 자동 전환됩니다 — 수동으로 바꾸고 싶을 때만 아래 버튼을 누르세요. 진행이 밀리면 조기 종료(비상) 버튼을 쓸 수 있습니다.</p>
       <div class="row">
         <label>무대 카메라</label>
         <button class="camera-btn" data-mode="auto">자동(라운드별)</button>
@@ -75,6 +81,7 @@ P002,김철수,영업팀"></textarea>
         <button id="btn-fast-forward">⏩ 이 라운드 조기 종료(비상)</button>
       </div>
 
+      <p class="hint">레이스가 끝난 뒤 다시 뽑고 싶으면 재추첨을, 처음부터 다시 시작하려면 전체 초기화를 누르세요(초기화는 되돌릴 수 없습니다).</p>
       <div class="row">
         <label><input type="checkbox" id="redraw-exclude-winners" checked /> 이전 당첨자 제외하고 재추첨</label>
         <button id="btn-redraw">재추첨</button>

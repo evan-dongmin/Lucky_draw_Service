@@ -41,6 +41,12 @@ async def lifespan(_: FastAPI):
     load_prediction_snapshot()
     load_character_snapshot()
     mc_agent.load_cache()
+    # 예전에는 운영자가 admin 콘솔에서 "MC 멘트 사전생성" 버튼을 따로 눌러야
+    # 했다 -- 잊고 안 누르면 정적 폴백만 쓰이는데도 티가 안 나 운영 실수로
+    # 이어지기 쉬웠다. 세션·참가자와 무관한 익명 템플릿 생성이라 서버 기동
+    # 시점에 자동으로 한 번 돌려도 무방해서, 백그라운드 스레드로 실행해
+    # 서버 시작을 막지 않게 한다(API 키가 없으면 has_llm=False라 즉시 반환).
+    asyncio.create_task(asyncio.to_thread(mc_agent.pregenerate))
     yield
 
 

@@ -6,33 +6,23 @@ const rosterPreviewEl = document.getElementById("roster-preview");
 const drawCountEl = document.getElementById("draw-count");
 const totalSecondsEl = document.getElementById("total-seconds");
 const totalSecondsHintEl = document.getElementById("total-seconds-hint");
-const predictionsEnabledEl = document.getElementById("predictions-enabled");
-const predictionNoteEl = document.getElementById("prediction-note");
 
-function updatePredictionNoteVisibility() {
-  predictionNoteEl.classList.toggle("hidden", !predictionsEnabledEl.checked);
-}
-predictionsEnabledEl.addEventListener("change", updatePredictionNoteVisibility);
-updatePredictionNoteVisibility();
-
-// Director의 하한(app/director.py MIN_TOTAL_SECONDS_WITH/WITHOUT_PREDICTIONS)과
+// Director의 하한(app/director.py MIN_TOTAL_SECONDS_WITH_PREDICTIONS)과
 // 반드시 같은 값을 유지해야 한다. 서버가 최종 검증을 하지만, 그 전에 화면에서
 // 미리 알려줘야 "레이스 시작"을 눌렀다가 뒤늦게 400을 보는 일이 없다.
+// 참여형 예측 게임은 운영 콘솔에서 항상 켜진 채로 세션을 만들기 때문에
+// 예측 게임 켜짐 기준 하한 하나만 있으면 된다.
 const MIN_SECONDS_WITH_PREDICTIONS = 150;
-const MIN_SECONDS_WITHOUT_PREDICTIONS = 60;
 
 function updateTotalSecondsHint() {
-  const floor = predictionsEnabledEl.checked
-    ? MIN_SECONDS_WITH_PREDICTIONS
-    : MIN_SECONDS_WITHOUT_PREDICTIONS;
+  const floor = MIN_SECONDS_WITH_PREDICTIONS;
   totalSecondsEl.min = String(floor);
   const value = parseFloat(totalSecondsEl.value) || 0;
   totalSecondsHintEl.textContent =
     value < floor
-      ? `⚠ 레이싱 모드 최소 ${floor}초 필요 (예측 게임 ${predictionsEnabledEl.checked ? "켜짐" : "꺼짐"}) -- 이 값으로는 레이스 시작이 거부됩니다.`
-      : `레이싱 모드 최소 ${floor}초 (예측 게임 ${predictionsEnabledEl.checked ? "켜짐" : "꺼짐"})`;
+      ? `⚠ 레이싱 모드 최소 ${floor}초 필요 -- 이 값으로는 레이스 시작이 거부됩니다.`
+      : `레이싱 모드 최소 ${floor}초`;
 }
-predictionsEnabledEl.addEventListener("change", updateTotalSecondsHint);
 totalSecondsEl.addEventListener("input", updateTotalSecondsHint);
 updateTotalSecondsHint();
 const racingStatusEl = document.getElementById("racing-status");
@@ -113,19 +103,6 @@ document.getElementById("btn-sample").addEventListener("click", async () => {
   }
 });
 
-document.getElementById("btn-mc-pregenerate").addEventListener("click", async () => {
-  const statusEl = document.getElementById("mc-status");
-  statusEl.textContent = "생성 중...";
-  try {
-    const result = await fetchJSON("/api/mc/pregenerate", { method: "POST" });
-    statusEl.textContent = result.has_llm
-      ? `LLM 사전생성 완료 (${result.cached_tags.length}개 상황)`
-      : "API 키 없음 -- 정적 폴백 멘트 사용";
-  } catch (e) {
-    statusEl.textContent = `실패: ${e.message}`;
-  }
-});
-
 document.getElementById("btn-create-session").addEventListener("click", async () => {
   if (!previewParticipants.length) {
     alert("먼저 명단을 미리보기 해주세요.");
@@ -142,7 +119,9 @@ document.getElementById("btn-create-session").addEventListener("click", async ()
         // 콘솔에서는 선택지를 노출하지 않는다.
         mode: "racing",
         total_seconds: parseFloat(totalSecondsEl.value),
-        predictions_enabled: predictionsEnabledEl.checked,
+        // 참여형 예측 게임도 운영 콘솔에서는 항상 켜서 세션을 만든다
+        // (사용자 요청) -- 끄는 옵션은 더 이상 화면에 노출하지 않는다.
+        predictions_enabled: true,
       }),
     });
     await refreshSession();

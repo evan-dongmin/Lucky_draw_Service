@@ -8,9 +8,11 @@
 반전이 핵심 재미 포인트입니다.
 
 > 저장소: https://github.com/evan-dongmin/Lucky_draw_Service
-> 배포 주소: https://taachuwi-grandprix.onrender.com/ (Render.com 무료
-> 플랜 — 트래픽이 없으면 슬립되므로 접속 후 첫 응답이 몇십 초 걸릴 수
-> 있습니다. `/mobile`, `/verify`도 같은 도메인에서 바로 접속 가능합니다.)
+> 배포 주소: https://taachuwi-grandprix.onrender.com/ (무대 화면, Render.com
+> 무료 플랜 — 트래픽이 없으면 슬립되므로 접속 후 첫 응답이 몇십 초 걸릴 수
+> 있습니다)
+> 운영 콘솔: https://taachuwi-grandprix.onrender.com/admin
+> 그 외 같은 도메인에서 바로 접속 가능: `/mobile`(참여), `/verify`(공정성 검증)
 
 > **문서 안내**
 > - **`타추위-추첨프로그램_게임구조.md`** — 게임 진행 순서·라운드별 규칙·
