@@ -182,23 +182,6 @@ h2 {
   background: #2a3242;
 }
 
-.alloc-row {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
-}
-
-.alloc-row input[type="range"] {
-  flex: 1;
-}
-
-.alloc-value {
-  width: 3rem;
-  text-align: right;
-  font-family: "Consolas", monospace;
-}
-
 .countdown-badge {
   font-family: "Consolas", monospace;
   color: #ffd166;

@@ -236,13 +236,8 @@ function cardStateFor(me, round) {
 }
 
 // ---------------------------------------------------------------------------
-// 예측 카드 렌더링 (무손실 -- 확신도 배분 + 순위 차등 채점)
+// 예측 카드 렌더링 (무손실 -- 라운드당 1픽 + 순위 차등 채점)
 // ---------------------------------------------------------------------------
-
-// R1·R2는 최소 10을 남겨야 하지만 R3에는 하한이 없다(몰아주기 허용) --
-// app/predictions.py의 MIN_ALLOC / MIN_ALLOC_ROUNDS와 반드시 일치시킬 것.
-const MIN_ALLOC = 10;
-const MAX_ROUND3_ALLOC = 100 - MIN_ALLOC * 2;
 
 // 라운드별 점수 내역. 서버가 card.rewards에 항목별로 남겨준 값을 그대로
 // 보여준다 -- "왜 몇 점을 받았는지"가 폰에서 바로 보여야 한다는 사용자 요청.
@@ -272,24 +267,10 @@ function renderRewardBreakdown(me, round) {
   `;
 }
 
-function renderConfidenceCard(me, round) {
+function renderPredictionCard(me, round) {
   const state = cardStateFor(me, round);
-  const alloc = me.card.alloc[round];
-  const locked = me.card.locked[round];
   const target = me.card.target[round];
   const isAuto = me.card.is_auto[round];
-  const minAlloc = round === 3 ? 0 : MIN_ALLOC;
-  const maxAlloc = round === 3 ? MAX_ROUND3_ALLOC : 100 - MIN_ALLOC * 2;
-
-  let allocHtml = locked
-    ? `<div class="alloc-row"><label>확신도</label><span class="alloc-value">${alloc} (고정)</span></div>`
-    : `<div class="alloc-row">
-         <label>확신도</label>
-         <input type="number" min="${minAlloc}" max="${maxAlloc}" step="1" value="${alloc}" class="alloc-input" data-round="${round}" />
-       </div>` +
-      (round === 3
-        ? `<p class="hint-line">🔥 마지막 라운드는 하한이 없습니다 -- 최대 ${MAX_ROUND3_ALLOC}까지 몰아주면 한 방에 뒤집을 수 있어요.</p>`
-        : "");
 
   let targetHtml = "";
   if (state === "pending") {
@@ -324,36 +305,10 @@ function renderConfidenceCard(me, round) {
         <strong>${ROUND_LABELS[round]}</strong>
         <span class="pred-card-badge">${STATE_LABELS[state]}</span>
       </div>
-      ${allocHtml}
       ${targetHtml}
       ${renderRewardBreakdown(me, round)}
     </div>
   `;
-}
-
-async function saveAllocation(me) {
-  const alloc = { 1: me.card.alloc[1], 2: me.card.alloc[2], 3: me.card.alloc[3] };
-  for (const input of cardsEl.querySelectorAll(".alloc-input")) {
-    alloc[parseInt(input.dataset.round, 10)] = parseInt(input.value, 10) || 0;
-  }
-  const total = alloc[1] + alloc[2] + alloc[3];
-  if (total !== 100) {
-    alert(`확신도 합계는 100이어야 합니다 (현재 ${total}). 예: 20/30/50`);
-    return;
-  }
-  if (alloc[1] < MIN_ALLOC || alloc[2] < MIN_ALLOC) {
-    alert(`1·2라운드 확신도는 각각 ${MIN_ALLOC} 이상이어야 합니다 (3라운드는 하한 없음).`);
-    return;
-  }
-  try {
-    await fetchJSON("/api/predict/allocate", {
-      method: "POST",
-      body: JSON.stringify({ token: myToken, alloc }),
-    });
-    await refreshMe();
-  } catch (e) {
-    alert(e.message);
-  }
 }
 
 async function chooseTarget(round, target) {
@@ -432,18 +387,7 @@ function renderMe(me) {
 
   myScoreEl.textContent = `내 점수: ${me.card.score}점`;
 
-  // 확신도를 입력하는 중(포커스가 카드 안에 있음)이면 이번 폴링 재렌더는
-  // 건너뛴다 -- 재렌더가 키보드 포커스를 빼앗아 입력이 끊기기 때문이다.
-  // 분포는 다음 주기에 갱신된다.
-  if (cardsEl.contains(document.activeElement) && document.activeElement !== document.body) {
-    updateLiveRefreshTimer(me);
-    return;
-  }
-
-  cardsEl.innerHTML =
-    [1, 2, 3].map((r) => renderConfidenceCard(me, r)).join("") +
-    `<button id="btn-save-alloc">확신도 저장</button>`;
-  document.getElementById("btn-save-alloc").addEventListener("click", () => saveAllocation(me));
+  cardsEl.innerHTML = [1, 2, 3].map((r) => renderPredictionCard(me, r)).join("");
   for (const btn of cardsEl.querySelectorAll(".target-btn")) {
     btn.addEventListener("click", () => chooseTarget(parseInt(btn.dataset.round, 10), btn.dataset.target));
   }
