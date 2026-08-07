@@ -561,24 +561,32 @@ const CROSS_SOUND_BUDGET = 24; // 라운드당 통과음 최대 횟수(그 뒤�
 let activeObstacles = [];
 let nextObstacleSpawnAt = 0;
 let obstacleSeq = 0;
+let obstacleRound = null; // 라운드가 바뀌면 이전 라운드 트랙 좌표로 계산된 장애물을 전부 버린다
 let kartEffects = {}; // pid -> { kind, until, duration, lag, lateral, spin }
 
 // 종류별 스프라이트/크기/충돌 효과. severity가 클수록 크게 밀린다.
+// lag/duration은 사용자 피드백(부딪혀도 진행이 안 더뎌 보인다)에 따라 크게
+// 올렸다 -- 부딪힌 카트가 눈에 띄게 뒤처졌다가 1~2초에 걸쳐 따라잡는 정도.
+// EFFECT_FADE_TAIL이 결승선 앞 12% 구간에서 모든 효과를 강제로 0까지
+// 줄이므로, lag를 아무리 키워도 결승선에서 보이는 위치=실제 위치는 항상
+// 보장된다(통과 판정과 절대 어긋나지 않음).
 const OBSTACLE_DEFS = {
-  cone: { emoji: "🚧", size: 0.9, kind: "wobble", duration: 300, lag: 0, lateral: 0.25, spin: 0.2 },
-  oil: { emoji: "🛢️", size: 1.05, kind: "slow", duration: 900, lag: 0.012, lateral: 0.5, spin: 0.5 },
-  tire: { emoji: "🛞", size: 1.0, kind: "slow", duration: 700, lag: 0.008, lateral: 0.7, spin: 0.35 },
-  banana: { emoji: "🍌", size: 0.85, kind: "spin", duration: 1100, lag: 0.010, lateral: 1.2, spin: 6.3 },
-  puddle: { emoji: "💧", size: 1.15, kind: "slide", duration: 800, lag: 0.005, lateral: 1.6, spin: 0.3 },
-  rock: { emoji: "🪨", size: 1.25, kind: "stall", duration: 1000, lag: 0.020, lateral: 0.4, spin: 0.8 },
-  bomb: { emoji: "💣", size: 1.1, kind: "stall", duration: 1300, lag: 0.026, lateral: 1.4, spin: 9.4 },
-  ice: { emoji: "🧊", size: 1.0, kind: "slide", duration: 1000, lag: 0.006, lateral: 1.9, spin: 1.2 },
+  cone: { emoji: "🚧", size: 0.9, kind: "wobble", duration: 350, lag: 0, lateral: 0.25, spin: 0.2 },
+  oil: { emoji: "🛢️", size: 1.05, kind: "slow", duration: 1400, lag: 0.045, lateral: 0.5, spin: 0.5 },
+  tire: { emoji: "🛞", size: 1.0, kind: "slow", duration: 1200, lag: 0.035, lateral: 0.7, spin: 0.35 },
+  banana: { emoji: "🍌", size: 0.85, kind: "spin", duration: 1600, lag: 0.05, lateral: 1.2, spin: 6.3 },
+  puddle: { emoji: "💧", size: 1.15, kind: "slide", duration: 1300, lag: 0.03, lateral: 1.6, spin: 0.3 },
+  rock: { emoji: "🪨", size: 1.25, kind: "stall", duration: 1700, lag: 0.07, lateral: 0.4, spin: 0.8 },
+  bomb: { emoji: "💣", size: 1.1, kind: "stall", duration: 2000, lag: 0.09, lateral: 1.4, spin: 9.4 },
+  ice: { emoji: "🧊", size: 1.0, kind: "slide", duration: 1500, lag: 0.035, lateral: 1.9, spin: 1.2 },
 };
 const OBSTACLE_TYPES = Object.keys(OBSTACLE_DEFS);
 
-// 라운드별 동시 활성 개수 -- R1은 250대가 한 화면에 있어 너무 많으면
-// 화면이 빽빽해지므로 적당히, 카트가 적어 여백이 많은 R2/R3는 넉넉히.
-const OBSTACLE_MAX_ACTIVE_BY_ROUND = { 1: 7, 2: 10, 3: 12 };
+// 라운드별 동시 활성 개수 -- 사용자 요청(장애물을 훨씬 더 많이)에 따라
+// 예전 대비 4~5배로 늘렸다. 카메라가 이제 R1도 확대·추적이라(computeCamera
+// 참고) 항상 화면에 보이는 건 선두권뿐이라, 250대가 한꺼번에 화면에 잡혀
+// 빽빽해지는 걱정 없이 개수를 키울 수 있었다.
+const OBSTACLE_MAX_ACTIVE_BY_ROUND = { 1: 35, 2: 45, 3: 50 };
 
 // 레이스 막판 이 비율 구간에서 모든 시각 효과를 0으로 수렴시킨다
 // (결승선에서 보이는 위치 = 실제 위치 보장).
@@ -776,8 +784,12 @@ function catmullRomPoint(p0, p1, p2, p3, t) {
 
 function buildTrackLUT(W, H, round) {
   const def = TRACK_DEFS[round] || TRACK_DEFS[1];
-  const trackTop = H * 0.14;
-  const trackBottom = H * 0.86;
+  // 세로 대역을 더 넓게 써서(0.14~0.86 -> 0.05~0.95) 트랙 실제 이동 거리를
+  // 늘렸다(사용자 요청: 맵을 더 크게). Catmull-Rom은 아핀 변환에 불변이라
+  // yFrac 진폭 "비율" 자체는 그대로 균등 확대될 뿐이라 자기교차(나비매듭)
+  // 위험이 새로 생기지 않는다 -- 대역폭만 키우는 안전한 확대 방식이다.
+  const trackTop = H * 0.05;
+  const trackBottom = H * 0.95;
   const centerY = (trackTop + trackBottom) / 2;
   const halfBand = (trackBottom - trackTop) / 2;
   const halfWidth = halfBand * def.halfWidthFrac;
@@ -862,11 +874,16 @@ function trackPointAt(progress, round) {
 function computeCamera(leaderPoint, round, W, H) {
   let mode = cameraMode;
   if (mode === "auto") {
-    mode = round === 1 ? "wide" : round === 2 ? "medium" : "close";
+    // 예전엔 R1(250대)만 광각 고정이라 카메라가 전혀 안 움직였다 -- 사용자
+    // 피드백(속도감·박진감 부족)에 따라 R1도 리더를 따라 확대·이동하는
+    // 카메라로 바꿨다. 뒤처진 카트가 화면 밖으로 빠지는 건 의도된 것이다
+    // (사용자 요청: 뒤처진 카트는 안 보여도 됨). "광각"은 수동 선택지로만 남는다.
+    mode = round === 1 ? "medium" : round === 2 ? "medium" : "close";
   }
-  if (mode === "wide") return { scale: 1, offsetX: 0, offsetY: 0 };
-  const scale = mode === "close" ? 2.2 : 1.4;
+  if (mode === "wide") return { mode, scale: 1, offsetX: 0, offsetY: 0 };
+  const scale = mode === "close" ? 2.6 : 1.7;
   return {
+    mode,
     scale,
     offsetX: W / 2 - leaderPoint.x * scale,
     offsetY: H / 2 - leaderPoint.y * scale,
@@ -1364,12 +1381,21 @@ function drawObstacle(ctx, o, size) {
   ctx.restore();
 }
 
-// 리더 진행률 기준으로 앞쪽에 장애물을 스폰하고, 리더가 한참 지나친 것은
-// 제거한다. 라운드별 상한(OBSTACLE_MAX_ACTIVE_BY_ROUND)으로 R1(250대,
-// 와이드 뷰)에서도 화면이 빽빽해지지 않게 조절한다.
-function maybeSpawnObstacle(now, leaderProgress, round) {
-  activeObstacles = activeObstacles.filter((o) => leaderProgress - o.spawnProgress < 0.08);
-  const maxActive = OBSTACLE_MAX_ACTIVE_BY_ROUND[round] || 7;
+// 화면에 보이는 무리(tailProgress~leaderProgress)를 기준으로 앞쪽에 장애물을
+// 스폰하고, 그 무리 전체가 한참 지나친 것만 제거한다(사용자 요청: 장애물이
+// 없어지지 않게). tailProgress는 카메라 밖으로 밀려난 카트까지 포함해서
+// 넉넉하게 잡으므로, 예전(리더 기준 0.08)보다 훨씬 오래 트랙 위에 남는다.
+// 라운드가 바뀌면 이전 라운드 트랙 좌표로 만든 장애물은 의미가 없으므로
+// 전부 비운다.
+function maybeSpawnObstacle(now, leaderProgress, tailProgress, round) {
+  if (obstacleRound !== round) {
+    obstacleRound = round;
+    activeObstacles = [];
+    nextObstacleSpawnAt = 0;
+  }
+  const PERSIST_MARGIN = 0.2;
+  activeObstacles = activeObstacles.filter((o) => tailProgress - o.spawnProgress < PERSIST_MARGIN);
+  const maxActive = OBSTACLE_MAX_ACTIVE_BY_ROUND[round] || 35;
   if (activeObstacles.length >= maxActive) return;
   if (now < nextObstacleSpawnAt) return;
   const type = OBSTACLE_TYPES[Math.floor(Math.random() * OBSTACLE_TYPES.length)];
@@ -1386,8 +1412,9 @@ function maybeSpawnObstacle(now, leaderProgress, round) {
     spinSpeed: (Math.random() - 0.5) * 0.0025,
     spawnedAt: now,
   });
-  // 이전보다 훨씬 자주 뿌린다(사용자 요청: 장애물 수를 많게)
-  nextObstacleSpawnAt = now + 420 + Math.random() * 700;
+  // 상한을 훨씬 올린 만큼 그 상한까지 빨리 채워지도록 간격도 더 좁혔다
+  // (사용자 요청: 장애물 수를 훨씬 많게).
+  nextObstacleSpawnAt = now + 120 + Math.random() * 220;
 }
 
 function obstacleScreenPoints(now, laneCount, laneWidth, round) {
@@ -1438,7 +1465,17 @@ function drawFrame(positions, tick) {
   const laneWidth = (halfWidth * 2) / laneCount;
   const kartH = Math.max(6, Math.min(64, laneWidth * 0.82));
 
-  maybeSpawnObstacle(now, leaderPos, tick.round);
+  // 카메라가 확대·추적 중일 때(광각이 아닐 때)는 화면에 안 잡히는 후미
+  // 카트를 그리지도, 장애물 충돌 판정도 하지 않는다(사용자 요청: 뒤처진
+  // 카트는 안 보여도 됨). 어차피 카메라 밖이라 원래도 안 보였을 대상이고,
+  // 장애물을 훨씬 늘려도(위 OBSTACLE_MAX_ACTIVE_BY_ROUND) 프레임이 안
+  // 무거워지도록 판정 대상 자체를 줄인다. 광각은 트랙 전체가 화면에 다
+  // 들어오므로 컬링하지 않는다.
+  const CULL_MARGIN_BY_MODE = { wide: Infinity, medium: 0.34, close: 0.24 };
+  const cullMargin = CULL_MARGIN_BY_MODE[camera.mode] ?? 0.34;
+  const tailProgress = Math.max(0, leaderPos - cullMargin);
+
+  maybeSpawnObstacle(now, leaderPos, tailProgress, tick.round);
   const obstaclePoints = obstacleScreenPoints(now, laneCount, laneWidth, tick.round);
   const obstacleSize = Math.max(18, kartH * 1.5);
   for (const o of obstaclePoints) {
@@ -1459,6 +1496,7 @@ function drawFrame(positions, tick) {
   for (let i = sorted.length - 1; i >= 0; i--) {
     const pid = sorted[i];
     const p = positions[pid];
+    if (p < tailProgress) continue; // 카메라 밖 후미 -- 그리지도 판정하지도 않음
     const effect = kartEffectStateFor(pid, now, fade);
 
     // 충돌 효과는 "보이는 위치"에만 적용한다 -- p(순위 판정 값)는 불변.
