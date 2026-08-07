@@ -421,3 +421,154 @@ def test_rank_of_matches_leaderboard_order():
     assert engine.rank_of("P2") == 2
     assert engine.rank_of("P3") == 3
     assert engine.rank_of("no-such-participant") is None
+
+
+# ---------------------------------------------------------------------------
+# 카트 능력에 따른 예측 점수 특성 (작업계획서 §12-3)
+#
+# 핵심 불변식: 능력은 **예측 점수만** 비튼다. 레이스 순위·통과 판정은
+# fairness.py가 커밋된 시드로만 계산하므로 이 테스트들이 건드리는 값과
+# 무관하다. 아래 테스트는 "고른 사람만, 정해진 폭만큼" 달라지는지를 본다.
+# ---------------------------------------------------------------------------
+
+
+def _engine_with(pids, round_index=1, candidates=("A", "B")):
+    engine = PredictionEngine()
+    for pid in pids:
+        engine.get_or_create_card(pid)
+    engine.open_round(round_index, list(candidates))
+    return engine
+
+
+def test_ability_multiplier_applies_only_to_chooser():
+    """같은 예측을 해도 카트를 고른 사람만 배수를 받는다.
+
+    미선택자에게 중립 1.0배를 주는 건 의도된 설계다 -- 안 고른 사람이
+    우연히 유리해지면 "고르는 재미"를 주려던 취지가 뒤집힌다."""
+    engine = _engine_with(["chooser", "nobody"])
+    engine.set_target("chooser", 1, "A")
+    engine.set_target("nobody", 1, "A")
+    engine.lock_round(1, "seed")
+
+    # nitro = R1 예측 점수 +25%
+    engine.score_round(1, ["A", "B"], character_by_pid={"chooser": "nitro"})
+
+    boosted = engine.cards["chooser"].rewards[1]["predict"]
+    plain = engine.cards["nobody"].rewards[1]["predict"]
+    assert boosted > plain
+    assert boosted == int(plain * 1.25)
+    # 능력으로 더 받은 몫이 표시용으로 남는다(모바일에서 노출)
+    assert engine.cards["chooser"].rewards[1]["ability_bonus"] == boosted - plain
+    assert "ability_bonus" not in engine.cards["nobody"].rewards[1]
+
+
+def test_ability_only_applies_to_its_own_round():
+    """rocket은 R3 전용이라 R1 점수는 그대로여야 한다."""
+    engine = _engine_with(["P1", "P2"])
+    engine.set_target("P1", 1, "A")
+    engine.set_target("P2", 1, "A")
+    engine.lock_round(1, "seed")
+    engine.score_round(1, ["A", "B"], character_by_pid={"P1": "rocket"})
+
+    assert engine.cards["P1"].rewards[1]["predict"] == engine.cards["P2"].rewards[1]["predict"]
+
+
+def test_shield_doubles_only_the_participation_floor():
+    """shield는 "순위표 밖"일 때만 발동한다.
+
+    1위를 맞힌 경우에는 아무 효과가 없어야 한다 -- 안정 지향 능력이
+    하이리스크 상황까지 덤으로 챙기면 다른 능력을 고를 이유가 없어진다.
+    """
+    # 순위표(RANK_RATIOS)보다 후보가 많아야 FLOOR_RATIO 구간이 생긴다
+    candidates = [f"T{i}" for i in range(len(RANK_RATIOS) + 2)]
+    ranked = list(candidates)
+
+    engine = _engine_with(["floor_hit", "floor_plain"], candidates=candidates)
+    engine.set_target("floor_hit", 1, candidates[-1])  # 꼴찌 -> 참여 보상 구간
+    engine.set_target("floor_plain", 1, candidates[-1])
+    engine.lock_round(1, "seed")
+    engine.score_round(1, ranked, character_by_pid={"floor_hit": "shield"})
+
+    assert engine.cards["floor_hit"].rewards[1]["predict"] == (
+        engine.cards["floor_plain"].rewards[1]["predict"] * 2
+    )
+
+    # 1위 적중 시에는 shield 효과가 없다
+    engine2 = _engine_with(["top_hit", "top_plain"], candidates=candidates)
+    engine2.set_target("top_hit", 1, candidates[0])
+    engine2.set_target("top_plain", 1, candidates[0])
+    engine2.lock_round(1, "seed")
+    engine2.score_round(1, ranked, character_by_pid={"top_hit": "shield"})
+
+    assert (
+        engine2.cards["top_hit"].rewards[1]["predict"]
+        == engine2.cards["top_plain"].rewards[1]["predict"]
+    )
+
+
+def test_stardust_doubles_finish_and_wave_boosts_team_bonus():
+    """성과 점수(통과/팀 순위)에 붙는 능력도 정확히 그 항목만 키운다."""
+    engine = _engine_with(["star", "wave", "plain"])
+    for pid in ["star", "wave", "plain"]:
+        engine.set_target(pid, 1, "A")
+    engine.lock_round(1, "seed")
+
+    passed = {"star", "wave", "plain"}
+    top_dept = [{"star", "wave", "plain"}]  # 전원 통과율 1위 부서 소속
+    engine.score_round(
+        1,
+        ["A", "B"],
+        passed_ids=passed,
+        ranked_dept_ids=top_dept,
+        character_by_pid={"star": "stardust", "wave": "wave"},
+    )
+
+    r_star = engine.cards["star"].rewards[1]
+    r_wave = engine.cards["wave"].rewards[1]
+    r_plain = engine.cards["plain"].rewards[1]
+
+    assert r_star["finish"] == FINISH_POINTS * 2
+    assert r_wave["finish"] == FINISH_POINTS  # stardust가 아니면 통과 점수는 그대로
+    assert r_wave["team_bonus"] == int(TEAM_RANK_POINTS[0] * 1.5)
+    assert r_star["team_bonus"] == TEAM_RANK_POINTS[0]
+    assert r_plain["finish"] == FINISH_POINTS
+    assert r_plain["team_bonus"] == TEAM_RANK_POINTS[0]
+
+
+def test_unknown_character_id_is_neutral():
+    """모르는 id(구버전 스냅샷 등)는 조용히 중립 처리한다 -- 채점이 죽으면 안 된다."""
+    engine = _engine_with(["P1", "P2"])
+    engine.set_target("P1", 1, "A")
+    engine.set_target("P2", 1, "A")
+    engine.lock_round(1, "seed")
+    engine.score_round(1, ["A", "B"], character_by_pid={"P1": "no-such-kart"})
+
+    assert engine.cards["P1"].rewards[1]["predict"] == engine.cards["P2"].rewards[1]["predict"]
+
+
+def test_ability_scoring_stays_idempotent_on_rescore():
+    """능력 배수가 붙어도 재채점이 멱등해야 한다(장애 복구 시 재계산 경로)."""
+    engine = _engine_with(["P1"])
+    engine.set_target("P1", 1, "A")
+    engine.lock_round(1, "seed")
+
+    engine.score_round(1, ["A", "B"], character_by_pid={"P1": "nitro"})
+    once = engine.cards["P1"].score
+    engine.score_round(1, ["A", "B"], character_by_pid={"P1": "nitro"})
+    assert engine.cards["P1"].score == once
+
+
+def test_ability_roster_and_effects_stay_in_sync():
+    """로스터에 있는 카트는 전부 효과 정의와 설명 문구를 갖춰야 한다.
+
+    화면에는 8종이 다 뜨는데 효과 표에서 빠진 카트가 있으면, 참가자는
+    "설명 없는 카트"를 고르게 되고 그건 선택지가 아니라 함정이다."""
+    from app import characters
+
+    roster_ids = {c["id"] for c in characters.CHARACTER_ROSTER}
+    assert roster_ids == set(characters.ABILITY_EFFECTS)
+    for entry in characters.CHARACTER_ROSTER:
+        assert entry["effect"], f"{entry['id']}에 효과 설명이 없습니다"
+        assert entry["style"], f"{entry['id']}에 성향 설명이 없습니다"
+    # 미선택자는 중립
+    assert characters.effect_for(None) is characters.NEUTRAL_ABILITY

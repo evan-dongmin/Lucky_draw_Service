@@ -41,6 +41,8 @@ import hmac
 from dataclasses import dataclass, field
 from typing import Any
 
+from . import characters
+
 ROUND_WEIGHTS = {1: 1.0, 2: 1.5, 3: 3.0}
 ROUNDS = (1, 2, 3)
 DEPARTMENT_ROUNDS = (1, 2)  # 대상이 부서인 라운드(R3는 결선 진출자 개인)
@@ -236,6 +238,7 @@ class PredictionEngine:
         passed_ids: set[str] | None = None,
         ranked_dept_ids: list[set[str]] | None = None,
         final_winner_ids: set[str] | None = None,
+        character_by_pid: dict[str, str] | None = None,
     ) -> dict[str, float]:
         """라운드 채점: 예측 점수(순위 차등) + 성과 점수.
 
@@ -244,6 +247,11 @@ class PredictionEngine:
         고른 대상이 여기서 몇 번째인지에 따라 rank_ratio()만큼 배점을 받고,
         목록 밖이면 참여 보상(FLOOR_RATIO)을 받는다 -- 어느 경우에도 0점이
         되지 않는 것이 이 설계의 핵심이다.
+
+        character_by_pid를 넘기면 참가자가 고른 카트 능력의 배수가 예측·성과
+        점수에 적용된다(작업계획서 §12-3, 배수 정의는 app/characters.py).
+        **레이스 순위는 여전히 전혀 건드리지 않는다** -- 능력은 사람이 고르는
+        값이라 순위에 영향을 주면 추첨 공정성이 깨지기 때문이다.
 
         순수 함수적 성질을 위해 언제든 재호출 가능하도록 gain[round_index]를
         매번 새로 계산해 score에 반영한다(중복 가산 방지). 성과 점수도 같은
@@ -275,35 +283,71 @@ class PredictionEngine:
                 team_rank_by_pid[pid] = rank + 1
         final_winner_ids = final_winner_ids or set()
 
+        character_by_pid = character_by_pid or {}
+
         for card in self.cards.values():
             detail: dict[str, int] = {}
             target = card.target[round_index]
 
+            # 카트 능력 배수(작업계획서 §12-3). 레이스 결과가 아니라 **예측
+            # 점수 규칙만** 비튼다. 미선택자는 중립 1.0배라 안 고른 사람이
+            # 유리해지는 일은 없다. plain_* 값을 함께 계산해 두고 마지막에
+            # 차액을 detail["ability_bonus"]로 남긴다 -- 폰에서 "능력으로 몇
+            # 점 더 받았는지"가 보여야 선택이 실감난다.
+            character_id = character_by_pid.get(card.participant_id)
+            ability = characters.effect_for(character_id)
+
             predict_gain = 0
+            plain_predict = 0
             if target is not None:
                 rank = rank_of.get(target)
                 ratio = rank_ratio(rank) if rank is not None else FLOOR_RATIO
                 base = ROUND_BASE_POINTS * weight * ratio
                 # 소수파 보너스는 "1위를 정확히 맞혔을 때"만 -- 아무도 안 고른
                 # 대상이 1위가 되면 최대 2배까지 간다(막판 뒤집기의 연료).
+                minority = 1.0
                 if rank == 1 and share:
-                    base *= 1 + (1 - share.get(target, 0.0))
-                predict_gain = int(base)
+                    minority = 1 + (1 - share.get(target, 0.0))
+                plain_predict = int(base * minority)
+
+                if rank == 1 and share:
+                    base *= minority + ability.minority_bonus_add
+                multiplier = 1.0
+                if round_index in ability.predict_rounds:
+                    multiplier *= ability.predict_multiplier
+                if rank == 1:
+                    multiplier *= ability.top_hit_multiplier
+                elif rank in (2, 3):
+                    multiplier *= ability.runner_up_multiplier
+                if rank is None or rank > len(RANK_RATIOS):
+                    # FLOOR_RATIO(참여 보상)를 받은 경우
+                    multiplier *= ability.floor_multiplier
+                predict_gain = int(base * multiplier)
                 detail["hit_rank"] = rank if rank is not None else 0
                 detail["predict"] = predict_gain
 
             perf_gain = 0
+            plain_perf = 0
             if card.participant_id in passed_ids:
-                perf_gain += FINISH_POINTS
-                detail["finish"] = FINISH_POINTS
+                finish_points = int(FINISH_POINTS * ability.finish_multiplier)
+                perf_gain += finish_points
+                plain_perf += FINISH_POINTS
+                detail["finish"] = finish_points
                 team_points = team_points_by_pid.get(card.participant_id, 0)
                 if team_points:
-                    perf_gain += team_points
-                    detail["team_bonus"] = team_points
+                    boosted_team = int(team_points * ability.team_multiplier)
+                    perf_gain += boosted_team
+                    plain_perf += team_points
+                    detail["team_bonus"] = boosted_team
                     detail["team_rank"] = team_rank_by_pid[card.participant_id]
             if card.participant_id in final_winner_ids:
                 perf_gain += FINAL_WIN_POINTS
+                plain_perf += FINAL_WIN_POINTS
                 detail["final"] = FINAL_WIN_POINTS
+
+            ability_bonus = (predict_gain + perf_gain) - (plain_predict + plain_perf)
+            if character_id and ability_bonus:
+                detail["ability_bonus"] = ability_bonus
 
             gain = predict_gain + perf_gain
             detail["total"] = gain
