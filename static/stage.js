@@ -532,6 +532,7 @@ let currentDrawKeyForGroups = null;
 let previousTickPositions = {};
 let previousTickOrder = [];
 let previousTickRound = null;
+let previousTickPassLine = 0.7; // spawnOvertakeBadge용 -- 최신 tick의 결승선 워프 기준
 let lastLaneCount = 20;
 let cameraMode = "auto"; // "auto" | "wide" | "medium" | "close" (admin에서 override 가능)
 let roundParticipantsTotal = 0;
@@ -899,6 +900,28 @@ function trackPointAt(progress, round) {
   };
 }
 
+// 통과선(pass_line, 결승선)은 라운드·인원수마다 원본 진행률(0~1) 값이
+// 제각각이라(예: 250명 중 100명 통과면 ~0.68, 소수만 통과하면 훨씬 앞쪽)
+// 예전에는 결승선이 트랙 중간쯤에 그려지고 그 뒤로 상당한 트랙이 "이미
+// 승부가 갈린 뒤" 구간으로 남았다. 사용자 요청대로 결승선이 항상 트랙
+// 끝 가까이(FINISH_VISUAL_FRACTION)에 보이도록, 카트·장애물을 그릴 때
+// 쓰는 진행률을 "원본 pass_line → FINISH_VISUAL_FRACTION"으로 정확히
+// 맞춰주는 구간별 선형 워프를 거친다. 통과 판정(p, tick.pass_line)
+// 자체는 절대 바뀌지 않고 화면에 "어디를 그릴지"만 바뀐다 -- 워프는
+// 단조 증가이고 0→0, passLine→FINISH_VISUAL_FRACTION, 1→1을 정확히
+// 지나므로, 카트가 통과선을 넘는 시점과 화면에서 체커기 줄을 넘는
+// 시점이 항상 정확히 일치한다.
+const FINISH_VISUAL_FRACTION = 0.92;
+
+function warpProgress(raw, passLine) {
+  const t = Math.min(1, Math.max(0, raw));
+  const pl = Math.min(0.98, Math.max(0.02, passLine));
+  if (t <= pl) {
+    return (t / pl) * FINISH_VISUAL_FRACTION;
+  }
+  return FINISH_VISUAL_FRACTION + ((t - pl) / (1 - pl)) * (1 - FINISH_VISUAL_FRACTION);
+}
+
 function computeCamera(leaderPoint, round, W, H) {
   let mode = cameraMode;
   if (mode === "auto") {
@@ -938,7 +961,7 @@ function spawnOvertakeBadge(pid) {
   const laneWidth = (halfWidth * 2) / laneCount;
   const laneOffset = (lane - (laneCount - 1) / 2) * laneWidth + jitterFor(pid) * laneWidth * 0.5;
   const p = previousTickPositions[pid] !== undefined ? previousTickPositions[pid] : 0.5;
-  const center = trackPointAt(p, round);
+  const center = trackPointAt(warpProgress(p, previousTickPassLine), round);
   const nx = -Math.sin(center.angle);
   const ny = Math.cos(center.angle);
   const x = center.x + nx * laneOffset;
@@ -1097,7 +1120,7 @@ function renderLoop() {
 // V2/V4/V5: 트랙 맵 · 카트 · 긴장 연출
 // ---------------------------------------------------------------------------
 
-function drawTrackSurface(ctx, W, H, lut, halfWidth, passLine, scrollPhase, trackLength, round) {
+function drawTrackSurface(ctx, W, H, lut, halfWidth, scrollPhase, trackLength, round) {
   const n = lut.length;
   const left = new Array(n);
   const right = new Array(n);
@@ -1121,7 +1144,9 @@ function drawTrackSurface(ctx, W, H, lut, halfWidth, passLine, scrollPhase, trac
   // 통과선 기준 위험(왼쪽)/안전(오른쪽) 구역 -- 웨이포인트가 좌→우로 단조
   // 증가하므로, 가로 그라데이션을 리본 모양에 클립해도 진행률과 대략
   // 일치한다. 리본 폴리곤이 여전히 현재 경로이므로 그대로 clip에 쓴다.
-  const passX = trackPointAt(passLine, round).x;
+  // 결승선은 워프 덕분에 라운드·인원수와 무관하게 항상 FINISH_VISUAL_
+  // FRACTION 지점에 그려지므로 여기서도 그 고정값을 그대로 쓴다.
+  const passX = trackPointAt(FINISH_VISUAL_FRACTION, round).x;
   ctx.save();
   ctx.clip();
   const danger = ctx.createLinearGradient(0, 0, passX, 0);
@@ -1415,7 +1440,7 @@ function drawObstacle(ctx, o, size) {
 // 넉넉하게 잡으므로, 예전(리더 기준 0.08)보다 훨씬 오래 트랙 위에 남는다.
 // 라운드가 바뀌면 이전 라운드 트랙 좌표로 만든 장애물은 의미가 없으므로
 // 전부 비운다.
-function maybeSpawnObstacle(now, leaderProgress, tailProgress, round) {
+function maybeSpawnObstacle(now, leaderProgress, tailProgress, passLine, round) {
   if (obstacleRound !== round) {
     obstacleRound = round;
     activeObstacles = [];
@@ -1426,13 +1451,19 @@ function maybeSpawnObstacle(now, leaderProgress, tailProgress, round) {
   const maxActive = OBSTACLE_MAX_ACTIVE_BY_ROUND[round] || 35;
   if (activeObstacles.length >= maxActive) return;
   if (now < nextObstacleSpawnAt) return;
+  // 결승선을 넘은 자리에는 장애물을 두지 않는다(사용자 요청) -- 이미
+  // 승부가 갈린 뒤 구간이고, 워프 때문에 결승선 너머는 화면에서도 아주
+  // 좁게 압축되어 보인다.
+  const finishLimit = Math.max(0, passLine - 0.01);
+  const spawnProgress = Math.min(0.97, finishLimit, leaderProgress + 0.1 + Math.random() * 0.16);
+  if (spawnProgress <= 0) return; // 결승선이 트랙 극초반이면 스폰할 자리가 없다
   const type = OBSTACLE_TYPES[Math.floor(Math.random() * OBSTACLE_TYPES.length)];
   activeObstacles.push({
     id: `obs-${obstacleSeq++}`,
     type,
     // 같은 종류라도 크기를 흔들어 "다양한 크기"가 실제로 보이게 한다
     sizeScale: OBSTACLE_DEFS[type].size * (0.75 + Math.random() * 0.7),
-    spawnProgress: Math.min(0.97, leaderProgress + 0.1 + Math.random() * 0.16),
+    spawnProgress,
     laneCenter: Math.random() * lastLaneCount,
     weaveAmp: 1.5 + Math.random() * 3,
     weaveSpeed: 0.0015 + Math.random() * 0.0018,
@@ -1445,11 +1476,11 @@ function maybeSpawnObstacle(now, leaderProgress, tailProgress, round) {
   nextObstacleSpawnAt = now + 120 + Math.random() * 220;
 }
 
-function obstacleScreenPoints(now, laneCount, laneWidth, round) {
+function obstacleScreenPoints(now, laneCount, laneWidth, passLine, round) {
   return activeObstacles.map((o) => {
     const weaveLane = o.laneCenter + Math.sin((now - o.spawnedAt) * o.weaveSpeed) * o.weaveAmp;
     const laneOffset = (weaveLane - (laneCount - 1) / 2) * laneWidth;
-    const center = trackPointAt(o.spawnProgress, round);
+    const center = trackPointAt(warpProgress(o.spawnProgress, passLine), round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);
     return {
@@ -1484,15 +1515,15 @@ function drawFrame(positions, tick) {
   const leaderEffect = kartEffectStateFor(sorted[0], now, fade);
   const leaderShownPos = Math.max(0, leaderPos + visualDeltaFor(sorted[0], now, fade, leaderEffect));
   const { lut, length: trackLength, halfWidth } = getTrackLUT(tick.round);
-  const leaderPoint = trackPointAt(leaderShownPos, tick.round);
+  const leaderPoint = trackPointAt(warpProgress(leaderShownPos, tick.pass_line), tick.round);
   const camera = computeCamera(leaderPoint, tick.round, W, H);
 
   raceCtx.save();
   raceCtx.translate(camera.offsetX, camera.offsetY);
   raceCtx.scale(camera.scale, camera.scale);
 
-  drawTrackSurface(raceCtx, W, H, lut, halfWidth, tick.pass_line, leaderShownPos, trackLength, tick.round);
-  drawFinishLine(raceCtx, trackPointAt(tick.pass_line, tick.round), halfWidth);
+  drawTrackSurface(raceCtx, W, H, lut, halfWidth, leaderShownPos, trackLength, tick.round);
+  drawFinishLine(raceCtx, trackPointAt(FINISH_VISUAL_FRACTION, tick.round), halfWidth);
 
   // 트랙이 라운드마다 좁아지므로 차선 수도 폭에 맞춘다 -- 좁은 트랙에서
   // 36차선을 그대로 쓰면 카트가 점처럼 작아져 아무것도 안 보인다.
@@ -1511,8 +1542,8 @@ function drawFrame(positions, tick) {
   const cullMargin = CULL_MARGIN_BY_MODE[camera.mode] ?? 0.34;
   const tailProgress = Math.max(0, leaderShownPos - cullMargin);
 
-  maybeSpawnObstacle(now, leaderShownPos, tailProgress, tick.round);
-  const obstaclePoints = obstacleScreenPoints(now, laneCount, laneWidth, tick.round);
+  maybeSpawnObstacle(now, leaderShownPos, tailProgress, tick.pass_line, tick.round);
+  const obstaclePoints = obstacleScreenPoints(now, laneCount, laneWidth, tick.pass_line, tick.round);
   const obstacleSize = Math.max(18, kartH * 1.5);
   for (const o of obstaclePoints) {
     drawObstacle(raceCtx, o, obstacleSize);
@@ -1539,7 +1570,10 @@ function drawFrame(positions, tick) {
     const lateral = effect ? effect.lateral * laneWidth : 0;
     const laneOffset =
       (lane - (laneCount - 1) / 2) * laneWidth + jitterFor(pid) * laneWidth * 0.5 + lateral;
-    const center = trackPointAt(shownP, tick.round);
+    // 장애물도 같은 워프를 거쳐 화면 좌표를 얻으므로(obstacleScreenPoints),
+    // 여기서도 반드시 워프한 값으로 화면 좌표를 구해야 충돌 판정(화면
+    // 좌표 기준 거리 비교)이 어긋나지 않는다.
+    const center = trackPointAt(warpProgress(shownP, tick.pass_line), tick.round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);
     const x = center.x + nx * laneOffset;
@@ -1678,6 +1712,7 @@ function renderTrack(tick) {
   );
   detectOvertakes(sorted, tick.round);
   previousTickPositions = tick.positions;
+  previousTickPassLine = tick.pass_line;
 }
 
 // ---------------------------------------------------------------------------
