@@ -156,6 +156,10 @@ def load_character_snapshot() -> None:
 RACE_ROUND_INDEX = {"race_r1": 1, "race_r2": 2, "race_r3": 3}
 SCORE_PHASE_ROUND = {"score_r1_select_r2": 1, "score_r2_select_r3": 2}
 RACE_TICK_INTERVAL_SECONDS = 0.3
+# 레이스 구간 시작 후 이 시간 동안은 카트를 출발선에 세워 둔다(스타트
+# 라이트 3·2·1 GO가 끝나고 나서 실제로 출발하도록). static/stage.js의
+# runStartLights 총 길이(약 2.55초)와 맞춰 둔다.
+RACE_COUNTDOWN_SECONDS = 2.8
 
 
 # ---------------------------------------------------------------------------
@@ -477,11 +481,20 @@ async def _run_race_phase(
     departments = draw.snapshot.get("departments", {})
     denom_sets = _department_denom_sets(departments, round_index, draw)
 
+    # 스타트 라이트(3·2·1 GO) 리드인. 예전에는 라이트가 켜지는 동안 이미
+    # 레이스가 진행돼 버려서, 카운트다운이 끝났을 땐 카트가 한참 나가
+    # 있었다(사용자 피드백). 이 구간에는 ratio를 0으로 고정해 카트를
+    # 출발선에 세워 둔다 -- 구간 전체 길이(duration_seconds)는 그대로라
+    # 런북 시간 배분에는 영향이 없다. 아주 짧은 구간(테스트용 0.02초 등)
+    # 에서는 리드인이 구간을 잡아먹지 않도록 비율로 제한한다.
+    countdown = min(RACE_COUNTDOWN_SECONDS, duration_seconds * 0.25)
+    race_seconds = max(1e-6, duration_seconds - countdown)
+
     loop = asyncio.get_running_loop()
     start = loop.time()
     while True:
         elapsed = loop.time() - start
-        ratio = min(elapsed / duration_seconds, 1.0) if duration_seconds > 0 else 1.0
+        ratio = min(max((elapsed - countdown) / race_seconds, 0.0), 1.0)
         if session_id in fast_forward_requests:
             # 비상 조기 종료: 다음 틱에서 곧바로 최종 위치(ratio=1.0)로 점프한다.
             # 통과 판정은 position_at()이 ratio=1.0에서 목표값과 정확히 일치하도록
@@ -496,6 +509,10 @@ async def _run_race_phase(
             "progress_ratio": ratio,
             "pass_line": line,
             "positions": positions,
+            # 스타트 라이트가 아직 켜져 있는(=출발 전) 틱인지. 무대 화면이
+            # 이 구간에는 속도선·엔진음을 올리지 않고 그리드 정지 상태로
+            # 보여주는 데 쓴다.
+            "countdown": elapsed < countdown,
         }
         if denom_sets is not None:
             payload["department_live_rate"] = race.department_live_rates(positions, denom_sets, line)

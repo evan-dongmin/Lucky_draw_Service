@@ -1655,12 +1655,19 @@ function maybeSpawnObstacle(now, leaderProgress, tailProgress, passLine, round) 
   const maxActive = OBSTACLE_MAX_ACTIVE_BY_ROUND[round] || 35;
   if (activeObstacles.length >= maxActive) return;
   if (now < nextObstacleSpawnAt) return;
-  // 결승선을 넘은 자리에는 장애물을 두지 않는다(사용자 요청) -- 이미
-  // 승부가 갈린 뒤 구간이고, 워프 때문에 결승선 너머는 화면에서도 아주
-  // 좁게 압축되어 보인다.
-  const finishLimit = Math.max(0, passLine - 0.01);
-  const spawnProgress = Math.min(0.97, finishLimit, leaderProgress + 0.1 + Math.random() * 0.16);
-  if (spawnProgress <= 0) return; // 결승선이 트랙 극초반이면 스폰할 자리가 없다
+  // 결승선을 넘은 자리에는 장애물을 두지 않는다(사용자 요청).
+  //
+  // 예전에는 후보 위치를 `min(0.97, finishLimit, leader + 0.1 + rand)`로
+  // **잘라냈다**. 그래서 리더가 결승선 0.1 앞까지 오면 그 뒤로 뿌리는
+  // 장애물이 전부 정확히 finishLimit 한 지점으로 clamp되어, 결승선
+  // 바로 앞에만 수십 개가 겹쳐 쌓였다(사용자 피드백: "1라운드에서
+  // 결승선 바로 직전에만 너무 많은 장애물이 몰려 있다").
+  // 이제는 자를 수 있는 구간이 남아 있을 때만 그 구간 안에서 무작위로
+  // 고르고, 남은 구간이 없으면 아예 스폰하지 않는다.
+  const finishLimit = Math.min(0.97, Math.max(0, passLine - 0.02));
+  const lo = leaderProgress + 0.08;
+  if (lo >= finishLimit) return; // 결승선 앞 구간을 이미 다 지나쳤다 -- 더 뿌리지 않는다
+  const spawnProgress = lo + Math.random() * (finishLimit - lo);
   const type = OBSTACLE_TYPES[Math.floor(Math.random() * OBSTACLE_TYPES.length)];
   activeObstacles.push({
     id: `obs-${obstacleSeq++}`,
@@ -1865,11 +1872,19 @@ function drawFrame(positions, tick) {
   drawHud(raceCtx, W, H, positions, tick, sorted);
   renderPositionTower(sorted, positions, tick.pass_line);
 
-  // 속도 연출: 진행률 + 근접 경쟁 강도에 비례해 속도선/엔진 피치/BGM 텐션을 올린다
-  const speedIntensity = Math.min(1, tick.progress_ratio * 1.05 + riskCount * 0.03);
-  FX.setSpeedLines(Math.min(1, tick.progress_ratio * 1.1));
-  SFX.setRpm(speedIntensity);
-  SFX.setSceneIntensity(speedIntensity);
+  // 속도 연출: 진행률 + 근접 경쟁 강도에 비례해 속도선/엔진 피치/BGM 텐션을 올린다.
+  // 스타트 라이트가 켜져 있는 리드인 구간(tick.countdown)에는 아직 출발
+  // 전이므로 속도선을 끄고 엔진은 공회전 수준으로 둔다.
+  if (tick.countdown) {
+    FX.setSpeedLines(0);
+    SFX.setRpm(0.12);
+    SFX.setSceneIntensity(0.1);
+  } else {
+    const speedIntensity = Math.min(1, tick.progress_ratio * 1.05 + riskCount * 0.03);
+    FX.setSpeedLines(Math.min(1, tick.progress_ratio * 1.1));
+    SFX.setRpm(speedIntensity);
+    SFX.setSceneIntensity(speedIntensity);
+  }
 
   // 레이스 막판에 새로 띄운 실황 멘트는 도착할 즈음 이미 결과 발표로
   // 넘어가 있다 -- 진행률이 임계값을 넘으면 실황 멘트를 잠근다(라운드
