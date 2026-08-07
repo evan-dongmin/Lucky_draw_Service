@@ -745,48 +745,75 @@ function visualDeltaFor(pid, now, fade, effect) {
 // 화면 크기가 바뀔 때만 LUT를 다시 만든다(매 프레임 재계산하지 않는다).
 // ---------------------------------------------------------------------------
 
-// 웨이포인트 10구간(11점) -- 진폭을 들쭉날쭉하게 둬서(얕은 굴곡 + 깊은
-// 굴곡을 섞음) 같은 폭이 반복되는 사인파처럼 안 보이게 했다. 단, 구간당
-// 진폭 변화폭(ΔY/ΔT)은 검증된 값(~3.4) 이내로 제한했다 -- 그보다 급하게
-// 꺾으면 Catmull-Rom이 오버슈트해 리본 폴리곤이 스스로 겹치는 "나비매듭"
-// 아티팩트가 생긴다(실제로 한 번 겪음). 굴곡이 늘어난 만큼 실제 호 길이도
-// 늘어나 arc-length 균등 LUT 덕분에 카트가 체감상 "더 먼 트랙"을 도는
-// 것처럼 보인다(진행률 0..1의 의미 자체는 서버 쪽과 무관하게 그대로 유지됨).
+// 트랙은 **화면보다 큰 "월드"** 위에 그려진다(사용자 피드백: 맵이 너무
+// 정형화돼 있고, 1·2라운드는 전체를 다 보여주려다 보니 지루하다).
 //
-// 라운드마다 트랙을 다르게 둔다(사용자 요청 -- 매번 같은 맵이면 지루하다).
-// R1은 250대가 한눈에 들어와야 하니 완만하게, R2는 중간, R3(결선·클로즈업
-// 카메라)는 가장 굴곡지게 -- 세 세트 전부 위 ΔY/ΔT 안전 규칙을 지킨다.
-// 라운드마다 트랙이 "확실히 달라 보여야" 한다(사용자 피드백: 맵이 다 똑같다).
-// 예전 정의는 모양은 조금씩 달랐지만 halfWidthFrac이 0.48~0.55로 다 넓어서,
-// 코스 굴곡(진폭 ±0.2~0.34)보다 트랙 폭이 2~3배 크다 보니 셋 다 "굵고
-// 뭉툭한 띠"로 뭉개져 사실상 구분이 안 됐다. 그래서 라운드별로 성격을
-// 명확히 갈랐다:
-//   R1 = 넓고 곧은 고속 스피드웨이 (250대가 한 화면에 들어와야 함)
-//   R2 = 폭이 절반인 지그재그 시케인 (약 100대)
-//   R3 = 가장 좁고 굴곡이 심한 서킷 (5~10대, 클로즈업 카메라)
-// 폭이 좁아질수록 급커브에서 연석이 겹치는 문제도 함께 줄어들기 때문에,
-// 진폭을 키우면서 폭을 줄이는 조합이 안전하다.
+// 예전 정의는 "왼쪽에서 오른쪽으로 단조 증가하는 리본 + 위아래 물결"
+// 이었다. x가 항상 증가하니 아무리 진폭을 키워도 결국 "구불구불한 띠"로만
+// 보였고, 화면 안에 전부 들어가야 해서 코스 규모도 제한됐다.
+//
+// 지금은 카트라이더/마리오카트처럼 **진짜 서킷 레이아웃**을 쓴다:
+//   - 웨이포인트를 (x, y) 2차원으로 직접 찍는다 -- x가 되돌아와도 된다.
+//   - 여러 개의 직선 구간(leg)을 헤어핀으로 연결해 코스가 화면을 접어
+//     담는다. R1 2구간 / R2 3구간 / R3 4구간으로 라운드가 올라갈수록
+//     더 복잡해진다.
+//   - 좌표는 "월드" 크기(화면의 1.6~2.0배) 기준 비율이라, 카메라가
+//     확대·이동하며 따라간다(computeCamera 참고). 덕분에 트랙을 크게
+//     그려도 카트는 화면에서 충분히 커 보인다.
+//
+// **설계 규칙(어기면 리본이 스스로 뒤집힌다)**:
+//   1. 나란한 직선 구간 사이 간격 > 트랙 폭(halfWidth x 2) + 연석 여유.
+//   2. 헤어핀 곡률 반경 > halfWidth (권장 1.5배 이상). 안 그러면 안쪽
+//      가장자리가 뒤집혀 "나비매듭" 아티팩트가 생긴다(실제로 겪음).
+// 아래 세 코스는 둘 다 만족하도록 좌표를 잡아뒀다.
 const TRACK_DEFS = {
   1: {
-    // 완만한 롱 스트레이트 + 큰 곡선 두 개. 250대가 한눈에 들어와야
-    // 하므로 폭을 가장 넓게 유지한다(차선 수가 많아야 카트가 안 겹침).
-    t: [0, 0.3, 0.55, 0.8, 1.0],
-    yFrac: [0, -0.16, 0.2, -0.12, 0.04],
-    halfWidthFrac: 0.52,
+    // R1 "그랜드 스피드웨이": 롱 스트레이트 -> 대형 우측 스위퍼 -> 복귀
+    // 직선. 250대가 달리므로 폭(=차선 수)을 가장 넉넉히 준다.
+    world: { x: 2.0, y: 1.55 },
+    halfWidthFrac: 0.115,
+    pts: [
+      { x: 0.04, y: 0.72 }, { x: 0.14, y: 0.80 }, { x: 0.30, y: 0.85 },
+      { x: 0.47, y: 0.81 }, { x: 0.63, y: 0.85 }, { x: 0.77, y: 0.79 },
+      { x: 0.88, y: 0.70 }, { x: 0.955, y: 0.585 }, { x: 0.965, y: 0.46 },
+      { x: 0.90, y: 0.35 }, { x: 0.78, y: 0.29 }, { x: 0.62, y: 0.31 },
+      { x: 0.46, y: 0.25 }, { x: 0.30, y: 0.21 }, { x: 0.14, y: 0.26 },
+    ],
   },
   2: {
-    // 지그재그 시케인 -- 진폭을 키우고 폭은 절반 가까이 줄여 "굽이치는
-    // 길"로 읽히게 한다.
-    t: [0, 0.14, 0.28, 0.42, 0.56, 0.7, 0.85, 1.0],
-    yFrac: [0, -0.52, 0.46, -0.44, 0.5, -0.36, 0.3, 0],
-    halfWidthFrac: 0.26,
+    // R2 "시케인 서킷": 3구간 + 좌우 헤어핀 두 개. 직선마다 완만한
+    // 시케인을 넣어 속도를 계속 바꾸게 만든다.
+    world: { x: 1.9, y: 1.6 },
+    halfWidthFrac: 0.075,
+    pts: [
+      { x: 0.05, y: 0.80 }, { x: 0.18, y: 0.88 }, { x: 0.34, y: 0.83 },
+      { x: 0.50, y: 0.89 }, { x: 0.66, y: 0.84 }, { x: 0.80, y: 0.88 },
+      { x: 0.91, y: 0.80 }, { x: 0.955, y: 0.69 }, { x: 0.92, y: 0.58 },
+      { x: 0.81, y: 0.52 }, { x: 0.66, y: 0.56 }, { x: 0.50, y: 0.50 },
+      { x: 0.34, y: 0.55 }, { x: 0.19, y: 0.50 }, { x: 0.09, y: 0.42 },
+      { x: 0.055, y: 0.31 }, { x: 0.10, y: 0.22 }, { x: 0.22, y: 0.17 },
+      { x: 0.38, y: 0.21 }, { x: 0.54, y: 0.16 }, { x: 0.70, y: 0.20 },
+      { x: 0.86, y: 0.15 }, { x: 0.95, y: 0.22 },
+    ],
   },
   3: {
-    // 결선 전용 테크니컬 서킷 -- 가장 좁고 가장 많이 꺾인다. 카트가
-    // 5~10대뿐이라 좁아도 충분히 크게 보인다.
-    t: [0, 0.09, 0.19, 0.29, 0.39, 0.5, 0.61, 0.72, 0.83, 0.92, 1.0],
-    yFrac: [0, -0.44, 0.52, -0.58, 0.38, -0.5, 0.56, -0.4, 0.46, -0.24, 0],
-    halfWidthFrac: 0.17,
+    // R3 "테크니컬 스트리트": 4구간 + 헤어핀 세 개 + 상시 시케인.
+    // 결선 진출자 5~10대뿐이라 가장 좁고 가장 많이 꺾여도 잘 보인다.
+    world: { x: 1.6, y: 1.45 },
+    halfWidthFrac: 0.05,
+    pts: [
+      { x: 0.06, y: 0.86 }, { x: 0.20, y: 0.90 }, { x: 0.36, y: 0.85 },
+      { x: 0.48, y: 0.90 }, { x: 0.60, y: 0.84 }, { x: 0.74, y: 0.88 },
+      { x: 0.88, y: 0.83 }, { x: 0.95, y: 0.73 }, { x: 0.93, y: 0.62 },
+      { x: 0.82, y: 0.57 }, { x: 0.68, y: 0.62 }, { x: 0.55, y: 0.57 },
+      { x: 0.42, y: 0.63 }, { x: 0.28, y: 0.58 }, { x: 0.15, y: 0.62 },
+      { x: 0.06, y: 0.54 }, { x: 0.05, y: 0.43 }, { x: 0.13, y: 0.35 },
+      { x: 0.26, y: 0.33 }, { x: 0.38, y: 0.38 }, { x: 0.50, y: 0.31 },
+      { x: 0.63, y: 0.35 }, { x: 0.75, y: 0.28 }, { x: 0.86, y: 0.32 },
+      { x: 0.94, y: 0.24 }, { x: 0.90, y: 0.13 }, { x: 0.78, y: 0.09 },
+      { x: 0.64, y: 0.13 }, { x: 0.50, y: 0.09 }, { x: 0.36, y: 0.13 },
+      { x: 0.22, y: 0.08 },
+    ],
   },
 };
 const TRACK_LUT_SIZE = 400;
@@ -813,19 +840,13 @@ function catmullRomPoint(p0, p1, p2, p3, t) {
 
 function buildTrackLUT(W, H, round) {
   const def = TRACK_DEFS[round] || TRACK_DEFS[1];
-  // 세로 대역을 더 넓게 써서(0.14~0.86 -> 0.05~0.95) 트랙 실제 이동 거리를
-  // 늘렸다(사용자 요청: 맵을 더 크게). Catmull-Rom은 아핀 변환에 불변이라
-  // yFrac 진폭 "비율" 자체는 그대로 균등 확대될 뿐이라 자기교차(나비매듭)
-  // 위험이 새로 생기지 않는다 -- 대역폭만 키우는 안전한 확대 방식이다.
-  const trackTop = H * 0.05;
-  const trackBottom = H * 0.95;
-  const centerY = (trackTop + trackBottom) / 2;
-  const halfBand = (trackBottom - trackTop) / 2;
-  const halfWidth = halfBand * def.halfWidthFrac;
-  const pts = def.t.map((t, i) => ({
-    x: TRACK_PAD_X + t * (W - TRACK_PAD_X * 2),
-    y: centerY + def.yFrac[i] * halfBand,
-  }));
+  // 트랙은 화면이 아니라 **월드**(화면의 1.6~2.0배) 위에 그려진다. 카메라가
+  // 확대·이동하며 따라가므로(computeCamera), 코스를 크고 복잡하게 잡아도
+  // 카트는 화면에서 충분히 커 보인다.
+  const worldW = W * def.world.x;
+  const worldH = H * def.world.y;
+  const halfWidth = worldH * def.halfWidthFrac;
+  const pts = def.pts.map((p) => ({ x: p.x * worldW, y: p.y * worldH }));
 
   const padded = [pts[0], ...pts, pts[pts.length - 1]];
   const raw = [];
@@ -866,10 +887,10 @@ function buildTrackLUT(W, H, round) {
       angle: angles[rawIdx],
     });
   }
-  return { lut, length: total, halfWidth };
+  return { lut, length: total, halfWidth, worldW, worldH };
 }
 
-const trackLUTCacheByRound = new Map(); // round -> { w, h, lut, length, halfWidth }
+const trackLUTCacheByRound = new Map(); // round -> { w, h, lut, length, halfWidth, worldW, worldH }
 function getTrackLUT(round) {
   const r = round || 1;
   const W = window.innerWidth;
@@ -922,22 +943,55 @@ function warpProgress(raw, passLine) {
   return FINISH_VISUAL_FRACTION + ((t - pl) / (1 - pl)) * (1 - FINISH_VISUAL_FRACTION);
 }
 
-function computeCamera(leaderPoint, round, W, H) {
+// 라운드별 "추적 줌" 배율. 남은 카트가 적을수록 더 바짝 붙는다.
+// 너무 크게 잡으면 화면에 직선 도로 한 토막만 남아서 새로 만든 서킷
+// 레이아웃(헤어핀·시케인)이 아예 안 보인다 -- 코스 굴곡이 보이면서도
+// 속도감이 남는 선으로 맞췄다(월드가 화면의 1.6~2.0배라 이 배율이면
+// 코스의 30~50%가 화면에 들어온다).
+const CHASE_SCALE_BY_ROUND = { 1: 1.15, 2: 1.45, 3: 2.0 };
+// 자동 카메라가 전체 조망 -> 선두 추적으로 넘어가는 진행률 구간(사용자
+// 요청: "처음엔 전체를 보여주더라도, 진행하면서 선두 카트들에 집중해서
+// 줌 확대·이동"). 이 구간에서 부드럽게(easeInOut) 전환된다.
+const CAMERA_OVERVIEW_UNTIL = 0.10;
+const CAMERA_CHASE_FROM = 0.42;
+
+function easeInOut(t) {
+  return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+}
+
+// 0 = 월드 전체 조망, 1 = 선두 추적. 자동 모드에서 진행률에 따라 움직인다.
+function cameraChaseFactor(progressRatio) {
+  const t = (progressRatio - CAMERA_OVERVIEW_UNTIL) / (CAMERA_CHASE_FROM - CAMERA_OVERVIEW_UNTIL);
+  return easeInOut(Math.min(1, Math.max(0, t)));
+}
+
+function computeCamera(leaderPoint, round, W, H, progressRatio) {
+  const { worldW, worldH } = getTrackLUT(round);
+  // 월드 전체가 화면에 꼭 들어오는 배율(약간 여백을 둔다)
+  const fitScale = Math.min(W / worldW, H / worldH) * 0.97;
+  const worldCenter = { x: worldW / 2, y: worldH / 2 };
+  const chaseScale = CHASE_SCALE_BY_ROUND[round] || 1.85;
+
   let mode = cameraMode;
+  let k; // 0=전체 조망, 1=선두 추적
   if (mode === "auto") {
-    // 예전엔 R1(250대)만 광각 고정이라 카메라가 전혀 안 움직였다 -- 사용자
-    // 피드백(속도감·박진감 부족)에 따라 R1도 리더를 따라 확대·이동하는
-    // 카메라로 바꿨다. 뒤처진 카트가 화면 밖으로 빠지는 건 의도된 것이다
-    // (사용자 요청: 뒤처진 카트는 안 보여도 됨). "광각"은 수동 선택지로만 남는다.
-    mode = round === 1 ? "medium" : round === 2 ? "medium" : "close";
+    k = cameraChaseFactor(progressRatio);
+  } else if (mode === "wide") {
+    k = 0;
+  } else {
+    k = 1;
   }
-  if (mode === "wide") return { mode, scale: 1, offsetX: 0, offsetY: 0 };
-  const scale = mode === "close" ? 2.6 : 1.7;
+
+  const targetScale = mode === "close" ? (CHASE_SCALE_BY_ROUND[3] || 2.7) : chaseScale;
+  const scale = fitScale + (targetScale - fitScale) * k;
+  const cx = worldCenter.x + (leaderPoint.x - worldCenter.x) * k;
+  const cy = worldCenter.y + (leaderPoint.y - worldCenter.y) * k;
   return {
     mode,
+    chaseFactor: k,
     scale,
-    offsetX: W / 2 - leaderPoint.x * scale,
-    offsetY: H / 2 - leaderPoint.y * scale,
+    offsetX: W / 2 - cx * scale,
+    offsetY: H / 2 - cy * scale,
   };
 }
 
@@ -1072,6 +1126,8 @@ let tickIntervalEstimate = 300;
 let rafHandle = null;
 
 function pushTick(tick) {
+  // 실제 레이스 데이터가 들어오기 시작하면 스타팅 그리드 프리뷰는 끝난다.
+  stopGridPreview();
   const now = performance.now();
   if (currTickState) {
     const delta = now - tickArrivalAt;
@@ -1120,46 +1176,52 @@ function renderLoop() {
 // V2/V4/V5: 트랙 맵 · 카트 · 긴장 연출
 // ---------------------------------------------------------------------------
 
-function drawTrackSurface(ctx, W, H, lut, halfWidth, scrollPhase, trackLength, round) {
-  const n = lut.length;
-  const left = new Array(n);
-  const right = new Array(n);
-  for (let i = 0; i < n; i++) {
-    const p = lut[i];
-    const nx = -Math.sin(p.angle);
-    const ny = Math.cos(p.angle);
-    left[i] = { x: p.x + nx * halfWidth, y: p.y + ny * halfWidth };
-    right[i] = { x: p.x - nx * halfWidth, y: p.y - ny * halfWidth };
-  }
-
-  // 노면 (곡선 리본 폴리곤)
-  ctx.fillStyle = "#171d26";
+// 경로(lut)를 따라 폭 w의 리본 폴리곤 경로를 만든다. 구간을 지정하면
+// 그 호 길이 범위만 그린다(결승선 이후 안전 구역 덧칠 등에 쓴다).
+function ribbonPathRange(ctx, lut, w, i0, i1) {
   ctx.beginPath();
-  ctx.moveTo(left[0].x, left[0].y);
-  for (let i = 1; i < n; i++) ctx.lineTo(left[i].x, left[i].y);
-  for (let i = n - 1; i >= 0; i--) ctx.lineTo(right[i].x, right[i].y);
+  for (let i = i0; i <= i1; i++) {
+    const p = lut[i];
+    const x = p.x + -Math.sin(p.angle) * w;
+    const y = p.y + Math.cos(p.angle) * w;
+    if (i === i0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  }
+  for (let i = i1; i >= i0; i--) {
+    const p = lut[i];
+    ctx.lineTo(p.x - -Math.sin(p.angle) * w, p.y - Math.cos(p.angle) * w);
+  }
   ctx.closePath();
+}
+
+function ribbonPath(ctx, lut, w) {
+  ribbonPathRange(ctx, lut, w, 0, lut.length - 1);
+}
+
+function drawTrackSurface(ctx, lut, halfWidth, scrollPhase, trackLength, round) {
+  const n = lut.length;
+
+  // 잔디/런오프 -- 노면보다 넓은 리본을 아래에 깔아 코스 경계를 강조한다
+  // (마리오카트처럼 "길 밖"이 분명히 보이게).
+  ribbonPath(ctx, lut, halfWidth + Math.max(14, halfWidth * 0.28));
+  ctx.fillStyle = "#12301c";
   ctx.fill();
 
-  // 통과선 기준 위험(왼쪽)/안전(오른쪽) 구역 -- 웨이포인트가 좌→우로 단조
-  // 증가하므로, 가로 그라데이션을 리본 모양에 클립해도 진행률과 대략
-  // 일치한다. 리본 폴리곤이 여전히 현재 경로이므로 그대로 clip에 쓴다.
-  // 결승선은 워프 덕분에 라운드·인원수와 무관하게 항상 FINISH_VISUAL_
-  // FRACTION 지점에 그려지므로 여기서도 그 고정값을 그대로 쓴다.
-  const passX = trackPointAt(FINISH_VISUAL_FRACTION, round).x;
-  ctx.save();
-  ctx.clip();
-  const danger = ctx.createLinearGradient(0, 0, passX, 0);
-  danger.addColorStop(0, "rgba(179,38,30,0.28)");
-  danger.addColorStop(1, "rgba(179,38,30,0.05)");
-  ctx.fillStyle = danger;
-  ctx.fillRect(0, 0, passX, H);
-  const safe = ctx.createLinearGradient(passX, 0, W, 0);
-  safe.addColorStop(0, "rgba(26,127,55,0.06)");
-  safe.addColorStop(1, "rgba(26,127,55,0.20)");
-  ctx.fillStyle = safe;
-  ctx.fillRect(passX, 0, W - passX, H);
-  ctx.restore();
+  // 노면 (곡선 리본 폴리곤)
+  ribbonPath(ctx, lut, halfWidth);
+  ctx.fillStyle = "#171d26";
+  ctx.fill();
+
+  // 통과선 기준 안전 구역(결승선 이후 구간)을 살짝 초록으로 덧칠한다.
+  // 예전에는 화면 가로 그라데이션으로 칠했는데, 그건 "웨이포인트가 좌->우로
+  // 단조 증가한다"는 옛 트랙 전제에 의존한 방식이었다. 지금 트랙은 되돌아
+  // 오는 진짜 서킷이라 그 전제가 깨져서(빨강/초록 경계가 코스와 무관한
+  // 엉뚱한 자리에 생김) **호 길이 기준으로 해당 구간 리본만** 칠하도록
+  // 바꿨다. 결승선은 워프 덕분에 항상 FINISH_VISUAL_FRACTION 지점이다.
+  const finishIdx = Math.round(FINISH_VISUAL_FRACTION * (n - 1));
+  ribbonPathRange(ctx, lut, halfWidth, finishIdx, n - 1);
+  ctx.fillStyle = "rgba(26,160,70,0.13)";
+  ctx.fill();
 
   // 가장자리 커브(빨강/흰색 줄무늬) -- arc-length 기준 세그먼트, 스크롤로 속도감.
   // stripeArc가 너무 길면 급커브 구간에서 회전한 직사각형끼리 서로 겹쳐
@@ -1227,6 +1289,109 @@ function drawFinishLine(ctx, point, halfWidth) {
   ctx.lineTo(-1, halfWidth);
   ctx.stroke();
   ctx.restore();
+}
+
+// ---------------------------------------------------------------------------
+// 스타팅 그리드 프리뷰 (사용자 요청: "1라운드 시작 전에 맵에 카트들이
+// 나열해있는 장면을 보여주는 것도 좋겠다")
+//
+// 레이스 직전 대기 구간(opening / r1_lock)에 트랙 출발선 뒤로 카트들이
+// 3열 스태거드로 정렬한 장면을 렌더링한다. 순수 연출이라 서버 상태를
+// 전혀 건드리지 않고, 첫 race_tick이 도착하는 순간 자동으로 종료된다.
+// ---------------------------------------------------------------------------
+
+const GRID_LINE_ARC = 0.075; // 출발선을 놓을 호 위치
+const GRID_COLS = 3;
+const GRID_ROW_ARC = 0.0085; // 뒷줄로 갈수록 물러나는 간격(호 기준)
+const GRID_MAX_KARTS = 30; // 앞쪽 N대만 그리드에 세운다(실제 그리드 샷처럼)
+
+let gridPreviewRaf = null;
+let gridPreviewRound = null;
+
+function drawStartingGrid(round) {
+  const ids = Object.keys(currentPidToGroup).sort();
+  if (!ids.length) return;
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const now = performance.now();
+  const pulse = (Math.sin(now / 140) + 1) / 2;
+
+  raceCtx.clearRect(0, 0, W, H);
+  raceCtx.fillStyle = "#05070c";
+  raceCtx.fillRect(0, 0, W, H);
+
+  const { lut, length: trackLength, halfWidth } = getTrackLUT(round);
+
+  // 그리드 구간이 화면 가운데 오도록 카메라를 잡고, 아주 천천히 밀어준다
+  // (완전히 정지한 화면보다 살아있어 보인다).
+  const focus = trackPointAt(GRID_LINE_ARC * 0.45, round);
+  const scale = 1.45 + Math.sin(now / 2600) * 0.05;
+  raceCtx.save();
+  raceCtx.translate(W / 2 - focus.x * scale, H / 2 - focus.y * scale);
+  raceCtx.scale(scale, scale);
+
+  drawTrackSurface(raceCtx, lut, halfWidth, 0, trackLength, round);
+
+  // 출발선(체커기)
+  drawFinishLine(raceCtx, trackPointAt(GRID_LINE_ARC, round), halfWidth);
+
+  const shown = ids.slice(0, GRID_MAX_KARTS);
+  const colGap = (halfWidth * 2) / (GRID_COLS + 1);
+  shown.forEach((pid, i) => {
+    const row = Math.floor(i / GRID_COLS);
+    const col = i % GRID_COLS;
+    // 홀수 줄은 반 칸 어긋나게 -- 실제 F1 그리드의 스태거드 배치
+    const stagger = row % 2 === 1 ? colGap * 0.5 : 0;
+    const arc = Math.max(0, GRID_LINE_ARC - 0.007 - row * GRID_ROW_ARC);
+    const center = trackPointAt(arc, round);
+    const nx = -Math.sin(center.angle);
+    const ny = Math.cos(center.angle);
+    const laneOffset = (col - (GRID_COLS - 1) / 2) * colGap + stagger;
+    const x = center.x + nx * laneOffset;
+    const y = center.y + ny * laneOffset;
+    const group = currentPidToGroup[pid];
+    drawKart(
+      raceCtx,
+      x,
+      y,
+      Math.max(10, halfWidth * 0.16),
+      center.angle,
+      group ? colorForDepartment(group) : "#8b95a5",
+      group ? glowForDepartment(group) : "#b0bac9",
+      i === 0,
+      false,
+      pulse,
+      null
+    );
+  });
+
+  raceCtx.restore();
+
+  // 안내 캡션
+  raceCtx.font = "bold 30px 'Malgun Gothic', sans-serif";
+  raceCtx.fillStyle = "rgba(255,209,102,0.95)";
+  raceCtx.textAlign = "center";
+  raceCtx.fillText("STARTING GRID", W / 2, H * 0.12);
+  raceCtx.font = "17px 'Malgun Gothic', sans-serif";
+  raceCtx.fillStyle = "rgba(255,255,255,0.7)";
+  raceCtx.fillText(`${ids.length}대 정렬 완료 -- 곧 출발합니다`, W / 2, H * 0.12 + 30);
+  raceCtx.textAlign = "left";
+}
+
+function startGridPreview(round) {
+  gridPreviewRound = round;
+  if (gridPreviewRaf !== null) return;
+  const loop = () => {
+    gridPreviewRaf = requestAnimationFrame(loop);
+    if (gridPreviewRound) drawStartingGrid(gridPreviewRound);
+  };
+  gridPreviewRaf = requestAnimationFrame(loop);
+}
+
+function stopGridPreview() {
+  if (gridPreviewRaf !== null) cancelAnimationFrame(gridPreviewRaf);
+  gridPreviewRaf = null;
+  gridPreviewRound = null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1476,10 +1641,18 @@ function maybeSpawnObstacle(now, leaderProgress, tailProgress, passLine, round) 
   nextObstacleSpawnAt = now + 120 + Math.random() * 220;
 }
 
-function obstacleScreenPoints(now, laneCount, laneWidth, passLine, round) {
+function obstacleScreenPoints(now, laneCount, laneWidth, passLine, round, halfWidth, obstacleSize) {
   return activeObstacles.map((o) => {
     const weaveLane = o.laneCenter + Math.sin((now - o.spawnedAt) * o.weaveSpeed) * o.weaveAmp;
-    const laneOffset = (weaveLane - (laneCount - 1) / 2) * laneWidth;
+    let laneOffset = (weaveLane - (laneCount - 1) / 2) * laneWidth;
+    // 트랙 밖으로 나가지 않게 가장자리 안쪽으로 묶는다(사용자 피드백:
+    // "장애물이 맵 밖에 위치한 경우가 있음"). laneCenter가 0..laneCount
+    // 난수인 데다 weave 진폭이 최대 4.5차선이라, 예전에는 합쳐서 트랙 폭을
+    // 훌쩍 넘어 잔디밭이나 허공에 떠 있는 장애물이 생겼다. 자기 반지름만큼
+    // 여유를 두고 클램프하면 항상 노면 위에 고루 분포한다.
+    const radius = ((obstacleSize || 0) * o.sizeScale) / 2;
+    const maxOffset = Math.max(0, halfWidth - radius);
+    laneOffset = Math.max(-maxOffset, Math.min(maxOffset, laneOffset));
     const center = trackPointAt(warpProgress(o.spawnProgress, passLine), round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);
@@ -1516,35 +1689,43 @@ function drawFrame(positions, tick) {
   const leaderShownPos = Math.max(0, leaderPos + visualDeltaFor(sorted[0], now, fade, leaderEffect));
   const { lut, length: trackLength, halfWidth } = getTrackLUT(tick.round);
   const leaderPoint = trackPointAt(warpProgress(leaderShownPos, tick.pass_line), tick.round);
-  const camera = computeCamera(leaderPoint, tick.round, W, H);
+  const camera = computeCamera(leaderPoint, tick.round, W, H, tick.progress_ratio);
 
   raceCtx.save();
   raceCtx.translate(camera.offsetX, camera.offsetY);
   raceCtx.scale(camera.scale, camera.scale);
 
-  drawTrackSurface(raceCtx, W, H, lut, halfWidth, leaderShownPos, trackLength, tick.round);
+  drawTrackSurface(raceCtx, lut, halfWidth, leaderShownPos, trackLength, tick.round);
   drawFinishLine(raceCtx, trackPointAt(FINISH_VISUAL_FRACTION, tick.round), halfWidth);
 
-  // 트랙이 라운드마다 좁아지므로 차선 수도 폭에 맞춘다 -- 좁은 트랙에서
-  // 36차선을 그대로 쓰면 카트가 점처럼 작아져 아무것도 안 보인다.
-  const laneCount = Math.max(6, Math.min(36, ids.length, Math.floor((halfWidth * 2) / 11)));
+  // 카트 크기를 **트랙 폭 기준**으로 먼저 정하고, 차선 수를 거기에 맞춘다.
+  // 예전에는 반대(차선 수 먼저 -> 카트는 차선 폭의 82%)라, 차선을 최대
+  // 36개까지 쪼개면 카트가 9px짜리 점이 되어 장애물보다도 작아 보였다.
+  // 이제는 카트가 항상 트랙 폭의 일정 비율을 차지하므로 어느 라운드에서든
+  // 카트로 알아볼 수 있다(대신 차선이 줄어 팩이 조금 겹치는데, 250대가
+  // 몰려 달리는 장면에서는 오히려 자연스럽다).
+  const kartH = Math.max(14, Math.min(52, halfWidth * 0.22));
+  const laneCount = Math.max(5, Math.min(28, ids.length, Math.floor((halfWidth * 2) / (kartH * 0.62))));
   lastLaneCount = laneCount;
   const laneWidth = (halfWidth * 2) / laneCount;
-  const kartH = Math.max(6, Math.min(64, laneWidth * 0.82));
 
-  // 카메라가 확대·추적 중일 때(광각이 아닐 때)는 화면에 안 잡히는 후미
-  // 카트를 그리지도, 장애물 충돌 판정도 하지 않는다(사용자 요청: 뒤처진
-  // 카트는 안 보여도 됨). 어차피 카메라 밖이라 원래도 안 보였을 대상이고,
-  // 장애물을 훨씬 늘려도(위 OBSTACLE_MAX_ACTIVE_BY_ROUND) 프레임이 안
-  // 무거워지도록 판정 대상 자체를 줄인다. 광각은 트랙 전체가 화면에 다
-  // 들어오므로 컬링하지 않는다.
-  const CULL_MARGIN_BY_MODE = { wide: Infinity, medium: 0.34, close: 0.24 };
-  const cullMargin = CULL_MARGIN_BY_MODE[camera.mode] ?? 0.34;
+  // 카메라가 선두를 확대·추적하는 동안에는 화면에 안 잡히는 후미 카트를
+  // 그리지도, 장애물 충돌 판정도 하지 않는다(사용자 요청: 뒤처진 카트는
+  // 안 보여도 됨). 어차피 카메라 밖이라 원래도 안 보였을 대상이고,
+  // 장애물을 훨씬 늘려도 프레임이 안 무거워지도록 판정 대상을 줄인다.
+  // **전체 조망 구간(chaseFactor가 낮을 때)에는 트랙 전체가 화면에 들어오므로
+  // 컬링하면 안 된다** -- 줌이 들어갈수록 컬링 범위를 좁힌다.
+  const cullMargin =
+    camera.chaseFactor < 0.35 ? Infinity : 0.55 - 0.28 * camera.chaseFactor;
   const tailProgress = Math.max(0, leaderShownPos - cullMargin);
 
+  // 장애물은 카트와 비슷하거나 살짝 큰 정도가 적당하다(예전엔 카트의
+  // 1.5배 + 최소 18px이라 작아진 카트보다 훨씬 커 보였다).
+  const obstacleSize = Math.max(16, kartH * 1.05);
   maybeSpawnObstacle(now, leaderShownPos, tailProgress, tick.pass_line, tick.round);
-  const obstaclePoints = obstacleScreenPoints(now, laneCount, laneWidth, tick.pass_line, tick.round);
-  const obstacleSize = Math.max(18, kartH * 1.5);
+  const obstaclePoints = obstacleScreenPoints(
+    now, laneCount, laneWidth, tick.pass_line, tick.round, halfWidth, obstacleSize
+  );
   for (const o of obstaclePoints) {
     drawObstacle(raceCtx, o, obstacleSize);
   }
@@ -1798,6 +1979,10 @@ function handleRacingEvent(data) {
       if (data.phase === "final_announce" || data.phase === "verify") scene = "victory";
       else if (data.phase === "opening" || data.phase === "r1_lock") scene = "standby";
       SFX.playScene(scene);
+      // 1라운드 출발 직전 대기 구간에는 스타팅 그리드 장면을 보여준다
+      // (사용자 요청). 첫 race_tick이 오면 pushTick이 알아서 끈다.
+      if (data.phase === "opening" || data.phase === "r1_lock") startGridPreview(1);
+      else stopGridPreview();
     }
     if (data.phase === "race_r1") showMcLine("opening");
     if (data.phase === "race_r3") showMcLine("race_progress");
@@ -2057,6 +2242,7 @@ const ws = connectWS((data) => {
     cancelPendingMcLines({ clearCaption: true });
     liveMcSuppressed = false;
     shownLightsForRound.clear();
+    stopGridPreview();
     stopRenderLoop();
     SFX.stopScene(); // 다음 render()가 idle 오버레이를 다시 켜면서 idle 장면으로 자연스럽게 복귀한다
     stopLiveDistributionPolling();
