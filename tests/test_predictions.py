@@ -4,19 +4,14 @@ from app.predictions import (
     FINAL_WIN_POINTS,
     FINISH_POINTS,
     FLOOR_RATIO,
-    MIN_ALLOC,
     RANK_RATIOS,
+    ROUND_BASE_POINTS,
     TEAM_RANK_POINTS,
-    TOTAL_ALLOC,
     PredictionEngine,
     PredictionError,
     rank_ratio,
     rank_targets_by_rate,
 )
-
-
-def _default_alloc(a=34, b=33, c=33):
-    return {1: a, 2: b, 3: c}
 
 
 # ---------------------------------------------------------------------------
@@ -40,64 +35,7 @@ def test_rank_ratio_is_monotonically_decreasing_and_floors_out():
 
 
 # ---------------------------------------------------------------------------
-# 확신도 배분 -- R1·R2에만 하한, R3는 몰아주기 허용
-# ---------------------------------------------------------------------------
-
-
-def test_new_card_has_default_even_allocation_summing_to_100():
-    engine = PredictionEngine()
-    card = engine.get_or_create_card("P1")
-    assert sum(card.alloc.values()) == TOTAL_ALLOC
-
-
-def test_set_allocation_rejects_wrong_total():
-    engine = PredictionEngine()
-    with pytest.raises(PredictionError):
-        engine.set_allocation("P1", {1: 50, 2: 30, 3: 30})  # 합계 110
-
-
-def test_set_allocation_rejects_below_minimum_in_early_rounds():
-    engine = PredictionEngine()
-    with pytest.raises(PredictionError):
-        engine.set_allocation("P1", {1: 5, 2: 45, 3: 50})  # 1라운드가 최소 10 미만
-
-
-def test_round3_has_no_minimum_so_it_can_be_zero():
-    """R3에는 하한이 없다 -- 앞 라운드에 몰아쓰는 전략도 가능해야 한다."""
-    engine = PredictionEngine()
-    card = engine.set_allocation("P1", {1: 50, 2: 50, 3: 0})
-    assert card.alloc[3] == 0
-
-
-def test_max_all_in_on_round3_is_allowed():
-    """R1·R2 최소치만 남기고 나머지를 R3에 전부 몰아줄 수 있어야 한다(역전용)."""
-    engine = PredictionEngine()
-    card = engine.set_allocation("P1", {1: MIN_ALLOC, 2: MIN_ALLOC, 3: TOTAL_ALLOC - 2 * MIN_ALLOC})
-    assert card.alloc[3] == 80
-
-
-def test_set_allocation_accepts_valid_distribution():
-    engine = PredictionEngine()
-    card = engine.set_allocation("P1", _default_alloc(20, 30, 50))
-    assert card.alloc == {1: 20, 2: 30, 3: 50}
-
-
-def test_allocation_locked_round_value_preserved_when_reallocating_others():
-    engine = PredictionEngine()
-    engine.set_allocation("P1", _default_alloc(20, 30, 50))
-    engine.open_round(1, ["개발팀"])
-    engine.lock_round(1, seed="seed")  # 1라운드 잠금
-
-    # 1라운드 값(20)은 유지한 채 2·3라운드만 재배분
-    engine.set_allocation("P1", {1: 20, 2: 40, 3: 40})
-    assert engine.cards["P1"].alloc == {1: 20, 2: 40, 3: 40}
-
-    with pytest.raises(PredictionError):
-        engine.set_allocation("P1", {1: 25, 2: 35, 3: 40})  # 잠긴 라운드 값 변경 시도
-
-
-# ---------------------------------------------------------------------------
-# 대상 선택 창
+# 대상 선택 창 -- 라운드마다 하나씩 고른다(확신도 배분 없음, 2026-08-07 단순화)
 # ---------------------------------------------------------------------------
 
 
@@ -238,7 +176,9 @@ def test_live_distribution_excludes_autopicked_cards_and_matches_post_lock_share
 
 
 # ---------------------------------------------------------------------------
-# 순위 차등 채점 -- 이 게임의 핵심
+# 순위 차등 채점 -- 이 게임의 핵심. 라운드마다 동일한 ROUND_BASE_POINTS를
+# 걸고 겨루며(예전의 개인별 확신도 배분은 없음), 배점 = ROUND_BASE_POINTS
+# x ROUND_WEIGHTS[라운드] x rank_ratio(내 순위).
 # ---------------------------------------------------------------------------
 
 
@@ -247,9 +187,6 @@ def test_gain_decreases_with_rank_but_never_reaches_zero():
     한다(사용자 요청: 참여하면 적더라도 보상)."""
     engine = PredictionEngine()
     ranked = ["1위팀", "2위팀", "3위팀", "4위팀", "5위팀", "6위팀"]
-    for i, pid in enumerate(["P1", "P2", "P3", "P4", "P5", "P6"]):
-        engine.set_allocation(pid, _default_alloc(100 - 2 * MIN_ALLOC, MIN_ALLOC, MIN_ALLOC))
-        engine.get_or_create_card(pid)
     engine.open_round(1, ranked)
     for pid, target in zip(["P1", "P2", "P3", "P4", "P5", "P6"], ranked):
         engine.set_target(pid, 1, target)
@@ -265,21 +202,18 @@ def test_gain_decreases_with_rank_but_never_reaches_zero():
 def test_target_outside_ranked_list_still_gets_participation_floor():
     """순위표에 없는 대상(예: 통과율 집계가 비어 있는 경우)도 0점이 아니다."""
     engine = PredictionEngine()
-    engine.set_allocation("P1", _default_alloc(80, 10, 10))
     engine.open_round(1, ["A", "B"])
     engine.set_target("P1", 1, "B")
     engine.lock_round(1, seed="seed")
     engine.score_round(1, ["A"])  # B는 순위 목록에 없음
 
-    assert engine.cards["P1"].gain[1] == int(80 * 1.0 * FLOOR_RATIO)
+    assert engine.cards["P1"].gain[1] == int(ROUND_BASE_POINTS * 1.0 * FLOOR_RATIO)
 
 
 def test_minority_bonus_applies_only_to_the_exact_top_pick():
     """소수파 보너스는 1위를 정확히 맞혔을 때만 -- 틀렸는데 아무도 안 골라서
     더 받는 일이 없어야 한다."""
     engine = PredictionEngine()
-    for pid in ["P1", "P2", "P3"]:
-        engine.set_allocation(pid, _default_alloc(80, 10, 10))
     engine.open_round(1, ["A", "B"])
     engine.set_target("P1", 1, "A")  # 소수파(1/3) -- 1위 적중
     engine.set_target("P2", 1, "B")
@@ -287,31 +221,29 @@ def test_minority_bonus_applies_only_to_the_exact_top_pick():
     engine.lock_round(1, seed="seed")
     engine.score_round(1, ["A", "B"])
 
-    # P1: 80 * 1.0 * 1.0 * (1 + (1 - 1/3)) = 133
-    assert engine.cards["P1"].gain[1] == int(80 * 1.0 * (1 + (1 - 1 / 3)))
-    # P2/P3: 보너스 없이 2위 비율만 -- 80 * 0.6 = 48
-    assert engine.cards["P2"].gain[1] == int(80 * RANK_RATIOS[1])
+    # P1: 100 * 1.0 * 1.0 * (1 + (1 - 1/3)) = 166
+    assert engine.cards["P1"].gain[1] == int(ROUND_BASE_POINTS * 1.0 * (1 + (1 - 1 / 3)))
+    # P2/P3: 보너스 없이 2위 비율만 -- 100 * 0.6 = 60
+    assert engine.cards["P2"].gain[1] == int(ROUND_BASE_POINTS * RANK_RATIOS[1])
     assert engine.cards["P3"].gain[1] == engine.cards["P2"].gain[1]
 
 
 def test_bonus_is_neutral_when_no_explicit_choosers():
     engine = PredictionEngine()
-    engine.set_allocation("P1", _default_alloc(20, 30, 50))
     engine.open_round(1, ["개발팀", "영업팀"])
     engine.lock_round(1, seed="seed")  # 아무도 명시적으로 선택하지 않음
-    card = engine.cards["P1"]
+    card = engine.get_or_create_card("P1")
     card.target[1] = "개발팀"  # 강제로 적중 상황을 만들어 보너스 배수만 검증
 
     engine.score_round(1, ["개발팀", "영업팀"])
-    # bonus=1.0이므로 gain = alloc(20) * weight(1.0) * ratio(1.0) = 20
-    assert card.gain[1] == 20
+    # bonus=1.0이므로 gain = ROUND_BASE_POINTS(100) * weight(1.0) * ratio(1.0) = 100
+    assert card.gain[1] == ROUND_BASE_POINTS
 
 
 def test_score_round_is_idempotent_recomputation():
     """같은 입력으로 재계산해도 점수가 중복 가산되지 않아야 한다
     (서버 재시작 후 재계산 시나리오). 성과 점수까지 포함해서 검증한다."""
     engine = PredictionEngine()
-    engine.set_allocation("P1", _default_alloc(20, 30, 50))
     engine.open_round(1, ["개발팀", "영업팀"])
     engine.set_target("P1", 1, "개발팀")
     engine.lock_round(1, seed="seed")
@@ -326,7 +258,7 @@ def test_score_round_is_idempotent_recomputation():
 
 def test_score_never_negative_and_participation_always_pays():
     engine = PredictionEngine()
-    engine.set_allocation("P1", _default_alloc(10, 10, 80))
+    engine.get_or_create_card("P1")
     for r, candidates in [(1, ["A", "B"]), (2, ["A", "B"]), (3, ["X", "Y"])]:
         engine.open_round(r, candidates)
         engine.lock_round(r, seed=f"seed-{r}")  # 항상 미선택 -> 자동배정
@@ -336,29 +268,30 @@ def test_score_never_negative_and_participation_always_pays():
     assert engine.cards["P1"].score > 0
 
 
-def test_round3_all_in_beats_two_early_round_wins():
-    """R3 몰아주기로 앞 두 라운드를 모두 1위로 맞힌 사람을 뒤집을 수 있어야
-    한다(사용자 요청: 마지막 라운드 역전 드라마)."""
+def test_round3_weight_lets_a_late_comeback_beat_an_early_leader():
+    """확신도 배분이 없어져도(2026-08-07 단순화) "막판 역전" 드라마는
+    ROUND_WEIGHTS만으로 그대로 유지돼야 한다 -- 앞 두 라운드를 모두
+    맞힌 사람도, 결선(가중치 3배)을 통째로 놓치고 상대가 결선만 적중하면
+    뒤집힐 수 있어야 한다(사용자 요청: 마지막 라운드 역전 드라마는
+    확신도 없이도 유지)."""
     engine = PredictionEngine()
-    engine.set_allocation("STEADY", {1: 45, 2: 45, 3: 10})
-    engine.set_allocation("ALLIN", {1: MIN_ALLOC, 2: MIN_ALLOC, 3: 80})
 
     for r, candidates in [(1, ["A", "B"]), (2, ["A", "B"])]:
         engine.open_round(r, candidates)
         engine.set_target("STEADY", r, "A")  # 1위 적중
-        engine.set_target("ALLIN", r, "B")  # 최하위
+        engine.set_target("COMEBACK", r, "B")  # 2위(빗나감)
         engine.lock_round(r, seed=f"seed-{r}")
         engine.score_round(r, ["A", "B"])
 
-    assert engine.cards["STEADY"].score > engine.cards["ALLIN"].score  # 여기까지는 STEADY 우세
+    assert engine.cards["STEADY"].score > engine.cards["COMEBACK"].score  # 여기까지는 STEADY 우세
 
     engine.open_round(3, ["X", "Y"])
-    engine.set_target("STEADY", 3, "Y")
-    engine.set_target("ALLIN", 3, "X")  # 결승 1위 적중
+    engine.set_target("STEADY", 3, "Y")  # 2위(빗나감)
+    engine.set_target("COMEBACK", 3, "X")  # 결승 1위 적중
     engine.lock_round(3, seed="seed-3")
     engine.score_round(3, ["X", "Y"])
 
-    assert engine.cards["ALLIN"].score > engine.cards["STEADY"].score
+    assert engine.cards["COMEBACK"].score > engine.cards["STEADY"].score
 
 
 # ---------------------------------------------------------------------------
@@ -426,7 +359,6 @@ def test_engine_to_dict_load_dict_round_trip_preserves_full_state():
     카드·점수·라운드 상태가 완전히 동일해야 한다(재계산 없이 그대로 복원)."""
     engine = PredictionEngine()
     engine.enroll_all({"P1": "A"})
-    engine.set_allocation("P1", _default_alloc(20, 30, 50))
     engine.open_round(1, ["A", "B"])
     engine.set_target("P1", 1, "A")
     engine.lock_round(1, seed="restore-seed")
@@ -448,7 +380,7 @@ def test_engine_to_dict_load_dict_round_trip_preserves_full_state():
 def test_load_dict_restores_in_place_keeping_same_instance():
     """모듈 싱글턴 패턴에서 다른 코드가 들고 있는 참조가 깨지지 않아야 한다."""
     engine = PredictionEngine()
-    engine.set_allocation("P1", _default_alloc())
+    engine.get_or_create_card("P1")
     reference = engine  # 다른 모듈이 들고 있을 법한 참조
 
     snapshot = engine.to_dict()
@@ -463,7 +395,7 @@ def test_load_dict_restores_in_place_keeping_same_instance():
 def test_leaderboard_sorted_descending_with_stable_tiebreak():
     engine = PredictionEngine()
     for pid in ["P3", "P1", "P2"]:
-        engine.set_allocation(pid, _default_alloc())
+        engine.get_or_create_card(pid)
     engine.open_round(1, ["A"])  # 후보가 하나뿐이라 셋 다 동일하게 자동배정되어 동점 처리됨
     engine.lock_round(1, "seed")
     engine.score_round(1, ["A"])
@@ -480,7 +412,7 @@ def test_rank_of_matches_leaderboard_order():
     확인한다. 카드가 없는 참가자는 None."""
     engine = PredictionEngine()
     for pid in ["P3", "P1", "P2"]:
-        engine.set_allocation(pid, _default_alloc())
+        engine.get_or_create_card(pid)
     engine.open_round(1, ["A"])
     engine.lock_round(1, "seed")
     engine.score_round(1, ["A"])

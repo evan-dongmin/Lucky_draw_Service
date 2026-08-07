@@ -42,7 +42,6 @@ async def test_racing_with_predictions_scores_across_all_rounds(monkeypatch):
     main_module.prediction_engine.open_round(1, department_names)
 
     predictor_id = participants[0].id
-    main_module.prediction_engine.set_allocation(predictor_id, {1: 20, 2: 30, 3: 50})
     # 1등 통과율 부서를 실제로 맞히도록 설정(적중 유도)
     top_dept = predictions_top_department(draw, round_index=1)
     main_module.prediction_engine.set_target(predictor_id, 1, top_dept)
@@ -197,7 +196,7 @@ async def test_racing_completes_with_zero_mobile_participation(monkeypatch):
     main_module.predict_tokens.clear()
     department_names = list(draw.snapshot["departments"].keys())
     main_module.prediction_engine.open_round(1, department_names)
-    # 의도적으로 아무도 join/allocate/choose 하지 않음 (cards가 완전히 빈 상태)
+    # 의도적으로 아무도 join/choose 하지 않음 (cards가 완전히 빈 상태)
 
     monkeypatch.setattr(main_module.director, "build_runbook", lambda **kwargs: list(TINY_SEGMENTS))
     monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.01)

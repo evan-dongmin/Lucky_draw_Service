@@ -1,25 +1,28 @@
-"""Prediction Agent: 무손실 예측 게임(확신도 배분 + 순위 차등 채점).
+"""Prediction Agent: 무손실 예측 게임(라운드당 1픽 + 순위 차등 채점).
 
-핵심 설계(기획안 §4 참조):
-- 도박 요소 없음. 참가자는 확신도 100을 3라운드에 배분하고, 적중 시에만
-  점수를 얻는다(틀려도 0점, 마이너스 없음). 잔액 차감·파산 개념이 없다.
-- **순위 차등 채점**(사용자 요청). 예전에는 "정답 집합(R1은 통과율 상위
-  2개 부서, R2는 1위 부서)에 들었나"만 봐서 대다수가 0점이었다. 지금은
-  고른 대상이 통과율 순위에서 몇 등이었는지에 따라 배점의 일정 비율을
-  받는다 -- 1위 100%, 2위 60%, ... 그 아래는 최소 5%(참여 보상). 빗나가도
-  0점이 아니므로 첫 라운드에 어긋난 참가자가 폰을 내려놓지 않는다.
-  RANK_RATIOS/FLOOR_RATIO만 고치면 곡선 전체를 조절할 수 있다.
+핵심 설계(기획안 §4 참조, 2026-08-07 단순화 -- 사용자 피드백):
+- 도박 요소 없음. 참가자는 라운드마다 승리 예측 대상을 하나씩 고르고,
+  적중 시에만 점수를 얻는다(틀려도 0점, 마이너스 없음).
+- **예전엔 확신도 100점을 3라운드에 참가자가 직접 배분해야 했다.**
+  "누구를 고를지"와 "얼마를 걸지"를 동시에 판단해야 해서, 선택 창이
+  짧게 열리는 라이브 이벤트에는 불필요한 마찰이었다(사용자 피드백).
+  지금은 라운드마다 **누구를 고를지만** 정하면 되고, 각 라운드는 항상
+  동일한 배점(ROUND_BASE_POINTS)을 걸고 겨룬다 -- 월드컵 예측 게임처럼
+  누구나 바로 이해하는 방식.
+- **막판 역전 드라마는 확신도 없이도 그대로 유지된다.** ROUND_WEIGHTS가
+  이미 결선(R3)에 3배 가중치를 주므로, 개인이 확신도를 몰아주지 않아도
+  R3 하나로 순위가 크게 뒤집히는 구조는 동일하다.
+- **순위 차등 채점**(사용자 요청). 고른 대상이 그 라운드 결과 순위에서
+  몇 등이었는지에 따라 배점의 일정 비율을 받는다 -- 1위 100%, 2위 60%,
+  ... 그 아래는 최소 5%(참여 보상). 빗나가도 0점이 아니므로 첫 라운드에
+  어긋난 참가자가 폰을 내려놓지 않는다. RANK_RATIOS/FLOOR_RATIO만 고치면
+  곡선 전체를 조절할 수 있다.
 - **소수파 보너스는 1위를 정확히 맞힌 경우에만** 붙는다. 차등 구간까지
   보너스를 주면 "틀렸는데 아무도 안 골라서 더 받는" 이상한 결과가 나온다.
 - **성과 점수**: 예측과 별개로, 그 라운드를 통과한 개인과 통과율 상위
-  부서 소속 통과자에게 점수를 얹는다(갬블링 모드에 있던 보상 체계를 예측
-  점수 단위로 옮겨온 것). 이게 팀 대항전의 실체다 -- 우리 부서가 많이
-  살아남을수록 부서원 전체 점수가 오르고, 그게 곧 경품 확률이 된다.
-- 확신도 배분(alloc)은 해당 라운드가 잠기기 전까지 언제든 재배분 가능.
-  R1·R2에는 최소 배점(MIN_ALLOC)이 걸려 있어 초반을 통째로 버릴 수 없지만,
-  **R3에는 하한이 없어 나머지를 전부 몰아줄 수 있다**(최대 80). R3는 배점
-  가중치도 가장 높아서(ROUND_WEIGHTS), 앞 라운드를 망쳐도 마지막에
-  몰아주기로 역전할 수 있는 구조다.
+  부서 소속 통과자에게 점수를 얹는다. 이게 팀 대항전의 실체다 -- 우리
+  부서가 많이 살아남을수록 부서원 전체 점수가 오르고, 그게 곧 경품
+  확률이 된다.
 - 예측 대상(target)은 "해당 라운드의 선택 창이 열린 동안만" 설정 가능하다.
   미리 걸어두고 잊는 경로를 만들지 않기 위해서다.
 - 선택 시간 내 미선택 시 자동 배정한다(0점 처리하지 않음). R1·R2는
@@ -38,11 +41,14 @@ import hmac
 from dataclasses import dataclass, field
 from typing import Any
 
-MIN_ALLOC = 10  # R1·R2에만 적용된다(R3는 하한 없음 -- 몰아주기 허용)
-TOTAL_ALLOC = 100
-MIN_ALLOC_ROUNDS = (1, 2)
 ROUND_WEIGHTS = {1: 1.0, 2: 1.5, 3: 3.0}
 ROUNDS = (1, 2, 3)
+DEPARTMENT_ROUNDS = (1, 2)  # 대상이 부서인 라운드(R3는 결선 진출자 개인)
+
+# 라운드마다 동일하게 걸리는 배점(예전 확신도 100점 배분의 자리를
+# 대신한다 -- 개인이 나눠 걸지 않고, 라운드마다 이 값을 그대로 놓고
+# 겨룬다). ROUND_WEIGHTS와 곱해져 최종 배점이 된다.
+ROUND_BASE_POINTS = 100
 
 # 순위별 지급 비율(1위부터). 리스트 길이를 넘는 순위는 FLOOR_RATIO를 받는다.
 # 1위를 맞히는 것과 대충 찍는 것 사이에 20배 격차를 둬서, 참여 보상을
@@ -50,9 +56,9 @@ ROUNDS = (1, 2, 3)
 RANK_RATIOS = [1.0, 0.6, 0.35, 0.2, 0.1]
 FLOOR_RATIO = 0.05  # "참여만 해도 들어오는" 최소 보상
 
-# 성과 점수(예측 적중 여부와 무관하게 쌓인다). 확신도 33을 R1에 걸어
-# 1위를 맞혔을 때가 약 33~66점이므로, 팀 1위 20점은 "무시 못 하지만
-# 예측을 대체하지도 않는" 크기다.
+# 성과 점수(예측 적중 여부와 무관하게 쌓인다). R1을 1위로 맞히면
+# 100점(ROUND_BASE_POINTS x ROUND_WEIGHTS[1])이므로, 팀 1위 20점은
+# "무시 못 하지만 예측을 대체하지도 않는" 크기다.
 FINISH_POINTS = 8  # 그 라운드 통과선을 넘은 개인 전원
 TEAM_RANK_POINTS = [20, 14, 8]  # 통과율 1~3위 부서 소속 통과자(4위 이하 0)
 FINAL_WIN_POINTS = 60  # 결선(R3) 최종 당첨자
@@ -91,7 +97,6 @@ def rank_ratio(rank: int | None) -> float:
 @dataclass
 class PredictionCard:
     participant_id: str
-    alloc: dict[int, int] = field(default_factory=lambda: {1: 34, 2: 33, 3: 33})
     target: dict[int, str | None] = field(default_factory=lambda: {1: None, 2: None, 3: None})
     is_auto: dict[int, bool] = field(default_factory=lambda: {1: False, 2: False, 3: False})
     locked: dict[int, bool] = field(default_factory=lambda: {1: False, 2: False, 3: False})
@@ -107,7 +112,6 @@ class PredictionCard:
     def to_dict(self) -> dict[str, Any]:
         return {
             "participant_id": self.participant_id,
-            "alloc": dict(self.alloc),
             "target": dict(self.target),
             "is_auto": dict(self.is_auto),
             "locked": dict(self.locked),
@@ -149,23 +153,6 @@ class PredictionEngine:
         self.department_by_pid = dict(department_by_pid)
         for pid in department_by_pid:
             self.get_or_create_card(pid)
-
-    def set_allocation(self, participant_id: str, alloc: dict[int, int]) -> PredictionCard:
-        card = self.get_or_create_card(participant_id)
-        if set(alloc.keys()) != set(ROUNDS):
-            raise PredictionError("확신도는 1·2·3라운드 모두 지정해야 합니다")
-        for r in ROUNDS:
-            if card.locked[r] and alloc[r] != card.alloc[r]:
-                raise PredictionError(f"{r}라운드는 이미 잠겨 확신도를 바꿀 수 없습니다")
-        for r in MIN_ALLOC_ROUNDS:
-            if alloc[r] < MIN_ALLOC:
-                raise PredictionError(f"{r}라운드 확신도는 최소 {MIN_ALLOC} 이상이어야 합니다")
-        if alloc[3] < 0:
-            raise PredictionError("3라운드 확신도는 0 이상이어야 합니다")
-        if sum(alloc.values()) != TOTAL_ALLOC:
-            raise PredictionError(f"확신도 합계는 {TOTAL_ALLOC}이어야 합니다")
-        card.alloc = dict(alloc)
-        return card
 
     # -- 라운드 창 관리 ---------------------------------------------------
 
@@ -215,7 +202,7 @@ class PredictionEngine:
         등) 시드 파생 무작위로 폴백한다. R3는 대상이 결선 진출자 개인이라
         "자기 팀"에 해당하는 것이 없으므로 항상 시드 파생 무작위다."""
         candidates = self.round_candidates[round_index]
-        if round_index in MIN_ALLOC_ROUNDS:
+        if round_index in DEPARTMENT_ROUNDS:
             own = self.department_by_pid.get(card.participant_id)
             if own in candidates:
                 return own
@@ -290,7 +277,7 @@ class PredictionEngine:
             if target is not None:
                 rank = rank_of.get(target)
                 ratio = rank_ratio(rank) if rank is not None else FLOOR_RATIO
-                base = card.alloc[round_index] * weight * ratio
+                base = ROUND_BASE_POINTS * weight * ratio
                 # 소수파 보너스는 "1위를 정확히 맞혔을 때"만 -- 아무도 안 고른
                 # 대상이 1위가 되면 최대 2배까지 간다(막판 뒤집기의 연료).
                 if rank == 1 and share:
@@ -358,7 +345,6 @@ class PredictionEngine:
         self.reset()
         for pid, card_data in data.get("cards", {}).items():
             card = PredictionCard(participant_id=pid)
-            card.alloc = {int(k): v for k, v in card_data["alloc"].items()}
             card.target = {int(k): v for k, v in card_data["target"].items()}
             card.is_auto = {int(k): v for k, v in card_data["is_auto"].items()}
             card.locked = {int(k): v for k, v in card_data["locked"].items()}

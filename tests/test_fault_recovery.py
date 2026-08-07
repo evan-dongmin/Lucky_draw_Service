@@ -39,7 +39,6 @@ def test_session_snapshot_survives_process_restart(tmp_path):
 
 def test_prediction_snapshot_survives_process_restart():
     engine_before = PredictionEngine()
-    engine_before.set_allocation("P1", {1: 20, 2: 30, 3: 50})
     engine_before.open_round(1, ["개발팀", "영업팀"])
     engine_before.set_target("P1", 1, "개발팀")
     engine_before.lock_round(1, seed="restart-pred-seed")
@@ -64,7 +63,8 @@ def test_main_module_save_and_load_prediction_snapshot_round_trip(tmp_path, monk
 
     main_module.prediction_engine.reset()
     main_module.predict_tokens.clear()
-    main_module.prediction_engine.set_allocation("P1", {1: 10, 2: 10, 3: 80})
+    main_module.prediction_engine.open_round(1, ["개발팀", "영업팀"])
+    main_module.prediction_engine.set_target("P1", 1, "개발팀")
     main_module.predict_tokens["tok-1"] = "P1"
 
     main_module.save_prediction_snapshot()
@@ -76,7 +76,7 @@ def test_main_module_save_and_load_prediction_snapshot_round_trip(tmp_path, monk
 
     main_module.load_prediction_snapshot()
 
-    assert main_module.prediction_engine.cards["P1"].alloc == {1: 10, 2: 10, 3: 80}
+    assert main_module.prediction_engine.cards["P1"].target[1] == "개발팀"
     assert main_module.predict_tokens["tok-1"] == "P1"
 
     # 정리

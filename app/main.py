@@ -963,23 +963,6 @@ async def predict_live() -> dict[str, Any]:
     return {"rounds": {str(r): _live_stats(r) for r in open_rounds}}
 
 
-class PredictAllocateRequest(BaseModel):
-    token: str
-    alloc: dict[int, int]
-
-
-@app.post("/api/predict/allocate")
-async def predict_allocate(payload: PredictAllocateRequest) -> dict[str, Any]:
-    _require_session()
-    pid = _resolve_pid_from_token(payload.token)
-    try:
-        card = prediction_engine.set_allocation(pid, payload.alloc)
-    except predictions.PredictionError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    save_prediction_snapshot()
-    return card.to_dict()
-
-
 class PredictChooseRequest(BaseModel):
     token: str
     round: int
@@ -998,21 +981,10 @@ async def predict_choose(payload: PredictChooseRequest) -> dict[str, Any]:
     return card.to_dict()
 
 
-def _random_valid_alloc() -> dict[int, int]:
-    """확신도 100을 3라운드에 무작위로 배분(각 최소 10) -- 데모 봇 전용."""
-    remaining = predictions.TOTAL_ALLOC - predictions.MIN_ALLOC * 3  # 자유롭게 분배할 나머지
-    cut1 = random.randint(0, remaining)
-    cut2 = random.randint(0, remaining)
-    lo, hi = sorted([cut1, cut2])
-    extra = [lo, hi - lo, remaining - hi]
-    return {1: predictions.MIN_ALLOC + extra[0], 2: predictions.MIN_ALLOC + extra[1], 3: predictions.MIN_ALLOC + extra[2]}
-
-
 def _bot_play_open_rounds(participant_id: str) -> None:
     """데모 봇 한 명이 현재 열려 있는 라운드(들)에 참여한다 -- 무작위
-    확신도 배분 + 무작위 대상 선택."""
+    대상 선택."""
     card = prediction_engine.get_or_create_card(participant_id)
-    card.alloc = _random_valid_alloc()
     for round_index, state in prediction_engine.round_state.items():
         if state == "open" and not card.locked[round_index]:
             candidates = prediction_engine.round_candidates[round_index]

@@ -42,7 +42,7 @@ def test_join_creates_token_and_default_card(client):
     body = resp.json()
     assert body["participant_id"] == pid
     assert body["token"]
-    assert sum(body["card"]["alloc"].values()) == 100
+    assert body["card"]["target"] == {"1": None, "2": None, "3": None}
 
 
 def test_join_rejects_unknown_participant(client):
@@ -68,27 +68,6 @@ def test_join_with_existing_token_restores_session(client):
     ).json()
     assert second["token"] == first["token"]
     assert second["participant_id"] == pid
-
-
-def test_allocate_and_me_roundtrip(client):
-    session = _create_prediction_session(client)
-    pid = session["participants"][0]["id"]
-    token = client.post("/api/predict/join", json={"participant_id": pid}).json()["token"]
-
-    resp = client.post("/api/predict/allocate", json={"token": token, "alloc": {1: 20, 2: 30, 3: 50}})
-    assert resp.status_code == 200
-    assert resp.json()["alloc"] == {"1": 20, "2": 30, "3": 50}
-
-    me = client.get("/api/predict/me", params={"token": token}).json()
-    assert me["card"]["alloc"] == {"1": 20, "2": 30, "3": 50}
-
-
-def test_allocate_rejects_invalid_total(client):
-    session = _create_prediction_session(client)
-    pid = session["participants"][0]["id"]
-    token = client.post("/api/predict/join", json={"participant_id": pid}).json()["token"]
-    resp = client.post("/api/predict/allocate", json={"token": token, "alloc": {1: 50, 2: 40, 3: 40}})
-    assert resp.status_code == 400
 
 
 def test_choose_requires_open_window(client):
@@ -157,14 +136,13 @@ def test_bots_fill_does_not_overwrite_already_joined_participant(client):
     session = _create_prediction_session(client, count=15)
     pid = session["participants"][0]["id"]
     token = client.post("/api/predict/join", json={"participant_id": pid}).json()["token"]
-    client.post("/api/predict/allocate", json={"token": token, "alloc": {1: 20, 2: 30, 3: 50}})
 
     resp = client.post("/api/predict/bots/fill")
     assert resp.status_code == 200
     assert resp.json()["filled"] == 14  # 이미 참여한 1명은 제외
 
     me = client.get("/api/predict/me", params={"token": token}).json()
-    assert me["card"]["alloc"] == {"1": 20, "2": 30, "3": 50}  # 덮어쓰이지 않음
+    assert me["card"]["participant_id"] == pid  # 토큰이 그대로 같은 참가자를 가리킴(재발급/중복 없음)
 
 
 def test_bots_fill_chooses_targets_when_round_open(client):
