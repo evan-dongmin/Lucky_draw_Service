@@ -326,6 +326,19 @@ class PredictionEngine:
         ordered = sorted(self.cards.values(), key=lambda c: (-c.score, c.participant_id))
         return ordered[:top_n]
 
+    def rank_of(self, participant_id: str) -> int | None:
+        """participant_id의 현재 포인트(점수) 순위(1-based). leaderboard()와
+        동일한 정렬 규칙(점수 내림차순, 동점은 id 오름차순)을 써서 상위 N에
+        안 걸린 사람도 정확한 순위를 알 수 있다(사용자 요청: 모바일에서
+        "내 포인트 순위" 표시). 카드가 없으면 None."""
+        if participant_id not in self.cards:
+            return None
+        ordered = sorted(self.cards.values(), key=lambda c: (-c.score, c.participant_id))
+        for idx, card in enumerate(ordered, start=1):
+            if card.participant_id == participant_id:
+                return idx
+        return None
+
     # -- 영속화(장애 복구용) ---------------------------------------------
 
     def to_dict(self) -> dict[str, Any]:

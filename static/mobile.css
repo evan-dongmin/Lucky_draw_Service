@@ -104,6 +104,50 @@ h2 {
   margin-bottom: 1rem;
 }
 
+.race-status-panel h2 {
+  margin: 0 0 0.5rem;
+  font-size: 1rem;
+}
+
+.race-status-line {
+  margin: 0.25rem 0;
+  font-size: 0.95rem;
+}
+
+.race-status-line.race-status-passed {
+  color: #7cf29c;
+  font-weight: 700;
+}
+
+.race-status-line.race-status-pending {
+  color: #ffd166;
+}
+
+.race-progress-wrap {
+  margin: 0.4rem 0 0.6rem;
+}
+
+.race-progress-track {
+  background: #0b0e14;
+  border: 1px solid #2a3242;
+  border-radius: 999px;
+  height: 0.6rem;
+  overflow: hidden;
+}
+
+.race-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4f8cff, #7cf29c);
+  border-radius: 999px;
+  transition: width 0.4s ease;
+}
+
+.race-progress-label {
+  margin: 0.25rem 0 0;
+  font-size: 0.8rem;
+  color: #8b95a5;
+}
+
 .pred-card {
   background: #171c26;
   border: 1px solid #2a3242;

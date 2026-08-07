@@ -472,3 +472,20 @@ def test_leaderboard_sorted_descending_with_stable_tiebreak():
     scores = {c.participant_id: c.score for c in top}
     assert len(set(scores.values())) == 1  # 셋 다 동점
     assert [c.participant_id for c in top] == ["P1", "P2", "P3"]  # 동점자는 id 오름차순
+
+
+def test_rank_of_matches_leaderboard_order():
+    """모바일 "포인트 순위" 표시용 rank_of()가 leaderboard()와 같은 정렬
+    규칙(점수 내림차순, 동점은 id 오름차순)으로 1-based 순위를 돌려주는지
+    확인한다. 카드가 없는 참가자는 None."""
+    engine = PredictionEngine()
+    for pid in ["P3", "P1", "P2"]:
+        engine.set_allocation(pid, _default_alloc())
+    engine.open_round(1, ["A"])
+    engine.lock_round(1, "seed")
+    engine.score_round(1, ["A"])
+
+    assert engine.rank_of("P1") == 1
+    assert engine.rank_of("P2") == 2
+    assert engine.rank_of("P3") == 3
+    assert engine.rank_of("no-such-participant") is None

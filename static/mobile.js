@@ -11,6 +11,14 @@ const onboardingErrorEl = document.getElementById("onboarding-error");
 const gameViewEl = document.getElementById("game-view");
 const myNameEl = document.getElementById("my-name");
 const myScoreEl = document.getElementById("my-score");
+const raceStatusPanelEl = document.getElementById("race-status-panel");
+const raceStatusRankEl = document.getElementById("race-status-rank");
+const raceStatusPassEl = document.getElementById("race-status-pass");
+const raceStatusProgressWrapEl = document.getElementById("race-status-progress-wrap");
+const raceStatusProgressBarEl = document.getElementById("race-status-progress-bar");
+const raceStatusProgressLabelEl = document.getElementById("race-status-progress-label");
+const raceStatusDepartmentEl = document.getElementById("race-status-department");
+const raceStatusPointEl = document.getElementById("race-status-point");
 const myCharacterDisplayEl = document.getElementById("my-character-display");
 const cardsEl = document.getElementById("cards");
 const predictionsOffNoteEl = document.getElementById("predictions-off-note");
@@ -33,6 +41,7 @@ let myParticipantId = null;
 let myName = "";
 let myCharacterId = null;
 let liveRefreshTimer = null;
+let currentPhase = null; // 서버 phase WS 메시지의 phase 문자열(예: "race_r1") -- 레이스 중인지 판단용
 
 function showOnboarding() {
   onboardingViewEl.classList.remove("hidden");
@@ -363,8 +372,49 @@ async function chooseTarget(round, target) {
 // 공용 렌더/새로고침
 // ---------------------------------------------------------------------------
 
+// 레이스 진행 중 "내 카트 현황"(등수/통과 여부/통과선까지 진행률) +
+// 우리 팀 순위 + 포인트 순위를 그린다(사용자 요청). 서버가 250명 전체
+// 위치를 모바일에 뿌리지 않는다는 원칙은 그대로라, /api/predict/me가
+// 폴링 시점에 이 참가자 한 명분만 계산해 내려준 값을 그대로 표시할
+// 뿐이다(app/main.py의 _my_race_status/_my_department_rank 참고).
+function renderRaceStatus(me) {
+  const rs = me.race_status;
+  const dept = me.department_rank;
+  const hasPoint = me.point_rank != null;
+  if (!rs && !dept && !hasPoint) {
+    raceStatusPanelEl.classList.add("hidden");
+    return;
+  }
+  raceStatusPanelEl.classList.remove("hidden");
+
+  if (rs) {
+    raceStatusRankEl.textContent = `내 카트 등수: ${rs.rank}위 / ${rs.total}명 (${ROUND_LABELS[rs.round] || `R${rs.round}`})`;
+    if (rs.passed) {
+      raceStatusPassEl.textContent = "✅ 통과선 통과!";
+      raceStatusPassEl.className = "race-status-line race-status-passed";
+      raceStatusProgressWrapEl.classList.add("hidden");
+    } else {
+      raceStatusPassEl.textContent = "⏳ 진행 중";
+      raceStatusPassEl.className = "race-status-line race-status-pending";
+      raceStatusProgressWrapEl.classList.remove("hidden");
+      raceStatusProgressBarEl.style.width = `${rs.progress_to_pass_pct}%`;
+      raceStatusProgressLabelEl.textContent = `통과선까지 ${rs.progress_to_pass_pct}% 진행`;
+    }
+  } else {
+    raceStatusRankEl.textContent = "";
+    raceStatusPassEl.textContent = "";
+    raceStatusProgressWrapEl.classList.add("hidden");
+  }
+
+  raceStatusDepartmentEl.textContent = dept
+    ? `우리 팀(${dept.department}) 순위: ${dept.rank}위 / ${dept.total} (통과율 ${Math.round(dept.rate * 100)}%)`
+    : "";
+  raceStatusPointEl.textContent = hasPoint ? `포인트 순위: ${me.point_rank}위 / ${me.point_total}명` : "";
+}
+
 function renderMe(me) {
   myNameEl.textContent = myName || me.participant_id || (me.card && me.card.participant_id) || "";
+  renderRaceStatus(me);
 
   if (!me.predictions_enabled) {
     myScoreEl.textContent = "";
@@ -408,10 +458,16 @@ function anyRoundOpen(me) {
   return Object.values(me.round_state).some((s) => s === "open");
 }
 
+// 레이스가 실제로 달리는 동안(phase가 "race_r1"/"race_r2"/"race_r3")에도
+// "내 카트 등수" 카드가 실시간처럼 보이도록 같은 폴링을 켠다(사용자 요청).
+function isRacingPhase() {
+  return typeof currentPhase === "string" && currentPhase.startsWith("race_");
+}
+
 function updateLiveRefreshTimer(me) {
-  const shouldPoll = anyRoundOpen(me);
+  const shouldPoll = anyRoundOpen(me) || isRacingPhase();
   if (shouldPoll && !liveRefreshTimer) {
-    liveRefreshTimer = setInterval(refreshMe, 2500);
+    liveRefreshTimer = setInterval(refreshMe, 2000);
   } else if (!shouldPoll && liveRefreshTimer) {
     clearInterval(liveRefreshTimer);
     liveRefreshTimer = null;
@@ -473,6 +529,10 @@ const ws = connectWS((data) => {
     // 되돌린다 -- 안 그러면 화면이 리셋 전 점수/예측카드를 계속 보여준다.
     resetToOnboarding();
     return;
+  }
+  if (data.type === "phase") {
+    // race_r1/race_r2/race_r3 등 -- "내 카트 등수" 폴링을 켤지 여기서 판단한다.
+    currentPhase = data.phase;
   }
   if (["phase", "prediction_window", "round_revealed", "prediction_result"].includes(data.type)) {
     refreshMe();

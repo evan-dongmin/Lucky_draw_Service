@@ -84,6 +84,65 @@ def predictions_top_department(draw, round_index: int) -> str:
 
 
 @pytest.mark.asyncio
+async def test_mobile_race_status_helpers_after_race(monkeypatch):
+    """모바일 "내 카트 현황" 계산(_my_race_status/_my_department_rank/
+    rank_of)이 실제 레이스 진행 후 합리적인 값을 돌려주는지 확인한다.
+    latest_race_tick 캐시는 R3의 마지막 틱(ratio=1.0)을 담고 있어야 하고,
+    R3는 부서 표시가 없다는 기존 규칙(_department_denom_sets)도 그대로
+    지켜져야 한다."""
+    participants = generate_sample_participants(40, seed=9)
+    draw = fairness.compute_draw("mobile-status", participants, draw_count=3, seed="mobile-status-seed")
+    session = Session(
+        session_id="mobile-status",
+        participants=participants,
+        draw_count=3,
+        mode="racing",
+        total_seconds=300.0,
+        predictions_enabled=True,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    session.draws.append(draw)
+    main_module.store.set_session(session)
+    main_module.prediction_engine.reset()
+    main_module.predict_tokens.clear()
+    main_module.latest_race_tick = None
+
+    department_names = list(draw.snapshot["departments"].keys())
+    # 실제 서비스에서는 commit 흐름(_open_round_1)이 enroll_all을 호출해
+    # 명단 전원에게 카드를 만든다 -- 여기서도 같은 순서로 재현해야
+    # rank_of()가 참가자 카드를 찾을 수 있다.
+    main_module.prediction_engine.enroll_all(main_module._department_by_pid(draw))
+    main_module.prediction_engine.open_round(1, department_names)
+
+    monkeypatch.setattr(main_module.director, "build_runbook", lambda **kwargs: list(TINY_SEGMENTS))
+    monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.01)
+
+    async def fake_broadcast(message, sender=None, roles=None):
+        pass
+
+    monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
+
+    await main_module.run_racing_sequence("mobile-status", 0, 300.0)
+
+    assert main_module.latest_race_tick is not None
+    assert main_module.latest_race_tick["round"] == 3
+
+    pid = draw.round_pass_ids[3][0]  # 결선까지 살아남은 참가자 한 명
+    status = main_module._my_race_status(pid)
+    assert status is not None
+    assert status["round"] == 3
+    assert 1 <= status["rank"] <= status["total"]
+    assert isinstance(status["passed"], bool)
+    assert 0 <= status["progress_to_pass_pct"] <= 100
+
+    assert main_module._my_race_status("no-such-participant") is None
+    assert main_module._my_department_rank(pid) is None  # R3는 부서 표시가 없음
+
+    rank = main_module.prediction_engine.rank_of(pid)
+    assert rank is not None and rank >= 1
+
+
+@pytest.mark.asyncio
 async def test_predictions_disabled_produces_no_prediction_events(monkeypatch):
     """가산성 검증: 예측 게임이 꺼져 있으면 prediction_* 이벤트가 전혀 없어야 한다."""
     participants = generate_sample_participants(30, seed=4)

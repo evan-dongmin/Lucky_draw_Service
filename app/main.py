@@ -112,6 +112,13 @@ character_choices: dict[str, str] = {}  # participant_id -> character_id (선택
 prediction_snapshot_path = PREDICTION_SNAPSHOT_PATH
 character_snapshot_path = CHARACTER_SNAPSHOT_PATH
 
+# 최신 race_tick 스냅샷(라운드/진행률/통과선/위치/부서 실시간 통과율) 1개만
+# 들고 있는다. race_tick 자체는 위치 데이터가 커서 Stage 전용으로만
+# 브로드캐스트하지만(_run_race_phase 참고), 모바일은 "내 카트 등수 하나"만
+# 필요하므로 굳이 250명에게 매 틱 뿌리는 대신 이 캐시에서 폴링 시점에
+# 딱 한 명분만 계산해 돌려준다(app/main.py의 _my_race_status 참고).
+latest_race_tick: dict[str, Any] | None = None
+
 
 def save_prediction_snapshot() -> None:
     """예측 게임 상태를 디스크에 저장한다. Session과 마찬가지로
@@ -270,9 +277,11 @@ class CreateSessionRequest(BaseModel):
 def _reset_prediction_state() -> None:
     """새 세션·재추첨·초기화 시 예측 엔진과 캐릭터 선택, 스냅샷 파일을 모두
     정리한다. 하나라도 남으면 다음 세션에 낡은 점수/신원이 새어 들어간다."""
+    global latest_race_tick
     prediction_engine.reset()
     predict_tokens.clear()
     character_choices.clear()
+    latest_race_tick = None
     if prediction_snapshot_path.exists():
         prediction_snapshot_path.unlink()
     if character_snapshot_path.exists():
@@ -492,6 +501,10 @@ async def _run_race_phase(
             payload["department_live_rate"] = race.department_live_rates(positions, denom_sets, line)
         # race_tick은 위치 데이터 용량이 크므로 Stage 화면에만 전송한다
         # (모바일 250대에 프레임 데이터를 뿌리지 않는다는 원칙, 기획안 §4.7).
+        # 대신 최신 틱 하나만 캐시해 두면, 모바일은 폴링 시점에 자기 한
+        # 명분만 계산해서 받아갈 수 있다(_my_race_status).
+        global latest_race_tick
+        latest_race_tick = payload
         await hub.broadcast(payload, roles={"stage"})
         if ratio >= 1.0:
             break
@@ -872,6 +885,51 @@ def _live_stats(round_index: int) -> dict[str, Any]:
     return {"round": round_index, "distribution": prediction_engine.live_distribution(round_index)}
 
 
+def _my_race_status(pid: str) -> dict[str, Any] | None:
+    """모바일 "내 카트 현황" 카드용. latest_race_tick 캐시에서 이 참가자
+    한 명분의 등수·통과 여부·통과선까지 진행률만 뽑아 계산한다(모바일에
+    위치 데이터 자체를 뿌리지 않는다는 원칙은 그대로 유지 -- 사용자
+    요청으로 "내 등수/통과 여부"만 폴링으로 노출).
+
+    이번 라운드 생존자가 아니면(이전 라운드 탈락) positions에 없으므로
+    None을 돌려준다 -- 프런트가 "이번 라운드는 참가 대상이 아님"으로
+    구분해서 보여준다."""
+    if latest_race_tick is None:
+        return None
+    positions: dict[str, float] = latest_race_tick["positions"]
+    if pid not in positions:
+        return None
+    pos = positions[pid]
+    pass_line = latest_race_tick["pass_line"]
+    ranked = sorted(positions.items(), key=lambda kv: -kv[1])
+    rank = next((i + 1 for i, (candidate, _) in enumerate(ranked) if candidate == pid), None)
+    passed = pos >= pass_line
+    progress_to_pass_pct = 100.0 if passed or pass_line <= 0 else min(100.0, max(0.0, pos / pass_line * 100))
+    return {
+        "round": latest_race_tick["round"],
+        "rank": rank,
+        "total": len(positions),
+        "passed": passed,
+        "progress_to_pass_pct": round(progress_to_pass_pct, 1),
+    }
+
+
+def _my_department_rank(pid: str) -> dict[str, Any] | None:
+    """모바일 "우리 팀 순위"용. latest_race_tick에 실시간 부서 통과율이
+    실려 있을 때만(R1·R2 -- R3는 부서 표시가 없다) 계산한다."""
+    if latest_race_tick is None:
+        return None
+    rates: dict[str, float] | None = latest_race_tick.get("department_live_rate")
+    if not rates:
+        return None
+    dept = prediction_engine.department_by_pid.get(pid)
+    if dept is None or dept not in rates:
+        return None
+    ranked = predictions.rank_targets_by_rate(rates)
+    rank = ranked.index(dept) + 1
+    return {"department": dept, "rank": rank, "total": len(rates), "rate": rates[dept]}
+
+
 @app.get("/api/predict/me")
 async def predict_me(token: str) -> dict[str, Any]:
     session = _require_session()
@@ -888,6 +946,10 @@ async def predict_me(token: str) -> dict[str, Any]:
         "round_state": prediction_engine.round_state,
         "round_candidates": prediction_engine.round_candidates,
         "live": {str(r): _live_stats(r) for r in open_rounds},
+        "race_status": _my_race_status(pid),
+        "department_rank": _my_department_rank(pid),
+        "point_rank": prediction_engine.rank_of(pid),
+        "point_total": len(prediction_engine.cards),
     }
 
 
