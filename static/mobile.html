@@ -11,6 +11,30 @@
   <main id="mobile-root">
     <h1>🎯 예측 게임</h1>
 
+    <!-- 게임 소개: 폰으로 처음 들어온 사람이 "뭘 하는 건지"를 먼저 알아야
+         한다(사용자 요청). 온보딩 위에 접이식으로 두고, 참여를 마친 뒤에는
+         게임 화면 상단에서 언제든 다시 펼쳐볼 수 있게 같은 내용을 재사용한다. -->
+    <details id="intro-box" class="intro-box" open>
+      <summary class="intro-summary">📖 어떤 게임인가요? (30초 설명)</summary>
+      <div class="intro-content">
+        <p class="intro-lead">
+          <b>3라운드 서바이벌 카트 레이스</b>입니다. 라운드마다 하위권 카트가
+          탈락하고, 여러분은 <b>어느 팀/카트가 잘할지 예측</b>해 점수를 모읍니다.
+        </p>
+        <ol class="intro-steps-m">
+          <li><b>부서·이름 선택</b> — 내가 누구인지 알려주세요</li>
+          <li><b>내 카트 선택</b> — 카트마다 <b>예측 점수 특성</b>이 다릅니다</li>
+          <li><b>라운드마다 우승 예측</b> — 라운드 시작 전에 하나만 고르면 끝</li>
+        </ol>
+        <ul class="intro-notes">
+          <li>🎯 <b>빗나가도 0점이 아닙니다</b> — 참여 점수가 항상 들어옵니다</li>
+          <li>🏁 내 카트가 <b>결승선을 통과</b>하거나 <b>우리 팀 순위가 높으면</b> 추가 점수</li>
+          <li>🏆 <b>최종 점수 상위권이 실제 경품 당첨자</b>입니다 (결선 배점이 3배라 끝까지 뒤집힙니다)</li>
+          <li>🔒 레이스 결과는 시작 전에 이미 봉인돼 있어 아무도 조작할 수 없습니다</li>
+        </ul>
+      </div>
+    </details>
+
     <section id="onboarding-view" class="panel">
       <div id="onboarding-step-department">
         <h2>1. 부서를 선택하세요</h2>
@@ -56,6 +80,12 @@
       </div>
 
       <div id="cards"></div>
+
+      <div id="score-summary-panel" class="panel score-summary-panel hidden">
+        <h2>내 점수 내역</h2>
+        <div id="score-summary-body"></div>
+      </div>
+
       <p id="predictions-off-note" class="hint-line hidden">
         이번 세션은 예측 게임이 없습니다 -- 카트만 골라주시면 됩니다!
       </p>

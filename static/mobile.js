@@ -21,6 +21,8 @@ const raceStatusDepartmentEl = document.getElementById("race-status-department")
 const raceStatusPointEl = document.getElementById("race-status-point");
 const myCharacterDisplayEl = document.getElementById("my-character-display");
 const cardsEl = document.getElementById("cards");
+const scoreSummaryPanelEl = document.getElementById("score-summary-panel");
+const scoreSummaryBodyEl = document.getElementById("score-summary-body");
 const predictionsOffNoteEl = document.getElementById("predictions-off-note");
 const leaderboardPanelEl = document.getElementById("leaderboard-panel");
 const leaderboardTitleEl = document.getElementById("leaderboard-title");
@@ -28,6 +30,7 @@ const leaderboardListEl = document.getElementById("leaderboard-list");
 const characterOverlayEl = document.getElementById("character-overlay");
 const characterOverlayListEl = document.getElementById("character-overlay-list");
 const cheerButtonsEl = document.getElementById("cheer-buttons");
+const introBoxEl = document.getElementById("intro-box");
 
 const CHEER_EMOJI = ["🔥", "👏", "🎉", "💪", "😱", "⚡", "❤️", "😂"]; // app/main.py CHEER_EMOJI_ALLOWLIST와 반드시 일치시킬 것
 
@@ -46,11 +49,16 @@ let currentPhase = null; // 서버 phase WS 메시지의 phase 문자열(예: "r
 function showOnboarding() {
   onboardingViewEl.classList.remove("hidden");
   gameViewEl.classList.add("hidden");
+  // 아직 참여 전이면 설명이 펼쳐져 있는 게 맞다.
+  if (introBoxEl) introBoxEl.open = true;
 }
 
 function showGame() {
   onboardingViewEl.classList.add("hidden");
   gameViewEl.classList.remove("hidden");
+  // 참여를 마쳤으면 설명은 접어 둔다 -- 작은 화면에서 예측 카드가 먼저
+  // 보여야 한다. 제목 줄은 남아 있어 언제든 다시 펼칠 수 있다.
+  if (introBoxEl) introBoxEl.open = false;
 }
 
 async function loadDepartments() {
@@ -106,11 +114,18 @@ async function loadCharacterRoster() {
   return characterRoster;
 }
 
+// 카트마다 예측 점수 특성이 다르므로(작업계획서 §12-3) 효과 설명을 버튼에
+// 함께 노출한다 -- 효과를 모르면 "선택"이 아니라 그냥 아바타 고르기다.
 function characterButtonsHtml(selectedId) {
   return characterRoster
     .map(
       (c) => `<button class="choice-btn character-btn ${c.id === selectedId ? "selected" : ""}" data-id="${c.id}">
-        <span class="character-emoji">${c.emoji}</span><span class="character-label">${c.label}</span>
+        <span class="character-emoji">${c.emoji}</span>
+        <span class="character-text">
+          <span class="character-label">${c.label}</span>
+          ${c.effect ? `<span class="character-effect">${c.effect}</span>` : ""}
+          ${c.style ? `<span class="character-style">${c.style}</span>` : ""}
+        </span>
       </button>`
     )
     .join("");
@@ -149,7 +164,11 @@ async function chooseCharacter(characterId, fromOverlay) {
 
 function renderMyCharacterDisplay() {
   const found = characterRoster.find((c) => c.id === myCharacterId);
-  myCharacterDisplayEl.textContent = found ? `${found.emoji} ${found.label}` : "카트 미선택(부서 기준 자동 배정)";
+  // 고른 카트의 효과까지 항상 보이게 한다 -- 라운드 사이에 바꿀 수 있으므로
+  // "내가 지금 무슨 특성을 달고 있는지"가 계속 보여야 한다.
+  myCharacterDisplayEl.textContent = found
+    ? `${found.emoji} ${found.label}${found.effect ? ` · ${found.effect}` : ""}`
+    : "카트 미선택(부서 기준 자동 배정 · 점수 특성 없음)";
 }
 
 async function openCharacterOverlay() {
@@ -244,9 +263,23 @@ function cardStateFor(me, round) {
 const TEAM_RANK_LABEL = { 1: "🥇 우리 팀 1위", 2: "🥈 우리 팀 2위", 3: "🥉 우리 팀 3위" };
 const HIT_RANK_LABEL = { 1: "🎯 1위 적중", 2: "2위 예측", 3: "3위 예측" };
 
+function rewardOf(me, round) {
+  return (me.card.rewards && me.card.rewards[round]) || null;
+}
+
 function renderRewardBreakdown(me, round) {
-  const reward = me.card.rewards ? me.card.rewards[round] : null;
-  if (!reward) return "";
+  const reward = rewardOf(me, round);
+  // 아직 채점 전이어도 "이번 라운드 소계" 줄은 항상 보여준다(사용자 요청).
+  // 점수가 안 나온 이유가 "0점이라서"인지 "아직 안 끝나서"인지 구분되지
+  // 않으면 폰을 든 사람이 불안해한다.
+  if (!reward) {
+    return `
+      <div class="reward-box reward-box-pending">
+        <div class="reward-title">이번 라운드 소계 <span class="reward-total">-</span></div>
+        <p class="reward-pending-note">라운드가 끝나면 채점됩니다</p>
+      </div>
+    `;
+  }
   const items = [];
   if (reward.predict !== undefined) {
     const label = HIT_RANK_LABEL[reward.hit_rank] || `${reward.hit_rank || "순위 밖"} 예측`;
@@ -258,14 +291,115 @@ function renderRewardBreakdown(me, round) {
     items.push(`<li>${label} <b>+${reward.team_bonus}</b></li>`);
   }
   if (reward.final) items.push(`<li>🏆 결선 당첨 <b>+${reward.final}</b></li>`);
-  if (!items.length) return "";
+  // 카트 능력으로 더 받은(또는 덜 받은) 몫. 위 항목들에 이미 포함된 값의
+  // 내역 표시라 합계를 다시 더하면 안 된다 -- 그래서 별도 줄로 뺐다.
+  const abilityNote =
+    reward.ability_bonus
+      ? `<p class="reward-ability">🏎️ 카트 능력 효과 포함 (${reward.ability_bonus > 0 ? "+" : ""}${reward.ability_bonus}점)</p>`
+      : "";
   return `
     <div class="reward-box">
-      <div class="reward-title">이번 라운드 점수 <span class="reward-total">+${reward.total}</span></div>
-      <ul class="reward-list">${items.join("")}</ul>
+      <div class="reward-title">이번 라운드 소계 <span class="reward-total">+${reward.total}</span></div>
+      ${items.length ? `<ul class="reward-list">${items.join("")}</ul>` : ""}
+      ${abilityNote}
     </div>
   `;
 }
+
+// ---------------------------------------------------------------------------
+// 누적 점수 내역 패널 (라운드별 소계 3줄 + 총계 1줄, 각 줄을 항목별로 분해)
+//
+// 서버는 card.rewards[round]에 이미 항목별 내역을 담아 내려주므로, 여기서는
+// 라운드를 가로질러 더하기만 한다(백엔드 스키마 변경 불필요 -- 작업계획서
+// §12-1의 결정). 총계는 표시 전용 합계이고, **불일치가 생기면 서버가 준
+// card.score를 신뢰한다**(채점 로직의 단일 진실 공급원은 서버다).
+// ---------------------------------------------------------------------------
+
+const REWARD_COLUMNS = [
+  { key: "predict", label: "예측" },
+  { key: "finish", label: "통과" },
+  { key: "team_bonus", label: "팀" },
+  { key: "final", label: "결선" },
+];
+
+function renderScoreSummary(me) {
+  const rounds = [1, 2, 3];
+  const scoredRounds = rounds.filter((r) => rewardOf(me, r));
+  if (!scoredRounds.length) {
+    // 아직 한 라운드도 채점되지 않았다 -- 빈 표를 띄우느니 감춘다.
+    scoreSummaryPanelEl.classList.add("hidden");
+    return;
+  }
+  scoreSummaryPanelEl.classList.remove("hidden");
+
+  const totals = { predict: 0, finish: 0, team_bonus: 0, final: 0, total: 0 };
+  const rows = rounds.map((r) => {
+    const reward = rewardOf(me, r);
+    const cells = REWARD_COLUMNS.map(({ key }) => {
+      if (!reward) return `<td class="score-cell muted">-</td>`;
+      const v = reward[key] || 0;
+      totals[key] += v;
+      return `<td class="score-cell">${v ? `+${v}` : "0"}</td>`;
+    }).join("");
+    const subtotal = reward ? reward.total || 0 : null;
+    if (reward) totals.total += subtotal;
+    return `<tr>
+      <th class="score-round">${ROUND_LABELS[r]}</th>
+      ${cells}
+      <td class="score-cell score-subtotal">${subtotal === null ? "-" : `+${subtotal}`}</td>
+    </tr>`;
+  });
+
+  // 합계가 서버 점수와 어긋나면(부분 채점 중 폴링이 겹치는 등) 서버 값을
+  // 신뢰하고, 화면에는 그 사실을 조용히 알린다.
+  const serverScore = me.card.score;
+  const mismatch = totals.total !== serverScore;
+
+  scoreSummaryBodyEl.innerHTML = `
+    <table class="score-table">
+      <thead>
+        <tr>
+          <th>라운드</th>
+          ${REWARD_COLUMNS.map((c) => `<th>${c.label}</th>`).join("")}
+          <th>소계</th>
+        </tr>
+      </thead>
+      <tbody>${rows.join("")}</tbody>
+      <tfoot>
+        <tr>
+          <th class="score-round">총계</th>
+          ${REWARD_COLUMNS.map(({ key }) => `<td class="score-cell">${totals[key] ? `+${totals[key]}` : "0"}</td>`).join("")}
+          <td class="score-cell score-grandtotal">${serverScore}점</td>
+        </tr>
+      </tfoot>
+    </table>
+    ${mismatch ? `<p class="score-note">채점이 진행 중입니다 — 총계는 서버 확정 점수(${serverScore}점)를 따릅니다.</p>` : ""}
+  `;
+}
+
+// 후보 버튼에 붙는 판단 지표(서버 _candidate_stats). 라운드마다 의미가
+// 다르므로 있는 값만 골라 붙인다 -- R1은 팀별 카트 수뿐이고, R2부터는
+// 직전 라운드 성적이 함께 붙는다.
+function renderCandidateStat(stat) {
+  if (!stat) return "";
+  const bits = [];
+  if (stat.karts !== undefined) bits.push(`🏎️ ${stat.karts}대`);
+  if (stat.prev_rank) bits.push(`직전 ${stat.prev_rank}위`);
+  if (stat.prev_rate !== undefined && stat.prev_rate !== null) {
+    bits.push(`통과율 ${Math.round(stat.prev_rate * 100)}%`);
+  }
+  if (stat.department) bits.push(stat.department);
+  if (!bits.length) return "";
+  return `<span class="target-stat">${bits.join(" · ")}</span>`;
+}
+
+// 라운드별로 "무엇을 보고 골라야 하는지" 한 줄 힌트. 지표를 띄워놔도
+// 읽는 법을 모르면 그냥 숫자다.
+const CHOICE_HINT = {
+  1: "팀별 참가 카트 수가 많을수록 통과자도 많아지는 경향이 있습니다.",
+  2: "1라운드에서 많이 살아남은 팀일수록 2라운드 통과율도 높을 가능성이 큽니다.",
+  3: "직전 등수가 높을수록 결선에서도 앞설 가능성이 큽니다. 남들이 안 고른 카트를 맞히면 소수파 보너스가 붙습니다.",
+};
 
 function renderPredictionCard(me, round) {
   const state = cardStateFor(me, round);
@@ -278,6 +412,7 @@ function renderPredictionCard(me, round) {
   } else if (state === "open") {
     const candidates = me.round_candidates[round] || [];
     const dist = (me.live && me.live[round] && me.live[round].distribution) || {};
+    const stats = (me.candidate_stats && me.candidate_stats[round]) || {};
     // 미선택 시 자동 배정 규칙이 라운드마다 다르다 -- R1·R2는 자기 부서,
     // R3는 무작위(결선 진출자 개인이라 "자기 팀"이 없다).
     const autoNote =
@@ -290,10 +425,15 @@ function renderPredictionCard(me, round) {
       candidates
         .map((c) => {
           const pct = dist[c] ? Math.round(dist[c] * 100) : 0;
-          return `<button class="choice-btn target-btn ${target === c ? "selected" : ""}" data-round="${round}" data-target="${c}">${c}<span class="pct-label">${pct}%</span></button>`;
+          return `<button class="choice-btn target-btn ${target === c ? "selected" : ""}" data-round="${round}" data-target="${c}">
+            <span class="target-name">${c}</span>
+            ${renderCandidateStat(stats[c])}
+            <span class="pct-label">${pct}%</span>
+          </button>`;
         })
         .join("") +
-      `</div>`;
+      `</div>` +
+      `<p class="hint-line choice-hint">${CHOICE_HINT[round] || ""}</p>`;
   } else {
     const autoLabel = isAuto ? (round === 3 ? " (무작위 배정)" : " (우리 부서 자동 선택)") : "";
     targetHtml = `<p>선택 결과: <strong>${target}</strong>${autoLabel}</p>`;
@@ -374,6 +514,7 @@ function renderMe(me) {
   if (!me.predictions_enabled) {
     myScoreEl.textContent = "";
     cardsEl.innerHTML = "";
+    scoreSummaryPanelEl.classList.add("hidden");
     predictionsOffNoteEl.classList.remove("hidden");
     leaderboardPanelEl.classList.add("hidden");
     if (liveRefreshTimer) {
@@ -391,6 +532,7 @@ function renderMe(me) {
   for (const btn of cardsEl.querySelectorAll(".target-btn")) {
     btn.addEventListener("click", () => chooseTarget(parseInt(btn.dataset.round, 10), btn.dataset.target));
   }
+  renderScoreSummary(me);
 
   updateLiveRefreshTimer(me);
 }

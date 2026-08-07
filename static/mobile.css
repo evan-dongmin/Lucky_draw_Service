@@ -208,9 +208,102 @@ button {
   margin-top: 0.15rem;
 }
 
+.target-name {
+  display: block;
+  font-weight: 700;
+}
+
+/* 후보별 판단 지표(팀별 카트 수 / 직전 라운드 등수). 선택률(pct-label)과
+   색을 달리해 "남들이 뭘 골랐나"와 "객관적 성적"이 섞이지 않게 한다. */
+.target-stat {
+  display: block;
+  font-size: 0.72rem;
+  color: #7cf29c;
+  margin-top: 0.15rem;
+  line-height: 1.3;
+}
+
+.choice-hint {
+  margin: 0.5rem 0 0;
+  font-size: 0.78rem;
+  color: #8b95a5;
+  line-height: 1.4;
+}
+
 .hint-line {
   color: #c7cedb;
   font-size: 0.92rem;
+}
+
+/* -- 게임 소개(접이식) --------------------------------------------------- */
+
+.intro-box {
+  background: #171c26;
+  border: 1px solid #2a3242;
+  border-radius: 0.75rem;
+  padding: 0.7rem 0.9rem;
+  margin-bottom: 0.9rem;
+}
+
+.intro-summary {
+  cursor: pointer;
+  font-weight: 700;
+  color: #ffd166;
+  font-size: 0.95rem;
+  list-style: none;
+}
+
+.intro-summary::-webkit-details-marker {
+  display: none;
+}
+
+.intro-summary::after {
+  content: " ▾";
+  color: #8b95a5;
+}
+
+.intro-box[open] .intro-summary::after {
+  content: " ▴";
+}
+
+.intro-content {
+  margin-top: 0.7rem;
+}
+
+.intro-lead {
+  margin: 0 0 0.7rem;
+  font-size: 0.9rem;
+  line-height: 1.5;
+  color: #c7cedb;
+}
+
+.intro-steps-m {
+  margin: 0 0 0.7rem;
+  padding-left: 1.2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.88rem;
+  line-height: 1.45;
+  color: #c7cedb;
+}
+
+.intro-notes {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.84rem;
+  line-height: 1.45;
+  color: #8b95a5;
+}
+
+.intro-notes b,
+.intro-lead b,
+.intro-steps-m b {
+  color: #e7ecf3;
 }
 
 /* -- 캐릭터/카트 선택 -------------------------------------------------- */
@@ -233,8 +326,28 @@ button {
   font-size: 1.8rem;
 }
 
+.character-text {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.12rem;
+}
+
 .character-label {
   font-size: 0.85rem;
+  font-weight: 700;
+}
+
+/* 카트별 예측 점수 특성 -- 이게 보여야 "선택"이 된다. */
+.character-effect {
+  font-size: 0.72rem;
+  line-height: 1.25;
+  color: #7cf29c;
+}
+
+.character-style {
+  font-size: 0.68rem;
+  color: #8b95a5;
 }
 
 .my-character {
@@ -243,10 +356,18 @@ button {
   justify-content: center;
   gap: 0.6rem;
   margin: 0.3rem 0 0.8rem;
+  flex-wrap: wrap;
 }
 
 #my-character-display {
-  font-size: 1.05rem;
+  font-size: 0.95rem;
+  color: #ffd166;
+  text-align: center;
+}
+
+.reward-ability {
+  margin: 0.35rem 0 0;
+  font-size: 0.76rem;
   color: #ffd166;
 }
 
@@ -334,4 +455,86 @@ button {
 .reward-list b {
   color: #7cf29c;
   font-variant-numeric: tabular-nums;
+}
+
+/* 아직 채점되지 않은 라운드 -- 초록(획득) 대신 회색으로 둬서 "0점"이
+   아니라 "아직"임을 색으로도 구분한다. */
+.reward-box-pending {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(255, 255, 255, 0.12);
+}
+
+.reward-box-pending .reward-total {
+  color: #8b95a5;
+}
+
+.reward-pending-note {
+  margin: 0;
+  font-size: 0.8rem;
+  color: #8b95a5;
+}
+
+/* -- 누적 점수 내역(라운드별 소계 + 총계) --------------------------------- */
+
+.score-summary-panel h2 {
+  margin-bottom: 0.5rem;
+}
+
+.score-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.score-table th,
+.score-table td {
+  padding: 0.34rem 0.2rem;
+  text-align: right;
+}
+
+.score-table thead th {
+  color: #8b95a5;
+  font-weight: 600;
+  font-size: 0.76rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
+}
+
+.score-table thead th:first-child,
+.score-round {
+  text-align: left;
+  color: #c7cedb;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.score-cell {
+  color: #e7ecf3;
+}
+
+.score-cell.muted {
+  color: #6d7686;
+}
+
+.score-subtotal {
+  color: #7cf29c;
+  font-weight: 700;
+}
+
+.score-table tfoot th,
+.score-table tfoot td {
+  border-top: 1px solid rgba(255, 255, 255, 0.18);
+  padding-top: 0.45rem;
+}
+
+.score-grandtotal {
+  color: #ffd166;
+  font-weight: 800;
+  font-size: 0.95rem;
+}
+
+.score-note {
+  margin: 0.45rem 0 0;
+  font-size: 0.76rem;
+  color: #8b95a5;
 }
