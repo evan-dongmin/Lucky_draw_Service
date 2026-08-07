@@ -157,9 +157,15 @@ RACE_ROUND_INDEX = {"race_r1": 1, "race_r2": 2, "race_r3": 3}
 SCORE_PHASE_ROUND = {"score_r1_select_r2": 1, "score_r2_select_r3": 2}
 RACE_TICK_INTERVAL_SECONDS = 0.3
 # 레이스 구간 시작 후 이 시간 동안은 카트를 출발선에 세워 둔다(스타트
-# 라이트 3·2·1 GO가 끝나고 나서 실제로 출발하도록). static/stage.js의
-# runStartLights 총 길이(약 2.55초)와 맞춰 둔다.
-RACE_COUNTDOWN_SECONDS = 2.8
+# 라이트 시퀀스가 끝나고 나서 실제로 출발하도록).
+#
+# **static/stage.js의 START_LIGHTS_BUDGET_MS와 반드시 함께 움직여야 한다.**
+# 실제 F1처럼 "빨간 등 5개가 하나씩 켜지고 -> 불규칙한 정적 -> 일제 소등"
+# 으로 연출을 늘리면서(사용자 요청) 2.8초 -> 5.2초로 키웠다. 이보다 짧으면
+# 라이트가 켜져 있는 동안 카트가 이미 달려나가는 것이 보인다(과거 버그).
+# duration_seconds * 0.25 상한이 함께 걸려 있어 짧은 구간에서는 자동으로
+# 줄어든다.
+RACE_COUNTDOWN_SECONDS = 5.2
 
 
 # ---------------------------------------------------------------------------
@@ -528,19 +534,56 @@ async def _run_race_phase(
         await asyncio.sleep(RACE_TICK_INTERVAL_SECONDS)
 
 
+def _survivors_by_department(draw: DrawResult, round_index: int) -> dict[str, int]:
+    """부서 그룹명 -> 그 라운드를 통과해 살아남은 카트 수(내림차순 정렬).
+
+    라운드 사이 선택 창에서 "어느 팀이 몇 대 남았는지"를 무대에 띄우기
+    위한 파생값이다. draw.round_pass_ids와 커밋된 스냅샷의 departments만
+    있으면 계산되므로 새로운 추첨 로직은 전혀 들어가지 않는다.
+    """
+    passed = set(draw.round_pass_ids.get(round_index, []))
+    counts = {
+        name: sum(1 for pid in ids if pid in passed)
+        for name, ids in draw.snapshot.get("departments", {}).items()
+    }
+    return dict(sorted(counts.items(), key=lambda kv: (-kv[1], kv[0])))
+
+
+def _finalists_in_order(draw: DrawResult) -> list[dict[str, Any]]:
+    """결선(R3) 진출자를 등수 순으로. R2 종료 시점에만 의미가 있다.
+
+    draw.ranking이 이미 확정 순위이므로 R2 통과자만 걸러내면 그대로
+    결선 진출 등수가 된다(_ranked_targets와 같은 규칙 -- 무대에 보이는
+    등수와 R3 예측 채점 순위가 어긋나지 않도록 의도적으로 맞췄다).
+    """
+    finalists = set(draw.round_pass_ids.get(2, []))
+    dept_of = _department_by_pid(draw)
+    return [
+        {"participant_id": pid, "department": dept_of.get(pid, "")}
+        for pid in draw.ranking
+        if pid in finalists
+    ]
+
+
 async def _announce_round(session: Session, draw: DrawResult, round_index: int) -> None:
     async with state_lock:
         if round_index not in draw.revealed_rounds:
             draw.revealed_rounds.append(round_index)
             store.set_session(session)
-    await hub.broadcast(
-        {
-            "type": "round_revealed",
-            "round": round_index,
-            "pass_ids": draw.round_pass_ids[round_index],
-            "department_pass_rate": draw.department_pass_rate.get(round_index, {}),
-        }
-    )
+    payload: dict[str, Any] = {
+        "type": "round_revealed",
+        "round": round_index,
+        "pass_ids": draw.round_pass_ids[round_index],
+        "department_pass_rate": draw.department_pass_rate.get(round_index, {}),
+        # 무대의 라운드 전환기 패널용 파생 데이터(작업계획서 §12-2).
+        # 새 메시지 타입을 만들지 않고 기존 메시지를 확장한 이유: 이 값들은
+        # /api/session의 draw 스냅샷만으로 언제든 재구성 가능해서, 재접속
+        # 복구 경로를 따로 만들 필요가 없다.
+        "survivors_by_department": _survivors_by_department(draw, round_index),
+    }
+    if round_index == 2:
+        payload["finalists"] = _finalists_in_order(draw)
+    await hub.broadcast(payload)
 
 
 async def _leaderboard_payload() -> dict[str, Any]:
@@ -645,6 +688,10 @@ async def _score_and_open_next(
         passed_ids=passed_ids,
         ranked_dept_ids=ranked_dept_ids,
         final_winner_ids=final_winner_ids,
+        # 참가자가 고른 카트 능력이 예측 점수 규칙을 살짝 비튼다(§12-3).
+        # 채점 시점의 선택을 그대로 쓰므로, 라운드 사이에 카트를 바꾸면
+        # 그다음 라운드부터 새 능력이 적용된다(이미 채점된 라운드는 불변).
+        character_by_pid=dict(character_choices),
     )
     if next_candidates is not None:
         prediction_engine.open_round(next_round, next_candidates)
@@ -947,6 +994,45 @@ def _my_department_rank(pid: str) -> dict[str, Any] | None:
     return {"department": dept, "rank": rank, "total": len(rates), "rate": rates[dept]}
 
 
+def _candidate_stats(session: Session, round_index: int) -> dict[str, dict[str, Any]]:
+    """예측 후보별 "고를 때 참고할 지표"(사용자 요청).
+
+    라운드마다 판단 근거가 다르다:
+      - R1: 아직 아무도 탈락하지 않았으므로 **팀별 참가 카트 수**가 유일한
+        단서다(인원이 많은 팀이 통과자 수도 많을 가능성이 높다).
+      - R2: 직전 R1을 통과해 **살아남은 카트 수 + R1 통과율 순위**.
+      - R3: 후보가 결선 진출자 개인이므로 **직전 라운드 등수 + 소속 팀**.
+
+    전부 이미 확정된 draw 값에서 파생될 뿐이라 추첨 계산에는 관여하지
+    않는다. 아직 근거가 없는 시점(커밋 전 등)에는 빈 dict를 돌려주고,
+    프런트는 그때 지표 없이 후보만 보여준다.
+    """
+    if not session.draws:
+        return {}
+    draw = session.draws[-1]
+    departments: dict[str, list[str]] = draw.snapshot.get("departments", {})
+    if round_index == 1:
+        return {name: {"karts": len(ids)} for name, ids in departments.items()}
+    if round_index == 2:
+        survivors = _survivors_by_department(draw, 1)
+        rates = draw.department_pass_rate.get(1, {})
+        ranked = predictions.rank_targets_by_rate(rates)
+        return {
+            name: {
+                "karts": survivors.get(name, 0),
+                "prev_rank": ranked.index(name) + 1 if name in ranked else None,
+                "prev_rate": rates.get(name),
+            }
+            for name in departments
+        }
+    # R3 -- 후보가 결선 진출자 개인이다. _finalists_in_order와 같은 순서를
+    # 써서 무대 화면의 등수표와 폰의 표시가 어긋나지 않게 한다.
+    return {
+        f["participant_id"]: {"prev_rank": i + 1, "department": f["department"]}
+        for i, f in enumerate(_finalists_in_order(draw))
+    }
+
+
 @app.get("/api/predict/me")
 async def predict_me(token: str) -> dict[str, Any]:
     session = _require_session()
@@ -963,6 +1049,10 @@ async def predict_me(token: str) -> dict[str, Any]:
         "round_state": prediction_engine.round_state,
         "round_candidates": prediction_engine.round_candidates,
         "live": {str(r): _live_stats(r) for r in open_rounds},
+        # 열려 있는 라운드의 후보별 판단 지표(팀별 카트 수 / 직전 등수).
+        # 무대 화면에만 있던 정보를 폰에서도 볼 수 있게 한 것(사용자 요청) --
+        # 폰만 든 사람과 큰 화면을 보는 사람 사이의 정보 격차를 없앤다.
+        "candidate_stats": {str(r): _candidate_stats(session, r) for r in open_rounds},
         "race_status": _my_race_status(pid),
         "department_rank": _my_department_rank(pid),
         "point_rank": prediction_engine.rank_of(pid),

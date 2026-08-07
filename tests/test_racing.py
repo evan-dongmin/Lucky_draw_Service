@@ -103,3 +103,94 @@ async def test_racing_sequence_stops_gracefully_if_session_reset_midway(monkeypa
 
     # 예외 없이 조용히 중단되어야 하고, "racing_complete"까지 가지 않아야 한다
     assert "racing_complete" not in [m["type"] for m in messages]
+
+
+@pytest.mark.asyncio
+async def test_round_revealed_carries_transition_panel_data(monkeypatch):
+    """무대의 라운드 전환기 패널(작업계획서 §12-2)에 필요한 파생 데이터가
+    round_revealed에 실려 나가는지 확인한다.
+
+    새 메시지 타입을 만들지 않고 기존 메시지를 확장한 설계라, 여기서
+    깨지면 재접속 복구 경로까지 함께 흔들린다."""
+    participants = generate_sample_participants(30, seed=7)
+    draw = fairness.compute_draw("rt-test", participants, draw_count=3, seed="transition-seed")
+    session = Session(
+        session_id="rt-test",
+        participants=participants,
+        draw_count=3,
+        mode="racing",
+        total_seconds=300.0,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    session.draws.append(draw)
+    main_module.store.set_session(session)
+
+    monkeypatch.setattr(main_module.director, "build_runbook", lambda **kwargs: list(TINY_SEGMENTS))
+    monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.01)
+
+    messages: list[dict] = []
+
+    async def fake_broadcast(message, sender=None, roles=None):
+        messages.append(message)
+
+    monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
+    await main_module.run_racing_sequence("rt-test", 0, 300.0)
+
+    revealed = {m["round"]: m for m in messages if m["type"] == "round_revealed"}
+
+    # R1: 팀별 생존 카트 수 -- 합계가 통과자 수와 정확히 일치해야 한다
+    survivors_r1 = revealed[1]["survivors_by_department"]
+    assert sum(survivors_r1.values()) == len(draw.round_pass_ids[1])
+    assert set(survivors_r1) == set(draw.snapshot["departments"])
+    # 내림차순 정렬(무대가 그대로 그린다)
+    assert list(survivors_r1.values()) == sorted(survivors_r1.values(), reverse=True)
+    assert "finalists" not in revealed[1]  # 결선 명단은 R2 종료 시점에만
+
+    # R2: 결선 진출자 등수표. 순서는 draw.ranking(확정 순위)을 따른다
+    finalists = revealed[2]["finalists"]
+    assert [f["participant_id"] for f in finalists] == [
+        pid for pid in draw.ranking if pid in set(draw.round_pass_ids[2])
+    ]
+    assert all(f["department"] for f in finalists)  # 부서색 뱃지용
+
+
+def test_candidate_stats_per_round_shape():
+    """폰에서 후보를 고를 때 보여줄 지표(사용자 요청)가 라운드마다
+    올바른 형태로 나오는지 확인한다. R1은 팀별 참가 카트 수뿐이고,
+    R2부터는 직전 라운드 성적이 함께 붙는다."""
+    participants = generate_sample_participants(30, seed=11)
+    draw = fairness.compute_draw("cs-test", participants, draw_count=3, seed="cand-stats-seed")
+    session = Session(
+        session_id="cs-test",
+        participants=participants,
+        draw_count=3,
+        mode="racing",
+        total_seconds=300.0,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    session.draws.append(draw)
+
+    r1 = main_module._candidate_stats(session, 1)
+    assert set(r1) == set(draw.snapshot["departments"])
+    # R1은 아직 아무도 탈락하지 않았으므로 전체 인원과 합이 같다
+    assert sum(v["karts"] for v in r1.values()) == len(participants)
+    assert all("prev_rank" not in v for v in r1.values())
+
+    r2 = main_module._candidate_stats(session, 2)
+    assert sum(v["karts"] for v in r2.values()) == len(draw.round_pass_ids[1])
+    assert all(v["prev_rank"] is not None for v in r2.values())
+
+    r3 = main_module._candidate_stats(session, 3)
+    assert set(r3) == set(draw.round_pass_ids[2])
+    assert [v["prev_rank"] for v in r3.values()] == list(range(1, len(r3) + 1))
+
+    # 커밋(추첨)이 아직 없으면 조용히 빈 지표 -- 프런트가 후보만 보여준다
+    empty = Session(
+        session_id="cs-empty",
+        participants=participants,
+        draw_count=3,
+        mode="racing",
+        total_seconds=300.0,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    assert main_module._candidate_stats(empty, 1) == {}
