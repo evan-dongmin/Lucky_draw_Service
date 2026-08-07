@@ -704,6 +704,34 @@ function jitterFor(pid) {
   return hashToUnit(pid + ":jitter") - 0.5; // -0.5..0.5
 }
 
+// 카트끼리 계속 엎치락뒤치락하며 선두가 바뀌는 것처럼 보이게 하는 잔물결
+// (사용자 요청: 서로 추월하면서 선두가 계속 바뀌었으면). 카트마다 다른
+// 주기·위상으로 흔들어 근접한 순위끼리 자연스럽게 앞서거니 뒤서거니
+// 한다. **"보이는 위치"에만 더해지는 연출**이라 실제 순위(positions,
+// 통과 판정, POSITION 패널·카메라가 따라가는 리더)는 전혀 바뀌지 않고,
+// 결승선 앞 12%(fade)에서 0으로 수렴해 결승선에서는 다시 정확히 실제
+// 위치와 일치한다.
+function jockeyOffsetFor(pid, now, fade) {
+  const freqSeed = hashToUnit(pid + ":jockeyFreq");
+  const phaseSeed = hashToUnit(pid + ":jockeyPhase");
+  const freq = 0.00025 + freqSeed * 0.00055; // 카트마다 8~25초대 주기
+  const phase = phaseSeed * Math.PI * 2;
+  const amp = 0.016; // 트랙 진행률 기준 최대 흔들림 폭
+  return Math.sin(now * freq + phase) * amp * fade;
+}
+
+// 장애물 lag + 잔물결을 합친 "보이는 위치" 이동량의 안전 상한. R3처럼 트랙이
+// 굴곡지고 카메라가 많이 확대된 상태에서는 진행률 0.1 정도의 어긋남도
+// 카트가 화면 밖으로 통째로 사라져 보이는 사고로 이어질 수 있어(실제로
+// 겪음), 개별 장애물 정의값과 무관하게 여기서 한 번 더 묶어둔다.
+const VISUAL_DELTA_MIN = -0.06;
+const VISUAL_DELTA_MAX = 0.02;
+
+function visualDeltaFor(pid, now, fade, effect) {
+  const raw = jockeyOffsetFor(pid, now, fade) - (effect ? effect.lag : 0);
+  return Math.max(VISUAL_DELTA_MIN, Math.min(VISUAL_DELTA_MAX, raw));
+}
+
 // ---------------------------------------------------------------------------
 // 트랙 경로: S자 웨이포인트 + Catmull-Rom 스플라인 + arc-length 파라미터화 LUT
 //
@@ -1447,15 +1475,23 @@ function drawFrame(positions, tick) {
 
   const sorted = [...ids].sort((a, b) => positions[b] - positions[a]);
   const leaderPos = positions[sorted[0]];
+  const fade = effectFadeFor(tick.progress_ratio);
+  // 카메라는 리더의 "실제" 진행률이 아니라 리더 본인에게 걸린 효과까지
+  // 반영한 "보이는" 위치를 따라간다 -- 그래야 리더가 장애물에 맞아
+  // 뒤로 밀린 순간에도 카메라 중심 = 리더가 그려지는 자리가 항상
+  // 일치해서, 화면이 확대된 R2/R3에서도 리더가 프레임 밖으로 사라지는
+  // 일이 없다.
+  const leaderEffect = kartEffectStateFor(sorted[0], now, fade);
+  const leaderShownPos = Math.max(0, leaderPos + visualDeltaFor(sorted[0], now, fade, leaderEffect));
   const { lut, length: trackLength, halfWidth } = getTrackLUT(tick.round);
-  const leaderPoint = trackPointAt(leaderPos, tick.round);
+  const leaderPoint = trackPointAt(leaderShownPos, tick.round);
   const camera = computeCamera(leaderPoint, tick.round, W, H);
 
   raceCtx.save();
   raceCtx.translate(camera.offsetX, camera.offsetY);
   raceCtx.scale(camera.scale, camera.scale);
 
-  drawTrackSurface(raceCtx, W, H, lut, halfWidth, tick.pass_line, leaderPos, trackLength, tick.round);
+  drawTrackSurface(raceCtx, W, H, lut, halfWidth, tick.pass_line, leaderShownPos, trackLength, tick.round);
   drawFinishLine(raceCtx, trackPointAt(tick.pass_line, tick.round), halfWidth);
 
   // 트랙이 라운드마다 좁아지므로 차선 수도 폭에 맞춘다 -- 좁은 트랙에서
@@ -1473,18 +1509,15 @@ function drawFrame(positions, tick) {
   // 들어오므로 컬링하지 않는다.
   const CULL_MARGIN_BY_MODE = { wide: Infinity, medium: 0.34, close: 0.24 };
   const cullMargin = CULL_MARGIN_BY_MODE[camera.mode] ?? 0.34;
-  const tailProgress = Math.max(0, leaderPos - cullMargin);
+  const tailProgress = Math.max(0, leaderShownPos - cullMargin);
 
-  maybeSpawnObstacle(now, leaderPos, tailProgress, tick.round);
+  maybeSpawnObstacle(now, leaderShownPos, tailProgress, tick.round);
   const obstaclePoints = obstacleScreenPoints(now, laneCount, laneWidth, tick.round);
   const obstacleSize = Math.max(18, kartH * 1.5);
   for (const o of obstaclePoints) {
     drawObstacle(raceCtx, o, obstacleSize);
   }
   const hitRadius = Math.max(14, kartH * 1.2);
-  // 결승선 근처에서는 모든 충돌 효과를 0으로 수렴시켜, 보이는 위치가
-  // 서버가 정한 실제 위치와 정확히 일치하게 만든다(통과 판정 불일치 방지).
-  const fade = effectFadeFor(tick.progress_ratio);
 
   if (crossedRound !== tick.round) {
     crossedRound = tick.round;
@@ -1499,8 +1532,9 @@ function drawFrame(positions, tick) {
     if (p < tailProgress) continue; // 카메라 밖 후미 -- 그리지도 판정하지도 않음
     const effect = kartEffectStateFor(pid, now, fade);
 
-    // 충돌 효과는 "보이는 위치"에만 적용한다 -- p(순위 판정 값)는 불변.
-    const shownP = Math.max(0, p - (effect ? effect.lag : 0));
+    // 충돌 효과 + 엎치락뒤치락 잔물결 모두 "보이는 위치"에만 적용한다
+    // -- p(순위 판정 값)는 불변.
+    const shownP = Math.max(0, p + visualDeltaFor(pid, now, fade, effect));
     const lane = laneFor(pid, laneCount);
     const lateral = effect ? effect.lateral * laneWidth : 0;
     const laneOffset =
