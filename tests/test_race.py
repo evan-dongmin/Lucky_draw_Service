@@ -1,7 +1,20 @@
 import pytest
 
+from app import race
 from app.fairness import compute_draw
-from app.race import compute_tick, department_live_rates, pass_line, position_at, target_position
+from app.race import (
+    LANE_COUNT,
+    compute_effects,
+    compute_tick,
+    department_live_rates,
+    kart_hits,
+    lane_for,
+    obstacle_layout,
+    pass_line,
+    position_at,
+    target_position,
+    total_obstacle_penalty,
+)
 from app.roster import generate_sample_participants
 
 
@@ -123,3 +136,142 @@ def test_department_live_rates_matches_fairness_at_full_progress():
 
     for name, rate in live_rates_r2.items():
         assert rate == pytest.approx(draw.department_pass_rate[2][name])
+
+
+# ---------------------------------------------------------------------------
+# 장애물 (작업계획서 §12-4)
+# ---------------------------------------------------------------------------
+
+
+def test_lane_for_is_deterministic_and_in_range():
+    for round_index in (1, 2, 3):
+        lane1 = lane_for("seed-a", "P001", round_index)
+        lane2 = lane_for("seed-a", "P001", round_index)
+        assert lane1 == lane2
+        assert 0 <= lane1 < LANE_COUNT
+
+
+def test_lane_for_differs_by_seed_or_round_typically():
+    lanes = {lane_for(f"seed-{i}", "P001", 1) for i in range(30)}
+    assert len(lanes) > 1, "시드가 달라져도 항상 같은 레인이면 결정론이 아니라 상수다"
+
+
+def test_obstacle_layout_is_deterministic_and_well_formed():
+    layout1 = obstacle_layout("seed-x", round_index=1)
+    layout2 = obstacle_layout("seed-x", round_index=1)
+    assert layout1 == layout2
+    assert len(layout1) == race.HAZARDS_PER_ROUND
+    for hazard in layout1:
+        assert 0.12 <= hazard["at_ratio"] <= 0.80
+        assert 0 <= hazard["lane"] < LANE_COUNT
+        assert hazard["penalty"] > 0
+
+
+def test_obstacle_layout_differs_by_round_for_same_seed():
+    r1 = obstacle_layout("seed-y", 1)
+    r2 = obstacle_layout("seed-y", 2)
+    assert r1 != r2
+
+
+def test_kart_hits_only_includes_matching_lane():
+    seed = "hit-seed"
+    pid = "P042"
+    lane = lane_for(seed, pid, 1)
+    hits = kart_hits(seed, pid, 1)
+    assert all(h["lane"] == lane for h in hits)
+    assert set(h["id"] for h in hits) == {
+        h["id"] for h in obstacle_layout(seed, 1) if h["lane"] == lane
+    }
+
+
+def test_total_obstacle_penalty_is_deterministic_nonnegative_and_capped():
+    for pid in (f"P{i:03d}" for i in range(60)):
+        penalty = total_obstacle_penalty("cap-seed", pid)
+        assert penalty == total_obstacle_penalty("cap-seed", pid)
+        assert 0.0 <= penalty <= race.OBSTACLE_PENALTY_CAP
+
+
+def test_total_obstacle_penalty_applies_regardless_of_rank():
+    """사용자 요청: "중간 순위뿐 아니라 전체 카트에 모두 적용되도록" --
+    장애물 페널티 계산 자체는 순위(rank_index)를 아예 인자로 받지 않으므로
+    선두든 꼴찌든(다른 이유로 순위가 갈릴 뿐) 동일한 규칙이 적용된다."""
+    import inspect
+
+    assert "rank_index" not in inspect.signature(total_obstacle_penalty).parameters
+
+
+def test_position_at_without_seed_is_unaffected_by_obstacles():
+    """seed를 안 넘기면(기존 테스트 다수가 이 경로) 장애물 영향이 전혀 없다."""
+    pos = position_at(0, 250, 0.5, "P000", round_index=1)
+    pos_explicit_none = position_at(0, 250, 0.5, "P000", round_index=1, seed=None)
+    assert pos == pos_explicit_none
+
+
+def test_position_at_with_seed_dips_then_recovers_exactly_to_target():
+    """P000/round1/'obstacle-dip-seed'는 미리 확인해 둔, 실제로 장애물에
+    맞는 조합이다. 맞는 순간부터 실제로(오프셋이 아니라 반환값 자체가)
+    내려갔다가, progress_ratio=1.0에서는 항상 정확히 target과 일치해야
+    한다(통과 판정과 어긋나면 안 된다)."""
+    seed = "test-seed-1"
+    pid = "P000"
+    round_index = 1
+    hits = kart_hits(seed, pid, round_index)
+    assert hits, "이 테스트는 실제로 장애물에 맞는 조합을 전제로 한다"
+    at_ratio = hits[0]["at_ratio"]
+
+    total = 250
+    rank_index = 10
+    target = target_position(rank_index, total)
+
+    just_after = position_at(rank_index, total, min(1.0, at_ratio + 0.01), pid, round_index, seed=seed)
+    no_obstacle = position_at(rank_index, total, min(1.0, at_ratio + 0.01), pid, round_index, seed=None)
+
+    assert just_after < no_obstacle, "장애물에 맞은 직후에는 실제로 위치가 내려가 있어야 한다"
+
+    at_finish = position_at(rank_index, total, 1.0, pid, round_index, seed=seed)
+    assert at_finish == pytest.approx(target), "결승선에서는 장애물과 무관하게 항상 목표 위치와 일치해야 한다"
+
+
+def test_position_at_with_seed_never_goes_negative():
+    for step in range(0, 101):
+        ratio = step / 100
+        pos = position_at(3, 40, ratio, "P003", round_index=2, seed="neg-check-seed")
+        assert pos >= 0.0
+
+
+def test_compute_effects_only_lists_karts_currently_hit():
+    seed = "test-seed-1"
+    ranking = [f"P{i:03d}" for i in range(30)]
+    at_ratio = kart_hits(seed, "P000", 1)[0]["at_ratio"]
+
+    before = compute_effects(ranking, max(0.0, at_ratio - 0.05), round_index=1, seed=seed)
+    after = compute_effects(ranking, min(1.0, at_ratio + 0.01), round_index=1, seed=seed)
+
+    assert "P000" not in before
+    assert "P000" in after
+    assert after["P000"]["type"]
+    assert 0 < after["P000"]["strength"] <= 1.0
+
+    at_finish = compute_effects(ranking, 1.0, round_index=1, seed=seed)
+    assert at_finish == {}, "결승선에서는 모든 효과가 회복되어 있어야 한다"
+
+
+def test_obstacle_penalty_actually_changes_final_ranking_from_pure_hmac_order():
+    """장애물이 실제 순위에 영향을 줘야 한다(작업계획서 §12-4) --
+    여러 시드를 시도해 최소 한 번은 장애물 반영 순위가 순수 HMAC 순위와
+    달라야 한다(항상 같으면 장애물이 장식일 뿐 결과에 영향이 없다는 뜻)."""
+    from app.fairness import _score
+
+    participants = generate_sample_participants(120, seed=3)
+    ids = [p.id for p in participants]
+
+    found_difference = False
+    for i in range(20):
+        seed = f"ranking-impact-seed-{i}"
+        draw = compute_draw("s1", participants, draw_count=3, seed=seed)
+        pure_hmac_ranking = sorted(ids, key=lambda pid: (-_score(seed, pid), pid))
+        if draw.ranking != pure_hmac_ranking:
+            found_difference = True
+            break
+
+    assert found_difference, "20번 시도했는데도 장애물이 순위를 한 번도 못 바꿨다"

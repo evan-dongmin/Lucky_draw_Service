@@ -69,26 +69,6 @@ def test_reveal_exposes_winners_matching_commit(client):
     assert revealed["commit"] == commit_resp["commit"]
 
 
-def test_verify_endpoint_confirms_recompute_matches(client):
-    _create_sample_session(client, draw_count=2)
-    client.post("/api/draw/commit")
-    client.post("/api/draw/reveal", json={})
-
-    verify_resp = client.get("/api/verify/0")
-    assert verify_resp.status_code == 200
-    body = verify_resp.json()
-    assert body["matches"] is True
-    assert body["server_recomputed_commit"] == body["declared_commit"]
-    assert body["server_recomputed_winners"] == body["declared_winners"]
-
-
-def test_verify_before_reveal_returns_409(client):
-    _create_sample_session(client)
-    client.post("/api/draw/commit")
-    resp = client.get("/api/verify/0")
-    assert resp.status_code == 409
-
-
 def test_redraw_with_exclusion_removes_previous_winners_from_pool(client):
     _create_sample_session(client, count=20, draw_count=2)
     client.post("/api/draw/commit")

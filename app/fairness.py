@@ -4,7 +4,16 @@
     winners(N) ⊆ round_pass_ids[2](F) ⊆ round_pass_ids[1](R1 통과)
 
 부서 통과율은 표시·예측용 파생 지표일 뿐, 생존 여부를 결정하지 않는다.
-생존은 항상 HMAC 순위의 개별 상위 절단으로만 결정된다(부서 통째 탈락 금지).
+생존은 항상 개별 상위 절단으로만 결정된다(부서 통째 탈락 금지).
+
+**순위 산식(작업계획서 §12-4, 2026-08-08)**: 기본 순위는 여전히
+HMAC(seed, participant_id)로 정하지만, 거기에 `race.py`가 시드로부터
+결정론적으로 파생시킨 장애물 페널티를 더해 최종 순위를 만든다(레이스
+연출에서 장애물에 맞는 것이 실제로 결과를 바꾼다). 두 값 다 시드에서만
+파생되고 서로 순환 참조가 없으므로(장애물 배치는 순위와 무관), 기본 순위
+→ 장애물 페널티 → 최종 순위 한 번의 패스로 계산이 끝난다. 커밋 시점에
+전부 확정되며, 레이스 애니메이션은 그 확정된 결과로 수렴하는 연출일 뿐이다
+(기존과 동일한 설계 원칙 -- 달라진 것은 "순위를 정하는 산식"뿐).
 """
 
 from __future__ import annotations
@@ -16,6 +25,7 @@ import secrets
 from datetime import datetime, timezone
 from typing import Any
 
+from app import race
 from app.departments import compute_department_groups
 from app.models import DrawResult, Participant
 
@@ -44,6 +54,25 @@ def compute_commit(seed: str, snapshot: dict[str, Any]) -> str:
 def _score(seed: str, participant_id: str) -> int:
     digest = hmac.new(seed.encode("utf-8"), participant_id.encode("utf-8"), hashlib.sha256).digest()
     return int.from_bytes(digest, "big")
+
+
+def _obstacle_adjusted_ranking(eligible_ids: list[str], seed: str) -> list[str]:
+    """HMAC 기본 순위에 장애물 페널티를 더해 최종 순위를 만든다.
+
+    기본 순위를 0(1등)..1(꼴찌) 소수 비율로 정규화한 뒤 장애물 페널티
+    (같은 0..1 스케일, `race.total_obstacle_penalty`)를 더해 다시 정렬한다.
+    페널티가 없는 카트끼리는 기본 순위가 그대로 유지된다(동점 시 기본
+    순위 → id 순으로 결정론적 타이브레이크)."""
+    base_ranking = sorted(eligible_ids, key=lambda pid: (-_score(seed, pid), pid))
+    base_rank_index = {pid: i for i, pid in enumerate(base_ranking)}
+    denom = max(1, len(base_ranking) - 1)
+
+    def adjusted_key(pid: str) -> tuple[float, int, str]:
+        base_fraction = base_rank_index[pid] / denom
+        penalty = race.total_obstacle_penalty(seed, pid)
+        return (base_fraction + penalty, base_rank_index[pid], pid)
+
+    return sorted(eligible_ids, key=adjusted_key)
 
 
 def resolve_finalist_count(draw_count: int) -> int:
@@ -106,7 +135,7 @@ def _compute_outcome(
     if draw_count > len(eligible_ids):
         raise FairnessError("당첨 인원수가 참가 가능 인원보다 많습니다")
 
-    ranking = sorted(eligible_ids, key=lambda pid: (-_score(seed, pid), pid))
+    ranking = _obstacle_adjusted_ranking(eligible_ids, seed)
 
     finalist_count = min(resolve_finalist_count(draw_count), len(ranking))
     r1_count = min(max(R1_PASS_COUNT, finalist_count), len(ranking))

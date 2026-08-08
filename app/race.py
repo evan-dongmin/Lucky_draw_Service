@@ -7,11 +7,22 @@
 핵심 성질: 모든 카트의 위치는 (참가자 id, 라운드, 경과 비율)의 순수 함수다.
 서버가 매 틱마다 다시 계산해 브로드캐스트하므로 클라이언트가 별도로
 재현할 필요가 없다(모바일에는 이 데이터를 아예 보내지 않는다).
+
+**장애물(작업계획서 §12-4, 2026-08-08)**: 장애물은 더 이상 순수 연출이
+아니다. `obstacle_layout`/`lane_for`가 커밋 시드로부터 라운드별 장애물
+배치와 카트별 고정 레인을 결정론적으로 만들고, 그 결과(`total_obstacle_penalty`)가
+`fairness.py`의 최종 순위 계산에 실제로 반영된다(누가 이기는지가 바뀐다).
+동시에 `position_at`에 `seed`를 넘기면 그 장애물에 맞는 순간 트랙 위치가
+실제로(연출용 오프셋이 아니라 서버가 계산해 내려주는 진짜 값으로) 잠깐
+내려갔다가 회복한다 -- 단, `progress_ratio=1.0`에서는 항상 정확히
+`target_position`과 일치하도록 설계해(회복량이 (1-at_ratio) 구간에 걸쳐
+선형으로 정확히 0에 수렴) 통과 판정과는 절대 어긋나지 않는다.
 """
 
 from __future__ import annotations
 
 import hashlib
+from typing import Any
 
 
 def _pseudo_noise(seed_material: str) -> float:
@@ -54,37 +65,185 @@ def pace_exponent(participant_id: str, round_index: int) -> float:
     return 0.8 + _pseudo_noise(f"{participant_id}:{round_index}:pace") * 0.9
 
 
+# ---------------------------------------------------------------------------
+# 장애물 (작업계획서 §12-4) -- 시드 결정론 + 실제 순위/위치 반영
+#
+# 화면 크기·참가자 수와 무관하게 고정된 레인 수를 쓴다(장애물 판정이
+# 클라이언트 렌더링 상태에 좌우되면 결정론이 깨진다). "누가 몇 번 맞는지"는
+# 순전히 (시드, 참가자 id, 라운드) 해시로만 정해지고, 트랙 진행률 도달
+# 여부와는 무관하게 레인만 일치하면 맞는다 -- 사용자 요청("중간 순위뿐
+# 아니라 전체 카트에 모두 적용되도록")대로 선두든 꼴찌든 동일 확률로
+# 장애물 페널티를 받는다(도달 여부로 걸러내면 선두권만 유리해진다).
+# ---------------------------------------------------------------------------
+
+LANE_COUNT = 8
+HAZARDS_PER_ROUND = 10
+
+# (종류, 페널티) -- 페널티는 target_position과 같은 0..1 스케일. 맞으면
+# 이만큼 최종 순위 산정(및 실시간 트랙 위치)에서 깎인다.
+OBSTACLE_CATALOG: tuple[tuple[str, float], ...] = (
+    ("cone", 0.006),
+    ("oil", 0.012),
+    ("tire", 0.010),
+    ("banana", 0.018),
+    ("puddle", 0.014),
+    ("rock", 0.022),
+    ("bomb", 0.030),
+    ("ice", 0.016),
+)
+
+# 한 카트가 3라운드 통틀어 받을 수 있는 장애물 페널티 총합의 상한. 레인 해시가
+# 우연히 겹쳐 한 카트가 그 라운드 장애물을 거의 다 맞는 극단적인 경우에도
+# HMAC 기본 순위 신호가 완전히 묻히지 않도록 안전장치를 둔다.
+OBSTACLE_PENALTY_CAP = 0.4
+
+
+def lane_for(seed: str, participant_id: str, round_index: int) -> int:
+    """이 카트가 이 라운드에 배정되는 고정 레인(0..LANE_COUNT-1).
+
+    화면 크기·참가자 수와 무관하게 (시드, 참가자, 라운드)만으로 정해지므로
+    같은 커밋에서는 항상 같은 레인이다(서버·클라이언트가 각자 계산해도
+    항상 일치)."""
+    return int(_pseudo_noise(f"{seed}:{participant_id}:{round_index}:lane") * LANE_COUNT)
+
+
+def obstacle_layout(seed: str, round_index: int) -> list[dict[str, Any]]:
+    """이 라운드의 장애물 배치(트랙 진행률 x 레인). (시드, 라운드)만으로
+    정해지며 참가자 수·화면 크기와 무관하다 -- 커밋 시점에 이미 확정된다."""
+    hazards: list[dict[str, Any]] = []
+    for i in range(HAZARDS_PER_ROUND):
+        base = f"{seed}:{round_index}:hazard:{i}"
+        at_ratio = 0.12 + _pseudo_noise(f"{base}:pos") * 0.68  # 0.12~0.80 구간
+        lane = int(_pseudo_noise(f"{base}:lane") * LANE_COUNT)
+        type_idx = int(_pseudo_noise(f"{base}:type") * len(OBSTACLE_CATALOG))
+        obstacle_type, penalty = OBSTACLE_CATALOG[type_idx]
+        hazards.append(
+            {
+                "id": f"r{round_index}-{i}",
+                "at_ratio": at_ratio,
+                "lane": lane,
+                "type": obstacle_type,
+                "penalty": penalty,
+            }
+        )
+    return hazards
+
+
+def kart_hits(seed: str, participant_id: str, round_index: int) -> list[dict[str, Any]]:
+    """이 카트가 이 라운드에 실제로 맞는 장애물 목록(레인 일치 기준)."""
+    lane = lane_for(seed, participant_id, round_index)
+    return [h for h in obstacle_layout(seed, round_index) if h["lane"] == lane]
+
+
+def round_obstacle_penalty(seed: str, participant_id: str, round_index: int) -> float:
+    """이 카트가 이 라운드에서 받는 장애물 페널티 합(0..1 스케일, target_position과 동일 단위)."""
+    return sum(h["penalty"] for h in kart_hits(seed, participant_id, round_index))
+
+
+def total_obstacle_penalty(seed: str, participant_id: str) -> float:
+    """3라운드 전체를 통틀어 이 카트가 받는 장애물 페널티 합.
+    `fairness.py`의 최종 순위 조정에 쓰인다(순환 참조 없이 한 번에 계산됨:
+    레인·장애물 배치 모두 순위와 무관하게 시드에서만 파생되기 때문)."""
+    total = sum(round_obstacle_penalty(seed, participant_id, r) for r in (1, 2, 3))
+    return min(total, OBSTACLE_PENALTY_CAP)
+
+
+def _obstacle_dip_at(seed: str, participant_id: str, round_index: int, progress_ratio: float) -> float:
+    """이 순간(progress_ratio)에 장애물 때문에 목표 위치에서 실제로 깎여 있는 양.
+
+    맞은 지점(at_ratio)부터 시작해 (1 - at_ratio) 구간에 걸쳐 선형으로
+    회복하므로, progress_ratio=1.0에서는 항상 정확히 0이 된다(장애물이
+    통과 판정을 어긋나게 만들 수 없다). 그 전까지는 진짜로(연출용 오프셋이
+    아니라 이 함수의 반환값 자체가) 위치가 내려간다."""
+    dip = 0.0
+    for h in kart_hits(seed, participant_id, round_index):
+        if progress_ratio < h["at_ratio"]:
+            continue
+        span = max(1e-6, 1.0 - h["at_ratio"])
+        recovered = min(1.0, (progress_ratio - h["at_ratio"]) / span)
+        dip += h["penalty"] * (1.0 - recovered)
+    return dip
+
+
+def active_effect_at(
+    seed: str, participant_id: str, round_index: int, progress_ratio: float
+) -> dict[str, Any] | None:
+    """이 순간 이 카트에 걸려 있는 가장 강한 장애물 효과(연출용 -- 스핀/사운드
+    트리거에 쓰라고 강도까지 함께 내려준다). 없으면 None."""
+    best: dict[str, Any] | None = None
+    for h in kart_hits(seed, participant_id, round_index):
+        if progress_ratio < h["at_ratio"]:
+            continue
+        span = max(1e-6, 1.0 - h["at_ratio"])
+        recovered = min(1.0, (progress_ratio - h["at_ratio"]) / span)
+        strength = 1.0 - recovered
+        if strength <= 0:
+            continue
+        if best is None or strength > best["strength"]:
+            best = {"type": h["type"], "strength": strength, "id": h["id"]}
+    return best
+
+
 def position_at(
     rank_index: int,
     total: int,
     progress_ratio: float,
     participant_id: str,
     round_index: int,
+    seed: str | None = None,
 ) -> float:
     """경과 비율(0..1)에서의 트랙 위치.
 
     설계 원칙:
     - 모든 카트는 출발선(0)에서 함께 출발한다.
-    - 진행률에 대해 단조 증가한다 -- 절대 뒤로 밀리지 않는다.
     - progress_ratio=1.0에서 정확히 target_position과 일치해 통과 판정이
       항상 정확하다(공정성 판정은 여기에만 의존한다).
     - 카트마다 페이스 지수가 달라 레이스 중간에는 순위가 뒤섞이고,
       끝에서 목표 순위로 수렴한다.
+    - `seed`를 넘기면(실제 레이스 진행 중에는 항상 넘긴다) 그 라운드의
+      장애물에 맞는 시점부터 실제로 위치가 내려갔다가 결승선까지 선형
+      회복한다(§12-4). `seed`가 없으면(주로 테스트) 예전과 동일하게 장애물
+      영향이 전혀 없는 순수 곡선을 반환한다 -- 통과 판정 자체는 이미
+      `fairness.py`가 장애물까지 반영해 확정한 순위(`rank_index`)로 결정돼
+      있으므로 어느 쪽이든 ratio=1.0 값은 같다.
 
     (이전 구현은 카트를 트랙 전역에 흩뿌린 상태에서 목표로 수렴시켰기 때문에
      일부 카트가 뒤로 밀려 보였고 "함께 출발해 전진한다"는 감각이 없었다.)
     """
     progress_ratio = min(max(progress_ratio, 0.0), 1.0)
     target = target_position(rank_index, total)
-    return target * (progress_ratio ** pace_exponent(participant_id, round_index))
+    base = target * (progress_ratio ** pace_exponent(participant_id, round_index))
+    if seed is None:
+        return base
+    dip = _obstacle_dip_at(seed, participant_id, round_index, progress_ratio)
+    return max(0.0, base - dip)
 
 
-def compute_tick(ranking_ids: list[str], progress_ratio: float, round_index: int) -> dict[str, float]:
+def compute_tick(
+    ranking_ids: list[str],
+    progress_ratio: float,
+    round_index: int,
+    seed: str | None = None,
+) -> dict[str, float]:
     total = len(ranking_ids)
     return {
-        pid: position_at(idx, total, progress_ratio, pid, round_index)
+        pid: position_at(idx, total, progress_ratio, pid, round_index, seed=seed)
         for idx, pid in enumerate(ranking_ids)
     }
+
+
+def compute_effects(
+    ranking_ids: list[str], progress_ratio: float, round_index: int, seed: str
+) -> dict[str, dict[str, Any]]:
+    """이 틱에서 장애물 효과가 걸려 있는 카트만 담은 맵(pid -> {type, strength}).
+    무대 화면이 스핀/사운드를 언제 재생할지는 이 값을 그대로 쓴다 --
+    클라이언트가 충돌 판정을 직접 재현할 필요가 없다."""
+    effects: dict[str, dict[str, Any]] = {}
+    for pid in ranking_ids:
+        effect = active_effect_at(seed, pid, round_index, progress_ratio)
+        if effect is not None:
+            effects[pid] = {"type": effect["type"], "strength": round(effect["strength"], 3)}
+    return effects
 
 
 def department_live_rates(

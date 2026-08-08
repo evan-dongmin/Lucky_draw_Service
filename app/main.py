@@ -65,7 +65,7 @@ async def no_cache_static(request: Request, call_next):
     다운로드하지는 않는다.
     """
     response = await call_next(request)
-    if request.url.path == "/" or request.url.path.startswith("/static/") or request.url.path in ("/admin", "/verify", "/mobile"):
+    if request.url.path == "/" or request.url.path.startswith("/static/") or request.url.path in ("/admin", "/mobile"):
         response.headers["Cache-Control"] = "no-cache"
     return response
 
@@ -439,26 +439,6 @@ async def redraw(payload: RedrawRequest) -> dict[str, Any]:
         return public
 
 
-@app.get("/api/verify/{draw_index}")
-async def verify_draw_endpoint(draw_index: int) -> dict[str, Any]:
-    session = _require_session()
-    draw = _require_draw(session, draw_index)
-    if not draw.revealed:
-        raise HTTPException(status_code=409, detail="아직 리빌되지 않았습니다.")
-    recomputed = fairness.recompute_from_reveal(draw.seed, draw.snapshot)
-    return {
-        "seed": draw.seed,
-        "snapshot": draw.snapshot,
-        "declared_commit": draw.commit,
-        "declared_winners": draw.winners,
-        "declared_ranking": draw.ranking,
-        "declared_round_pass_ids": {str(k): v for k, v in draw.round_pass_ids.items()},
-        "server_recomputed_commit": recomputed["commit"],
-        "server_recomputed_winners": recomputed["winners"],
-        "matches": fairness.verify_draw(draw),
-    }
-
-
 # ---------------------------------------------------------------------------
 # 레이싱 런북 자동 진행 (Director Agent) -- 3라운드 부서 대항 퍼널
 # ---------------------------------------------------------------------------
@@ -496,6 +476,11 @@ async def _run_race_phase(
     countdown = min(RACE_COUNTDOWN_SECONDS, duration_seconds * 0.25)
     race_seconds = max(1e-6, duration_seconds - countdown)
 
+    # 이 라운드의 장애물 배치는 시드+라운드로만 정해지는 정적인 값이라
+    # 매 틱 다시 계산할 필요 없이 한 번만 만든다(§12-4). 시드 자체는 절대
+    # 전송하지 않고, 이미 파생된 배치(위치·레인·종류)만 내려준다.
+    obstacles = race.obstacle_layout(draw.seed, round_index)
+
     loop = asyncio.get_running_loop()
     start = loop.time()
     while True:
@@ -508,13 +493,19 @@ async def _run_race_phase(
             # 그대로 유지된다 -- 시간만 절약될 뿐이다.
             fast_forward_requests.discard(session_id)
             ratio = 1.0
-        positions = race.compute_tick(population, ratio, round_index)
+        positions = race.compute_tick(population, ratio, round_index, seed=draw.seed)
         payload: dict[str, Any] = {
             "type": "race_tick",
             "round": round_index,
             "progress_ratio": ratio,
             "pass_line": line,
             "positions": positions,
+            # 이 라운드의 장애물 배치(정적) + 지금 이 틱에 효과가 걸려 있는
+            # 카트만 담은 맵. 위치(positions)에 이미 장애물 감속이 실제로
+            # 반영돼 있으므로, 클라이언트는 이 값으로 스핀/사운드 연출만
+            # 트리거하면 되고 충돌 판정을 직접 재현할 필요가 없다(§12-4).
+            "obstacles": obstacles,
+            "effects": race.compute_effects(population, ratio, round_index, draw.seed),
             # 스타트 라이트가 아직 켜져 있는(=출발 전) 틱인지. 무대 화면이
             # 이 구간에는 속도선·엔진음을 올리지 않고 그리드 정지 상태로
             # 보여주는 데 쓴다.
@@ -713,8 +704,9 @@ async def _score_and_open_next(
 def _compute_prize_winners(session: Session, draw: DrawResult) -> tuple[list[str], str, list[int]]:
     """실제 경품 당첨자를 정한다. 예측 게임이 켜져 있으면 그 최종 리더보드
     상위 N명(N = 원래 레이스로 정해졌던 당첨 인원수, len(draw.winners))이 곧
-    당첨자다 -- 레이스 자체는 여전히 공정하고 /verify로 검증 가능하지만,
-    "그 공정한 레이스를 누가 가장 잘 예측했는가"가 최종 결과를 정하는 구조로
+    당첨자다 -- 레이스 자체는 여전히(장애물까지 포함해) 시드만으로 100%
+    결정론적으로 계산되지만, "그 레이스를 누가 가장 잘 예측했는가"가 최종
+    결과를 정하는 구조로
     바꾼 것(사용자 요청: 막판까지 순위를 알 수 없고 리더보드가 끝까지
     갱신되는 반전 있는 진행을 위함). 예측 게임이 꺼져 있으면 리더보드 자체가
     없으므로 레이스 결과를 그대로 쓴다(기존 동작과 동일, 회귀 없음).
@@ -1330,11 +1322,6 @@ async def index() -> FileResponse:
 @app.get("/admin")
 async def admin_page() -> FileResponse:
     return FileResponse(STATIC_DIR / "admin.html")
-
-
-@app.get("/verify")
-async def verify_page() -> FileResponse:
-    return FileResponse(STATIC_DIR / "verify.html")
 
 
 @app.get("/mobile")
