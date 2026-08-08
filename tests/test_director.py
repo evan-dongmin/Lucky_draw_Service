@@ -50,10 +50,10 @@ def test_rejects_non_positive_total_seconds():
 def test_default_600_seconds_matches_runbook_proportions():
     segments = build_runbook()
     by_phase = {s.phase: s.duration_seconds for s in segments}
-    # 기본 총 시간(600초)은 기준 비율표(합 300초)의 2배로 스케일된다
-    assert by_phase["opening"] == pytest.approx(20, abs=0.01)
-    assert by_phase["race_r3"] == pytest.approx(80, abs=0.01)
-    assert by_phase["score_r1_select_r2"] == pytest.approx(60, abs=0.01)
+    # 기본 총 시간(600초)은 기준 비율표(합 264초)의 약 2.2727배로 스케일된다
+    assert by_phase["opening"] == pytest.approx(600 / 264 * 10, abs=0.01)
+    assert by_phase["race_r3"] == pytest.approx(600 / 264 * 30, abs=0.01)
+    assert by_phase["score_r1_select_r2"] == pytest.approx(600 / 264 * 30, abs=0.01)
     # 결선(R3)은 카트가 적어 볼거리가 적으므로, 카트가 많은 R1/R2보다 짧아야 한다
     assert by_phase["race_r3"] < by_phase["race_r1"]
     assert by_phase["race_r3"] < by_phase["race_r2"]

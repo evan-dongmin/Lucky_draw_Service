@@ -43,8 +43,15 @@ def pass_line(pass_count: int, total: int) -> float:
 def pace_exponent(participant_id: str, round_index: int) -> float:
     """카트별 페이스 성향. 1보다 작으면 초반에 치고 나가고, 크면 후반에
     몰아친다. 이 편차 때문에 중간 순위와 최종 순위가 달라져 추월이
-    자연스럽게 발생한다(결과 자체는 바뀌지 않는다)."""
-    return 0.55 + _pseudo_noise(f"{participant_id}:{round_index}:pace") * 1.15
+    자연스럽게 발생한다(결과 자체는 바뀌지 않는다).
+
+    하한을 0.8로 둔다(예전 0.55) -- position = target * ratio**exponent는
+    exponent<1이면 ratio→0 근처에서 기울기가 매우 가팔라(0.55일 때 ratio
+    5%만 지나도 target의 21%까지 도달), 특히 카메라가 따라가는 R1 선두가
+    이 값에 걸리면 출발하자마자 화면을 가로질러 순간이동하듯 보였다
+    (사용자 피드백: "1라운드에서 카트 속도가 너무 빠르다"). 0.8~1.7로
+    좁혀도 추월 편차(페이스 다양성)는 충분히 남는다."""
+    return 0.8 + _pseudo_noise(f"{participant_id}:{round_index}:pace") * 0.9
 
 
 def position_at(
