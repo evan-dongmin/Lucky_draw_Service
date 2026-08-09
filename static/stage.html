@@ -26,11 +26,50 @@
       </div>
       <div class="hud-right">
         <div id="phase-timer" class="phase-timer">--</div>
+        <button id="btn-help" class="icon-btn" title="게임 설명 다시 보기 (H)">❓</button>
         <button id="btn-sound" class="icon-btn" title="효과음 켜기/끄기 (S)">🔇</button>
         <button id="btn-voice" class="icon-btn" title="MC 음성 해설 켜기/끄기 (V)">🎙</button>
         <button id="btn-fullscreen" class="icon-btn" title="전체 화면 (F)">⛶</button>
       </div>
     </header>
+
+    <!-- 게임 설명 다시보기(작업계획서 §12-7, 사용자 요청): 레이스가 시작된
+         뒤에는(overlay-waiting/committed가 사라진 뒤) "지금 뭘 보고
+         있는 건지" 다시 확인할 방법이 없었다. HUD의 ❓ 버튼으로 레이스
+         중에도 언제든 열어볼 수 있는 패널을 추가한다. 커밋 전 오버레이의
+         소개 콘텐츠와 같은 톤을 유지하되, 화면 요소별 설명(POSITION·
+         부서 통과율·장애물·결승선 컷오프)을 더했다. -->
+    <div id="help-panel" class="help-panel glass hidden">
+      <button id="btn-help-close" class="help-close" title="닫기 (Esc)">✕</button>
+      <div class="help-columns">
+        <div>
+          <h2 class="intro-heading">이런 게임입니다</h2>
+          <ul class="intro-list">
+            <li><b>3라운드 서바이벌 카트 레이스</b> — 라운드마다 하위권이 탈락합니다</li>
+            <li>결과(장애물 충돌까지 포함)는 <b>이미 시드 하나로 확정</b>되어 있습니다 — 화면은 그 결과를 보여줄 뿐, 아무도 바꿀 수 없습니다</li>
+            <li>1·2라운드는 <b>순위</b>뿐 아니라 <b>1등이 결승선을 통과한 뒤 10초/5초 안에 들어와야</b> 통과합니다</li>
+            <li>폰으로 <b>매 라운드 우승 팀/카트를 예측</b>하면 점수가 쌓입니다</li>
+            <li><b>최종 예측 리더보드 상위권이 실제 경품 당첨자</b>입니다 — 끝까지 뒤집힙니다!</li>
+          </ul>
+          <h2 class="intro-heading">화면 보는 법</h2>
+          <ul class="intro-list">
+            <li><b>POSITION</b>(왼쪽) — 지금 실시간 등수</li>
+            <li><b>부서 통과율</b>(오른쪽) — 우리 팀이 얼마나 잘 뚫고 있는지</li>
+            <li><b>장애물</b> — 부딪히면 실제로 순위가 밀립니다(연출이 아닙니다)</li>
+            <li><b>결승선 카운트다운</b>(상단) — 1등 통과 후 뜨는 마감 시계, 그 안에 못 들어오면 탈락</li>
+          </ul>
+        </div>
+        <div class="intro-how">
+          <h2 class="intro-heading">지금 참여하세요</h2>
+          <ol class="intro-steps">
+            <li><span class="intro-step-no">1</span><span><b>QR 스캔</b><br />부서·이름을 고르세요</span></li>
+            <li><span class="intro-step-no">2</span><span><b>내 카트 선택</b><br />카트마다 점수 특성이 다릅니다</span></li>
+            <li><span class="intro-step-no">3</span><span><b>라운드마다 예측</b><br />빗나가도 참여 점수는 들어옵니다</span></li>
+          </ol>
+          <img class="qr-image" src="/api/qrcode" alt="모바일 참여 QR" />
+        </div>
+      </div>
+    </div>
 
     <!-- 결승선 컷오프(작업계획서 §12-8): 1등이 결승선을 통과하면 그때부터
          정해진 시간(R1 10초/R2 5초) 안에 들어온 카트만 다음 라운드로

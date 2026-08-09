@@ -377,6 +377,20 @@ button {
   background: #2a3242;
 }
 
+/* 게임 설명 다시보기 버튼(작업계획서 §12-7) -- 눈에 띄되 카드/리더보드보다
+   시선을 뺏지 않도록 배경 없는 링크 스타일로 둔다. */
+.link-btn {
+  display: block;
+  margin: 0 auto 0.9rem;
+  padding: 0.3rem 0.5rem;
+  background: none;
+  border: none;
+  color: #8fb4ff;
+  font-size: 0.85rem;
+  text-decoration: underline;
+  text-underline-offset: 0.2rem;
+}
+
 .character-overlay {
   position: fixed;
   inset: 0;

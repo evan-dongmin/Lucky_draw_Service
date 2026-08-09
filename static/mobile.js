@@ -184,6 +184,12 @@ function closeCharacterOverlay() {
   characterOverlayEl.classList.add("hidden");
 }
 
+document.getElementById("btn-show-intro")?.addEventListener("click", () => {
+  if (!introBoxEl) return;
+  introBoxEl.open = true;
+  introBoxEl.scrollIntoView({ behavior: "smooth", block: "start" });
+});
+
 document.getElementById("btn-change-character").addEventListener("click", openCharacterOverlay);
 document.getElementById("btn-close-character-overlay").addEventListener("click", closeCharacterOverlay);
 document.getElementById("btn-skip-character").addEventListener("click", async () => {

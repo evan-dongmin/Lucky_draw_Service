@@ -42,6 +42,9 @@ const roundTransitionBodyEl = document.getElementById("round-transition-body");
 const btnSound = document.getElementById("btn-sound");
 const btnVoice = document.getElementById("btn-voice");
 const btnFullscreen = document.getElementById("btn-fullscreen");
+const btnHelp = document.getElementById("btn-help");
+const btnHelpClose = document.getElementById("btn-help-close");
+const helpPanelEl = document.getElementById("help-panel");
 const cutoffPanelEl = document.getElementById("cutoff-panel");
 const cutoffLabelEl = document.getElementById("cutoff-label");
 const cutoffCountEl = document.getElementById("cutoff-count");
@@ -235,11 +238,24 @@ function toggleFullscreen() {
 }
 btnFullscreen.addEventListener("click", toggleFullscreen);
 
+// 게임 설명 다시보기(작업계획서 §12-7) -- 레이스가 시작된 뒤에는
+// overlay-waiting/committed가 사라져 처음 온 사람이 "지금 뭘 보고 있는
+// 건지" 다시 확인할 방법이 없었다. 언제든 열고 닫을 수 있는 토글 패널.
+function toggleHelpPanel(forceOpen) {
+  const shouldOpen = forceOpen !== undefined ? forceOpen : helpPanelEl.classList.contains("hidden");
+  helpPanelEl.classList.toggle("hidden", !shouldOpen);
+  btnHelp.classList.toggle("active", shouldOpen);
+}
+btnHelp.addEventListener("click", () => toggleHelpPanel());
+btnHelpClose.addEventListener("click", () => toggleHelpPanel(false));
+
 window.addEventListener("keydown", (e) => {
   if (e.target && ["INPUT", "TEXTAREA"].includes(e.target.tagName)) return;
   if (e.key === "f" || e.key === "F") toggleFullscreen();
   if (e.key === "s" || e.key === "S") btnSound.click();
   if (e.key === "v" || e.key === "V") btnVoice.click();
+  if (e.key === "h" || e.key === "H") toggleHelpPanel();
+  if (e.key === "Escape") toggleHelpPanel(false);
 });
 
 // ---------------------------------------------------------------------------
