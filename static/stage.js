@@ -2630,7 +2630,15 @@ const ws = connectWS((data) => {
       showMcLine("prediction_open", { round: data.round });
     }
   }
-  refresh();
+  // **race_tick에는 세션을 다시 받아오지 않는다.** 틱은 0.3초마다 오는데
+  // /api/session은 250명 명단·스냅샷까지 통째로 담아 약 30KB나 되고,
+  // 레이스가 도는 동안 그 내용은 바뀌지 않는다. 예전에는 모든 WS 메시지
+  // 뒤에 refresh()를 불러서 무대 혼자 초당 100KB 가까이를 되받고, 250명
+  // JSON 파싱이 초당 3회씩 60fps 렌더 루프와 경합했다(행사 PC에서 프레임
+  // 드랍의 원인이 된다). 틱에 필요한 렌더는 handleRacingEvent가 이미
+  // 다 하고, 세션이 실제로 바뀌는 순간(commit/revealed/phase/reset 등)에는
+  // 그 메시지가 따로 오므로 화면 갱신이 늦어지지 않는다.
+  if (data.type !== "race_tick") refresh();
 }, "stage");
 ws.addEventListener("open", () => {
   refresh();
