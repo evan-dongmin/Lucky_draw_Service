@@ -42,6 +42,10 @@ const roundTransitionBodyEl = document.getElementById("round-transition-body");
 const btnSound = document.getElementById("btn-sound");
 const btnVoice = document.getElementById("btn-voice");
 const btnFullscreen = document.getElementById("btn-fullscreen");
+const cutoffPanelEl = document.getElementById("cutoff-panel");
+const cutoffLabelEl = document.getElementById("cutoff-label");
+const cutoffCountEl = document.getElementById("cutoff-count");
+const cutoffTimerEl = document.getElementById("cutoff-timer");
 
 FX.attach(fxCanvas, document.getElementById("scene"));
 
@@ -716,6 +720,15 @@ let crossedPassLine = new Set();
 let crossedRound = null;
 let crossedSoundCount = 0;
 const CROSS_SOUND_BUDGET = 24; // 라운드당 통과음 최대 횟수(그 뒤는 조용히 지나간다)
+
+// 결승선 컷오프(작업계획서 §12-8) -- "1등이 결승선을 통과한 시점"은
+// 서버가 아니라 클라이언트가 스스로 감지한다(crossedPassLine이 이미 그
+// 감지 로직이라 그대로 재사용). 감지된 시점부터 cutoff_window_seconds가
+// 지나면 카운트다운을 마감 표시로 바꾸고, 그 순간의 통과 인원을 얼려
+// 보여준다(마감 후에도 karts는 계속 결승선을 넘지만, 그건 "이미 늦은"
+// 카트들이라 살아있는 숫자에 넣으면 실제 통과 인원보다 부풀려 보인다).
+let cutoffFirstCrossAt = null; // performance.now() 기준, 이번 라운드에서 첫 통과자가 나온 시각
+let cutoffFrozenCount = null; // 창이 닫힌 순간 얼린 통과 인원(닫히기 전엔 null)
 
 // ---------------------------------------------------------------------------
 // 장애물 (작업계획서 §12-4, 2026-08-08) -- 이제 서버가 계산한 실제 값이다.
@@ -1818,6 +1831,50 @@ function obstacleScreenPoints(obstacles, passLine, round, halfWidth) {
   });
 }
 
+// 결승선 컷오프(§12-8) 패널 갱신. tick.candidate_count가 없으면(R3 결선,
+// 또는 컷오프 정보 없이 뜬 세션) 패널을 통째로 숨긴다.
+function updateCutoffPanel(tick, now) {
+  if (!cutoffPanelEl || !tick.candidate_count) {
+    if (cutoffPanelEl) cutoffPanelEl.classList.add("hidden");
+    return;
+  }
+  cutoffPanelEl.classList.remove("hidden");
+
+  const windowSeconds = tick.cutoff_window_seconds || 0;
+  const liveCount = crossedPassLine.size;
+
+  if (cutoffFirstCrossAt === null) {
+    cutoffLabelEl.textContent = "결승선 통과 대기 중";
+    cutoffCountEl.textContent = `0/${tick.candidate_count}`;
+    cutoffTimerEl.classList.add("hidden");
+    cutoffPanelEl.classList.remove("closed");
+    return;
+  }
+
+  const elapsedSeconds = (now - cutoffFirstCrossAt) / 1000;
+  const remain = windowSeconds - elapsedSeconds;
+  cutoffTimerEl.classList.remove("hidden");
+
+  if (remain > 0) {
+    cutoffLabelEl.textContent = "🏁 1위 결승 통과! 마감까지";
+    cutoffCountEl.textContent = `${liveCount}/${tick.candidate_count}`;
+    cutoffTimerEl.textContent = `${remain.toFixed(1)}s`;
+    cutoffTimerEl.classList.toggle("urgent", remain <= 3);
+    cutoffTimerEl.classList.remove("closed");
+    cutoffPanelEl.classList.remove("closed");
+  } else {
+    // 창이 닫혔다 -- 그 순간의 통과 인원을 얼려서 보여준다(이후에도 karts는
+    // 계속 결승선을 넘지만, 그건 컷오프에 못 든 카트들이다).
+    if (cutoffFrozenCount === null) cutoffFrozenCount = liveCount;
+    cutoffLabelEl.textContent = "🔒 통과 마감";
+    cutoffCountEl.textContent = `${cutoffFrozenCount}/${tick.candidate_count}`;
+    cutoffTimerEl.textContent = "0.0s";
+    cutoffTimerEl.classList.add("closed");
+    cutoffTimerEl.classList.remove("urgent");
+    cutoffPanelEl.classList.add("closed");
+  }
+}
+
 function drawFrame(positions, tick) {
   const ids = Object.keys(positions);
   if (!ids.length) return;
@@ -1887,6 +1944,10 @@ function drawFrame(positions, tick) {
     crossedRound = tick.round;
     crossedPassLine = new Set(sorted.filter((pid) => positions[pid] >= tick.pass_line));
     crossedSoundCount = 0;
+    // 접속/복구 시점에 이미 결승선을 넘은 카트가 있으면 컷오프 타이머도
+    // 그 시점부터 흐르고 있었다고 보고 즉시 시작한다.
+    cutoffFirstCrossAt = crossedPassLine.size > 0 ? now : null;
+    cutoffFrozenCount = null;
   }
 
   let riskCount = 0;
@@ -1939,6 +2000,7 @@ function drawFrame(positions, tick) {
     // 카트는 짧은 블립만 낸다. 판정 자체는 서버가 하므로 여기서는 연출만.
     if (p >= tick.pass_line && !crossedPassLine.has(pid)) {
       crossedPassLine.add(pid);
+      if (cutoffFirstCrossAt === null) cutoffFirstCrossAt = now;
       if (crossedSoundCount < CROSS_SOUND_BUDGET) {
         crossedSoundCount += 1;
         SFX.finishCross(i);
@@ -1968,6 +2030,7 @@ function drawFrame(positions, tick) {
 
   drawHud(raceCtx, W, H, positions, tick, sorted);
   renderPositionTower(sorted, positions, tick.pass_line);
+  updateCutoffPanel(tick, now);
 
   // 속도 연출: 진행률 + 근접 경쟁 강도에 비례해 속도선/엔진 피치/BGM 텐션을 올린다.
   // 스타트 라이트가 켜져 있는 리드인 구간(tick.countdown)에는 아직 출발
@@ -2407,6 +2470,11 @@ const ws = connectWS((data) => {
     finalLapShownForRound = null;
     photoFinishShownForRound = null;
     lastEffectType.clear();
+    crossedPassLine = new Set();
+    crossedRound = null;
+    cutoffFirstCrossAt = null;
+    cutoffFrozenCount = null;
+    if (cutoffPanelEl) cutoffPanelEl.classList.add("hidden");
     cancelPendingMcLines({ clearCaption: true });
     liveMcSuppressed = false;
     shownLightsForRound.clear();

@@ -178,6 +178,64 @@ html, body {
   50% { transform: scale(1.12); }
 }
 
+/* ---------------------------------------------------------------------
+   결승선 컷오프 패널 (작업계획서 §12-8) -- "1등 통과 후 N초" 카운트다운 +
+   실시간 통과 인원(N/후보수). R1/R2 레이스 중에만 뜨고 R3(결선)에는
+   안 뜬다.
+--------------------------------------------------------------------- */
+
+.cutoff-panel {
+  position: absolute;
+  top: 5rem;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 25;
+  padding: 0.55rem 1.4rem;
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  transition: opacity 0.2s ease;
+}
+
+.cutoff-label {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: #cfd7e5;
+  white-space: nowrap;
+}
+
+.cutoff-count {
+  font-family: "Consolas", monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #ffd166;
+  white-space: nowrap;
+}
+
+.cutoff-timer {
+  font-family: "Consolas", monospace;
+  font-variant-numeric: tabular-nums;
+  font-size: 1.35rem;
+  font-weight: 800;
+  color: #6bff9e;
+  min-width: 3.4rem;
+  text-align: right;
+}
+
+.cutoff-timer.urgent {
+  color: #ff5252;
+  animation: pulse-urgent 0.5s ease-in-out infinite;
+}
+
+.cutoff-timer.closed {
+  color: #ff5252;
+}
+
+.cutoff-panel.closed {
+  border-color: rgba(255, 82, 82, 0.5);
+}
+
 .icon-btn {
   background: rgba(255, 255, 255, 0.06);
   border: 1px solid rgba(255, 255, 255, 0.12);

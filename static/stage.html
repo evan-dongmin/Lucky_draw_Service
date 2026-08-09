@@ -32,6 +32,18 @@
       </div>
     </header>
 
+    <!-- 결승선 컷오프(작업계획서 §12-8): 1등이 결승선을 통과하면 그때부터
+         정해진 시간(R1 10초/R2 5초) 안에 들어온 카트만 다음 라운드로
+         진출한다. 서버가 race_tick에 실어 보내는 candidate_count(순위
+         기준 후보 수)/cutoff_window_seconds(창 길이)를 보고, "1등 통과"
+         순간은 클라이언트가 스스로 감지해(기존 통과선 감지 로직 재사용)
+         카운트다운을 띄운다. R3(결선)에는 컷오프가 없어 이 패널이 안 뜬다. -->
+    <div id="cutoff-panel" class="cutoff-panel glass hidden">
+      <div id="cutoff-label" class="cutoff-label">결승선 통과 대기 중</div>
+      <div id="cutoff-count" class="cutoff-count">0/100</div>
+      <div id="cutoff-timer" class="cutoff-timer hidden">10.0s</div>
+    </div>
+
     <!-- 좌: 실시간 포지션 타워 -->
     <aside id="position-tower" class="glass side-panel">
       <h3>POSITION</h3>
