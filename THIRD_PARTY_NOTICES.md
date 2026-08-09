@@ -12,7 +12,7 @@
 | qrcode[pil] | 8.0 | BSD-3-Clause | 모바일 참여 화면(/mobile) 접속용 QR 코드 생성 |
 | openai | 2.53.0 | Apache-2.0 | AI MC 멘트 사전 생성 -- xAI Grok 호출용 클라이언트(OpenAI 호환 API, 선택적) |
 | google-genai | 2.17.0 | Apache-2.0 | AI MC 멘트 사전 생성 -- Gemini 호출용 클라이언트(Grok 실패 시 대체, 선택적) |
-| pydantic | 2.12.4 | MIT | FastAPI 요청/응답 모델 검증 |
+| pydantic | 2.12.5 | MIT | FastAPI 요청/응답 모델 검증 |
 | python-multipart | 0.0.20 | Apache-2.0 | 명단 파일 업로드(multipart/form-data) 처리 |
 | pytest | 8.3.4 | MIT | 테스트 프레임워크 |
 | pytest-asyncio | 0.25.2 | Apache-2.0 | 비동기(asyncio) 테스트 지원 |
