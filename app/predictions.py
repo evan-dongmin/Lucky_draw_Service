@@ -201,6 +201,45 @@ class PredictionEngine:
             counts[t] = counts.get(t, 0) + 1
         return {k: v / total for k, v in counts.items()}
 
+    def live_stats(self, round_index: int, candidates: list[str] | None = None) -> dict[str, Any]:
+        """선택 창이 열려 있는 동안의 실시간 집계 -- 무대·폰이 "표가 어디로
+        몰리는지"와 "어디가 소수파인지"를 보여주는 데 쓴다(사용자 요청).
+
+        `live_distribution`이 비율만 돌려주는 것과 달리 인원수·참여율·소수파
+        배수까지 함께 낸다. 비율만으로는 "3명 중 2명(67%)"과 "200명 중
+        134명(67%)"이 구분되지 않아 판단 근거가 못 된다.
+
+        `minority_bonus[target]`은 **그 대상이 1위가 됐을 때** 예측 점수에
+        곱해질 소수파 배수다(`score_round`의 `1 + (1 - share)`와 같은 식).
+        아무도 안 고른 곳이 2.0배로 가장 크다 -- 역배를 노리는 사람에게
+        이게 보이면 선택이 한쪽으로만 쏠리지 않는다.
+
+        아직 아무도 안 고른 후보도 목록에 넣으려면 `candidates`를 넘긴다
+        (그래야 "0명 · 2.0배"인 진짜 소수파가 화면에서 사라지지 않는다).
+        상태를 바꾸지 않는 순수 조회 함수다.
+        """
+        counts: dict[str, int] = {name: 0 for name in (candidates or [])}
+        chosen = 0
+        for card in self.cards.values():
+            target = card.target[round_index]
+            if target is None or card.is_auto[round_index]:
+                continue
+            counts[target] = counts.get(target, 0) + 1
+            chosen += 1
+
+        distribution = {name: (n / chosen if chosen else 0.0) for name, n in counts.items()}
+        return {
+            "round": round_index,
+            "distribution": distribution,
+            "counts": counts,
+            # 직접 고른 사람 수 / 카드가 있는 전체 인원(= 명단 전원)
+            "chosen": chosen,
+            "eligible": len(self.cards),
+            "minority_bonus": {
+                name: round(1 + (1 - share), 2) for name, share in distribution.items()
+            },
+        }
+
     def _default_target(self, card: PredictionCard, round_index: int, seed: str) -> str:
         """미선택 참가자의 자동 배정값.
 

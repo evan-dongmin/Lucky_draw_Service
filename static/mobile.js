@@ -433,7 +433,10 @@ function renderPredictionCard(me, round) {
       `<p class="hint-line">이 라운드가 시작되기 전에 선택 창이 열립니다.</p>`;
   } else if (state === "open") {
     const candidates = me.round_candidates[round] || [];
-    const dist = (me.live && me.live[round] && me.live[round].distribution) || {};
+    const live = (me.live && me.live[round]) || {};
+    const dist = live.distribution || {};
+    const counts = live.counts || {};
+    const bonus = live.minority_bonus || {};
     const stats = (me.candidate_stats && me.candidate_stats[round]) || {};
     // 미선택 시 자동 배정 규칙이 라운드마다 다르다 -- R1·R2는 자기 부서,
     // R3는 무작위(결선 진출자 개인이라 "자기 팀"이 없다).
@@ -448,14 +451,23 @@ function renderPredictionCard(me, round) {
       candidates
         .map((c) => {
           const pct = dist[c] ? Math.round(dist[c] * 100) : 0;
-          return `<button class="choice-btn target-btn ${target === c ? "selected" : ""}" data-round="${round}" data-target="${c}">
-            <span class="target-name">${c}</span>
+          const n = counts[c] || 0;
+          const mult = bonus[c];
+          // 아무도/거의 안 고른 곳을 표시한다 -- 소수파를 맞히면 배수가
+          // 커지므로, 이게 보여야 선택이 한쪽으로만 쏠리지 않는다.
+          const isMinority = live.chosen > 0 && mult !== undefined && mult >= 1.8;
+          const multLabel = mult !== undefined ? ` · 적중 시 ×${mult.toFixed(1)}` : "";
+          return `<button class="choice-btn target-btn ${target === c ? "selected" : ""}${isMinority ? " minority" : ""}" data-round="${round}" data-target="${c}">
+            <span class="target-name">${isMinority ? "💎 " : ""}${c}</span>
             ${renderCandidateStat(stats[c])}
-            <span class="pct-label">${pct}%</span>
+            <span class="pct-label">${n}명 · ${pct}%${multLabel}</span>
           </button>`;
         })
         .join("") +
       `</div>` +
+      (live.eligible
+        ? `<p class="choice-participation">지금까지 ${live.chosen}명 선택 / 전체 ${live.eligible}명</p>`
+        : "") +
       `<p class="hint-line choice-hint">${CHOICE_HINT[round] || ""}</p>`;
   } else {
     const autoLabel = isAuto ? (round === 3 ? " (무작위 배정)" : " (우리 부서 자동 선택)") : "";

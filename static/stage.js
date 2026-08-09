@@ -476,6 +476,59 @@ let liveDistributionTimer = null;
 const liveDistributionPanelEl = document.getElementById("live-distribution-panel");
 const liveDistributionListEl = document.getElementById("live-distribution-list");
 
+// 실시간 선택 통계 한 라운드 블록.
+//
+// 비율만 보여주면 "3명 중 2명(67%)"과 "200명 중 134명(67%)"이 구분되지
+// 않아 판단 근거가 못 된다. 그래서 **인원수 · 참여 인원 · 소수파 배수**를
+// 함께 낸다(사용자 요청: "소수파 등을 확인할 수도 있고, 어느 팀에 선택이
+// 몰리는지 파악"). 소수파 배수는 그 대상이 1위가 됐을 때 예측 점수에
+// 곱해질 값이라, 역배를 노리는 사람에게 실제로 쓸모 있는 숫자다.
+function renderDistributionBlock(roundKey, stats) {
+  const counts = (stats && stats.counts) || {};
+  const dist = (stats && stats.distribution) || {};
+  const bonus = (stats && stats.minority_bonus) || {};
+  const chosen = (stats && stats.chosen) || 0;
+  const eligible = (stats && stats.eligible) || 0;
+
+  const entries = Object.keys(counts).sort(
+    (a, b) => (counts[b] || 0) - (counts[a] || 0) || a.localeCompare(b)
+  );
+  if (!entries.length) {
+    return `<div class="dist-round-block"><div class="dist-round-title">R${roundKey} 선택 분포</div><div class="dist-empty">아직 선택이 없습니다</div></div>`;
+  }
+
+  const topCount = counts[entries[0]] || 0;
+  const rows = entries
+    .map((target) => {
+      const n = counts[target] || 0;
+      const pct = Math.round((dist[target] || 0) * 100);
+      // 아무도/거의 안 고른 곳을 눈에 띄게 표시한다. 배수가 1.8배 이상이면
+      // "1위 맞히면 거의 2배"라는 뜻이라 역배 후보로 볼 만하다.
+      const mult = bonus[target];
+      const isMinority = chosen > 0 && mult !== undefined && mult >= 1.8;
+      const isTop = n > 0 && n === topCount;
+      const cls = isTop ? " dist-top" : isMinority ? " dist-minority" : "";
+      const multLabel = mult !== undefined ? `×${mult.toFixed(1)}` : "";
+      return `<div class="dist-row${cls}">
+        <span class="dist-name">${isMinority ? "💎 " : ""}${target}</span>
+        <span class="dist-bar"><i style="width:${pct}%"></i></span>
+        <span class="dist-count">${n}명</span>
+        <span class="dist-pct">${pct}%</span>
+        <span class="dist-mult" title="이 대상이 1위가 되면 예측 점수에 곱해지는 소수파 배수">${multLabel}</span>
+      </div>`;
+    })
+    .join("");
+
+  const participation = eligible
+    ? `${chosen}명 참여 / ${eligible}명 (${Math.round((chosen / eligible) * 100)}%)`
+    : `${chosen}명 참여`;
+  return `<div class="dist-round-block">
+    <div class="dist-round-title">R${roundKey} 선택 분포 <span class="dist-participation">${participation}</span></div>
+    ${rows}
+    <div class="dist-legend">💎 소수파(1위 적중 시 배수 큼) · ×N = 소수파 배수</div>
+  </div>`;
+}
+
 async function pollLiveDistribution() {
   try {
     const data = await fetchJSON("/api/predict/live");
@@ -486,23 +539,7 @@ async function pollLiveDistribution() {
       return;
     }
     liveDistributionPanelEl.classList.remove("hidden");
-    liveDistributionListEl.innerHTML = roundKeys
-      .map((r) => {
-        const dist = rounds[r].distribution || {};
-        const rows = Object.entries(dist)
-          .sort((a, b) => b[1] - a[1])
-          .map(
-            ([target, share]) =>
-              `<div class="dist-row"><span>${target}</span><span class="dist-bar"><i style="width:${Math.round(
-                share * 100
-              )}%"></i></span><span>${Math.round(share * 100)}%</span></div>`
-          )
-          .join("");
-        return `<div class="dist-round-block"><div class="dist-round-title">R${r} 선택 분포</div>${
-          rows || '<div class="dist-empty">아직 선택이 없습니다</div>'
-        }</div>`;
-      })
-      .join("");
+    liveDistributionListEl.innerHTML = roundKeys.map((r) => renderDistributionBlock(r, rounds[r])).join("");
   } catch (e) {
     // 세션 없음/리셋 직후 등 -- 다음 폴링에서 자연 복구되므로 조용히 무시
   }

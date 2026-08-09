@@ -572,3 +572,69 @@ def test_ability_roster_and_effects_stay_in_sync():
         assert entry["style"], f"{entry['id']}에 성향 설명이 없습니다"
     # 미선택자는 중립
     assert characters.effect_for(None) is characters.NEUTRAL_ABILITY
+
+
+# ---------------------------------------------------------------------------
+# 실시간 선택 통계 (무대·폰의 "표가 어디로 몰리나 / 어디가 소수파인가")
+# ---------------------------------------------------------------------------
+
+
+def test_live_stats_reports_counts_participation_and_minority_bonus():
+    """비율만으로는 "3명 중 2명(67%)"과 "200명 중 134명(67%)"이 구분되지
+    않아 판단 근거가 못 된다. 인원수·참여 인원·소수파 배수까지 나와야 한다."""
+    engine = PredictionEngine()
+    engine.enroll_all({f"P{i}": "A팀" for i in range(10)})
+    engine.open_round(1, ["A팀", "B팀", "C팀"])
+
+    engine.set_target("P0", 1, "A팀")
+    engine.set_target("P1", 1, "A팀")
+    engine.set_target("P2", 1, "A팀")
+    engine.set_target("P3", 1, "B팀")
+
+    stats = engine.live_stats(1, candidates=["A팀", "B팀", "C팀"])
+
+    assert stats["counts"] == {"A팀": 3, "B팀": 1, "C팀": 0}
+    assert stats["chosen"] == 4
+    assert stats["eligible"] == 10  # 명단 전원(고르지 않은 사람 포함)
+    assert stats["distribution"]["A팀"] == pytest.approx(0.75)
+
+    # 소수파 배수 = score_round의 1 + (1 - share)와 같은 식
+    assert stats["minority_bonus"]["A팀"] == pytest.approx(1.25)
+    assert stats["minority_bonus"]["B팀"] == pytest.approx(1.75)
+    # 아무도 안 고른 후보가 2.0배로 가장 크고, 목록에서 사라지지 않아야 한다
+    assert stats["minority_bonus"]["C팀"] == pytest.approx(2.0)
+
+
+def test_live_stats_minority_bonus_matches_actual_scoring():
+    """화면에 보여준 배수와 실제 채점 배수가 어긋나면 안 된다 -- 참가자가
+    그 숫자를 보고 고르기 때문이다."""
+    engine = PredictionEngine()
+    engine.enroll_all({f"P{i}": "A팀" for i in range(4)})
+    engine.open_round(1, ["A팀", "B팀"])
+    engine.set_target("P0", 1, "A팀")
+    engine.set_target("P1", 1, "A팀")
+    engine.set_target("P2", 1, "A팀")
+    engine.set_target("P3", 1, "B팀")
+
+    shown = engine.live_stats(1, candidates=["A팀", "B팀"])["minority_bonus"]["B팀"]
+
+    engine.lock_round(1, "seed")
+    engine.score_round(1, ["B팀", "A팀"])  # B팀이 1위 -- 소수파 적중
+
+    got = engine.cards["P3"].rewards[1]["predict"]
+    expected = int(ROUND_BASE_POINTS * 1.0 * RANK_RATIOS[0] * shown)
+    assert got == expected
+
+
+def test_live_stats_excludes_auto_assigned_choices():
+    """자동 배정은 "표"가 아니다 -- score_round의 분포 계산과 같은 규칙이라야
+    창이 닫히는 순간의 화면 값과 실제 채점 분포가 일치한다."""
+    engine = PredictionEngine()
+    engine.enroll_all({f"P{i}": "A팀" for i in range(5)})
+    engine.open_round(1, ["A팀", "B팀"])
+    engine.set_target("P0", 1, "B팀")
+    engine.lock_round(1, "seed")  # 나머지 4명은 자기 부서(A팀)로 자동 배정
+
+    stats = engine.live_stats(1, candidates=["A팀", "B팀"])
+    assert stats["chosen"] == 1
+    assert stats["counts"] == {"A팀": 0, "B팀": 1}

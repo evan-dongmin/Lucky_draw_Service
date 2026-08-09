@@ -1041,6 +1041,14 @@ async def predict_join(payload: PredictJoinRequest) -> dict[str, Any]:
     }
 
 
+def _live_stats_full(round_index: int) -> dict[str, Any]:
+    """무대·폰의 실시간 선택 통계용. 아직 아무도 안 고른 후보도 0명으로
+    함께 내려 "진짜 소수파"가 목록에서 사라지지 않게 한다."""
+    return prediction_engine.live_stats(
+        round_index, candidates=prediction_engine.round_candidates.get(round_index, [])
+    )
+
+
 def _live_stats(round_index: int) -> dict[str, Any]:
     """선택 창이 열려 있는 동안의 실시간 선택 분포(%). 상태를 바꾸지 않는
     순수 조회라 자주 폴링해도 안전하다."""
@@ -1184,7 +1192,7 @@ async def predict_me(token: str) -> dict[str, Any]:
         "card": card.to_dict(),
         "round_state": prediction_engine.round_state,
         "round_candidates": prediction_engine.round_candidates,
-        "live": {str(r): _live_stats(r) for r in open_rounds},
+        "live": {str(r): _live_stats_full(r) for r in open_rounds},
         # 열려 있는 라운드의 후보별 판단 지표(팀별 카트 수 / 직전 등수).
         # 무대 화면에만 있던 정보를 폰에서도 볼 수 있게 한 것(사용자 요청) --
         # 폰만 든 사람과 큰 화면을 보는 사람 사이의 정보 격차를 없앤다.
@@ -1207,7 +1215,7 @@ async def predict_live() -> dict[str, Any]:
     session = _require_session()
     _require_predictions_enabled(session)
     open_rounds = [r for r, s in prediction_engine.round_state.items() if s == "open"]
-    return {"rounds": {str(r): _live_stats(r) for r in open_rounds}}
+    return {"rounds": {str(r): _live_stats_full(r) for r in open_rounds}}
 
 
 class PredictChooseRequest(BaseModel):
