@@ -2,6 +2,7 @@
 뽑는 로직. 레이스/공정성(fairness.py, draw.winners)은 이 파일에서 전혀
 건드리지 않는다 -- 그 위에 얹는 별도 결정 단계이기 때문이다."""
 
+import asyncio
 import pytest
 
 from app import fairness
@@ -241,3 +242,43 @@ def test_prize_basis_values_are_limited_to_the_two_known_labels():
         assert block, f"{filename}에서 {table}을 찾지 못했습니다"
         keys = set(re.findall(r"^\s*(\w+):", block.group(1), re.M))
         assert keys <= allowed, f"{filename}의 {table}에 모르는 basis 키가 있습니다: {keys - allowed}"
+
+
+def test_predictions_disabled_session_still_gets_race_status_and_prize(monkeypatch):
+    """예측 게임이 꺼진 순수 레이싱 세션의 폰도 레이스 현황과 당첨 결과를
+    받아야 한다.
+
+    예전에는 /api/predict/me가 predictions_enabled=False면 곧바로 돌아가서,
+    이 모드의 참가자는 레이스 내내 아무것도 못 보고 당첨 여부조차 알 수
+    없었다 -- 정작 이 모드에서 basis="race"로 당첨자가 정해지는데도."""
+    participants = generate_sample_participants(20, seed=8)
+    session = Session(
+        session_id="no-pred-me",
+        participants=participants,
+        draw_count=2,
+        mode="racing",
+        total_seconds=300.0,
+        predictions_enabled=False,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    draw = fairness.compute_draw("no-pred-me", participants, draw_count=2, seed="no-pred-me-seed")
+    session.draws.append(draw)
+    fairness.reveal(draw)
+    draw.prize_winners = list(draw.winners)
+    draw.prize_basis = "race"
+    main_module.store.set_session(session)
+
+    pid = draw.winners[0]
+    token = "tok-no-pred"
+    main_module.predict_tokens[token] = pid
+    try:
+        payload = asyncio.run(main_module.predict_me(token))
+    finally:
+        main_module.predict_tokens.pop(token, None)
+
+    assert payload["predictions_enabled"] is False
+    # 예측과 무관한 정보는 이 경로에서도 내려와야 한다
+    assert "prize" in payload and payload["prize"]["is_winner"] is True
+    assert payload["prize"]["basis"] == "race"
+    assert "race_status" in payload
+    assert "department_rank" in payload

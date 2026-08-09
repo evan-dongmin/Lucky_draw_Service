@@ -1164,7 +1164,19 @@ async def predict_me(token: str) -> dict[str, Any]:
     if not session.predictions_enabled:
         # 예측 게임이 꺼진 순수 레이싱 세션 -- 카드를 만들 필요가 없다
         # (만들어봐야 라운드가 영원히 열리지 않는 죽은 데이터가 된다).
-        return {"predictions_enabled": False, "card": None, "participant_id": pid}
+        #
+        # 다만 **예측과 무관한 정보는 이쪽에서도 내려줘야 한다**. 예전에는
+        # 여기서 곧바로 돌아가는 바람에, 순수 레이싱 세션의 참가자 폰은
+        # 레이스 내내 아무것도 못 보고 당첨 결과조차 알 수 없었다
+        # (이 모드에서 basis="race"로 당첨자가 정해지는데도).
+        return {
+            "predictions_enabled": False,
+            "card": None,
+            "participant_id": pid,
+            "race_status": _my_race_status(pid),
+            "department_rank": _my_department_rank(pid),
+            "prize": _my_prize_result(session, pid),
+        }
     card = prediction_engine.get_or_create_card(pid)
     open_rounds = [r for r, s in prediction_engine.round_state.items() if s == "open"]
     return {

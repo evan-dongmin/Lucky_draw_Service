@@ -579,10 +579,10 @@ function renderMe(me) {
     scoreSummaryPanelEl.classList.add("hidden");
     predictionsOffNoteEl.classList.remove("hidden");
     leaderboardPanelEl.classList.add("hidden");
-    if (liveRefreshTimer) {
-      clearInterval(liveRefreshTimer);
-      liveRefreshTimer = null;
-    }
+    // 예측 게임이 꺼져 있어도 **레이스 자체는 돌아간다**. 예전에는 여기서
+    // 폴링을 통째로 꺼버려서, 순수 레이싱 세션의 폰은 "내 카트 현황"이
+    // phase 경계에서 얼어붙은 채로 남았다.
+    updateLiveRefreshTimer(me);
     return;
   }
   predictionsOffNoteEl.classList.add("hidden");
@@ -603,6 +603,8 @@ function renderMe(me) {
 // 계속 바뀐다. 서버가 실시간으로 밀어주지 않으므로(브로드캐스트 폭주 방지),
 // 창이 열려 있을 때만 짧은 주기로 폴링해 "표가 몰립니다" 감각을 살린다.
 function anyRoundOpen(me) {
+  // 예측 게임이 꺼진 세션에는 round_state 자체가 없다.
+  if (!me.round_state) return false;
   return Object.values(me.round_state).some((s) => s === "open");
 }
 
