@@ -177,15 +177,31 @@ def _hazard_specs(seed: str, round_index: int) -> tuple[dict[str, Any], ...]:
     return tuple(hazards)
 
 
+def has_finish_line(pass_line_value: float | None) -> bool:
+    """이 라운드에 **의미 있는 결승선이 있는가**.
+
+    `pass_line`은 전원 통과 시 -0.01, 전원 탈락 시 1.01 같은 축퇴값을
+    돌려준다. 판정용으로는 올바르지만(전원 통과면 모든 위치가 -0.01보다
+    크다) "화면에 선을 어디 그릴지"나 "1등이 언제 선을 넘는지"의 기준으로
+    쓰면 곧바로 망가진다 -- 출발하자마자 전원이 통과한 것으로 잡히기
+    때문이다. 그런 라운드에는 컷오프·카운트다운을 아예 걸지 않는다.
+
+    전원 통과는 드문 경우가 아니다: 참가자가 100명 이하이면 R1 통과 정원
+    (R1_PASS_COUNT=100)이 전체 인원보다 커서 항상 이 상태가 된다.
+    """
+    return pass_line_value is not None and 0 < pass_line_value <= 1.0
+
+
 def hazard_line(pass_line_value: float | None) -> float:
     """장애물 배치의 기준이 되는 결승선 위치.
 
-    `pass_line`은 전원 통과(-0.01)나 전원 탈락(1.01) 같은 극단값을 돌려줄 수
-    있으므로, 장애물이 트랙 밖으로 나가거나 출발선에 뭉치지 않도록 상식적인
-    범위로 자른다. 값이 없으면(테스트 등) 트랙 전체를 쓴다."""
-    if pass_line_value is None:
+    의미 있는 결승선이 없으면(전원 통과/전원 탈락, 또는 값이 없는 테스트
+    호출) **트랙 전체**를 쓴다. 예전에는 0.25로 하한을 뒀는데, 전원 통과
+    (-0.01)일 때 그 하한에 걸려 장애물 10개가 전부 트랙 앞 25%에 뭉치고
+    나머지 75%가 텅 비었다(참가자 100명 이하 행사에서 항상 발생)."""
+    if not has_finish_line(pass_line_value):
         return 1.0
-    return min(1.0, max(0.25, pass_line_value))
+    return pass_line_value  # type: ignore[return-value]
 
 
 def obstacle_layout(

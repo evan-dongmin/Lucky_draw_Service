@@ -550,6 +550,13 @@ async def _run_race_phase(
     # 카트뿐이기 때문이다. 즉 R3의 창은 "언제 끝낼지"를 정하는 연출 규칙이다.
     r3_finish_deadline: float | None = None
 
+    # **이 라운드에 의미 있는 결승선이 있는가.** 전원 통과(pass_line=-0.01)면
+    # 출발하자마자 모든 카트가 "통과"로 잡히므로 컷오프·카운트다운·화면
+    # 워프가 전부 망가진다(참가자 100명 이하면 R1이 항상 이 상태다).
+    # 그런 라운드에는 컷오프 정보를 아예 안 내려보내 화면이 패널을 숨기게
+    # 한다 -- 어차피 아무도 탈락하지 않는 순수 순위 라운드다.
+    round_has_finish_line = race.has_finish_line(line)
+
     # 이 라운드의 장애물 배치는 (시드, 라운드, 결승선)으로만 정해지는 정적인
     # 값이라 매 틱 다시 계산할 필요 없이 한 번만 만든다(§12-4). 시드 자체는
     # 절대 전송하지 않고, 이미 파생된 배치(위치·레인·종류·움직임)만 내려준다.
@@ -594,8 +601,11 @@ async def _run_race_phase(
             # (positions[pid] >= pass_line) 카운트다운을 띄우고, 그 사이
             # 결승선을 넘는 카트 수를 "N/후보수"로 실시간 표시한다.
             # R3도 같은 UI를 쓰되, 창이 닫히면 레이스가 실제로 끝난다.
-            "candidate_count": pass_count,
-            "cutoff_window_seconds": cutoff_window_seconds,
+            "candidate_count": pass_count if round_has_finish_line else None,
+            "cutoff_window_seconds": cutoff_window_seconds if round_has_finish_line else None,
+            # 화면이 진행률을 결승선 기준으로 워프할지 판단하는 값.
+            # 결승선이 없으면 워프 없이 트랙 전체에 고르게 펼쳐야 한다.
+            "has_finish_line": round_has_finish_line,
             # 결선에서 창이 닫혀 레이스를 조기 종료하는 틱인지. 무대가 이
             # 신호로 체커기 연출을 띄우고 렌더 루프를 정리한다.
             "race_over": False,
@@ -603,7 +613,7 @@ async def _run_race_phase(
 
         # 결선: 1등이 결승선을 넘는 순간부터 창(5초)을 재고, 창이 닫히면
         # 남은 구간 시간을 기다리지 않고 곧바로 결과 발표로 넘어간다.
-        if round_index == 3 and cutoff_window_seconds:
+        if round_index == 3 and cutoff_window_seconds and round_has_finish_line:
             if r3_finish_deadline is None and any(p >= line for p in positions.values()):
                 r3_finish_deadline = elapsed + cutoff_window_seconds
             if r3_finish_deadline is not None and elapsed >= r3_finish_deadline:

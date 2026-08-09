@@ -1150,6 +1150,16 @@ const FINISH_VISUAL_FRACTION = 0.965;
 
 function warpProgress(raw, passLine) {
   const t = Math.min(1, Math.max(0, raw));
+  // **결승선이 없는 라운드는 워프하지 않는다.** 전원 통과면 서버가
+  // pass_line으로 -0.01을 보내는데(판정상으로는 옳다 -- 모든 위치가 그보다
+  // 크다), 예전에는 이 값을 0.02로 클램프해서 워프해버렸다. 그 결과 raw
+  // 2%만 지나면 화면상 96.5% 지점(체커기)에 도달하고, 남은 레이스 내내
+  // 카트 전체가 마지막 3.5% 구간에 뭉쳐 기어갔다.
+  // **참가자가 100명 이하면 R1이 항상 이 상태**라(통과 정원 100명이 전체
+  // 인원보다 크다) 소규모 행사에서는 1라운드가 통째로 망가져 보였다.
+  // 그런 라운드는 아무도 탈락하지 않는 순수 순위 라운드이므로, 카트가
+  // 트랙 전체에 자연스럽게 펼쳐지도록 그대로 둔다.
+  if (!(passLine > 0 && passLine <= 1)) return t;
   const pl = Math.min(0.98, Math.max(0.02, passLine));
   if (t <= pl) {
     return (t / pl) * FINISH_VISUAL_FRACTION;

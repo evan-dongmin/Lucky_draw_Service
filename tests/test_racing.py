@@ -292,3 +292,73 @@ async def test_race_tick_cache_is_cleared_when_sequence_completes(monkeypatch):
     # 캐시가 비었으면 폰의 레이스 현황 카드는 조용히 사라진다(포인트 순위만 남음)
     assert main_module._my_race_status(participants[0].id) is None
     assert main_module._my_department_rank(participants[0].id) is None
+
+
+@pytest.mark.asyncio
+async def test_final_round_does_not_end_instantly_when_everyone_qualifies(monkeypatch):
+    """당첨자 수와 결선 진출자 수가 같으면 결선 통과선이 -0.01(전원 통과)이
+    된다. 이때 "1위가 결승선을 넘었는가" 판정이 **출발 전부터 참**이라,
+    결선 카운트다운이 곧바로 걸려 레이스가 5초 만에 끝나 버렸다.
+
+    resolve_finalist_count(10) == 10처럼 당첨자가 10명 이상이면 항상 이
+    상태가 되므로 드문 경우가 아니다."""
+    assert fairness.resolve_finalist_count(10) == 10, "전제: 당첨 10명이면 결선도 10명"
+
+    participants = generate_sample_participants(40, seed=41)
+    draw = fairness.compute_draw("all-win", participants, draw_count=10, seed="all-win-seed")
+    session = Session(
+        session_id="all-win",
+        participants=participants,
+        draw_count=10,
+        mode="racing",
+        total_seconds=300.0,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    session.draws.append(draw)
+    main_module.store.set_session(session)
+
+    monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.0)
+    monkeypatch.setattr(main_module, "RACE_COUNTDOWN_SECONDS", 0.0)
+
+    messages: list[dict] = []
+
+    async def fake_broadcast(message, sender=None, roles=None):
+        messages.append(message)
+
+    monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
+
+    loop = asyncio.get_running_loop()
+    ticks = iter([i * 0.5 for i in range(4000)])
+    monkeypatch.setattr(loop, "time", lambda: next(ticks))
+
+    await main_module._run_race_phase(draw, 3, duration_seconds=120.0, session_id="all-win")
+
+    r3 = [m for m in messages if m["type"] == "race_tick"]
+    last = r3[-1]
+    assert last["pass_line"] <= 0, "전제: 전원 통과라 통과선이 축퇴값"
+    # 결승선이 없으므로 조기 종료도, 컷오프 UI도 없어야 한다
+    assert last["race_over"] is False
+    assert last["progress_ratio"] == pytest.approx(1.0), "구간을 끝까지 달려야 한다"
+    assert last["has_finish_line"] is False
+    assert last["candidate_count"] is None
+    assert last["cutoff_window_seconds"] is None
+
+
+def test_obstacles_spread_over_whole_track_when_everyone_passes():
+    """전원 통과라 결승선이 없으면 장애물은 트랙 전체에 펼쳐져야 한다.
+
+    예전에는 hazard_line이 0.25로 하한을 둬서, 장애물 10개가 전부 트랙 앞
+    25%에 뭉치고 나머지 75%가 텅 비었다(참가자 100명 이하 행사에서 항상)."""
+    from app import race as race_module
+
+    assert race_module.has_finish_line(-0.01) is False
+    assert race_module.has_finish_line(1.01) is False
+    assert race_module.has_finish_line(0.68) is True
+
+    layout = race_module.obstacle_layout("spread-seed", 1, -0.01)
+    positions = sorted(h["at_ratio"] for h in layout)
+    lo, hi = race_module.HAZARD_SPAN
+    assert positions[0] >= lo - 1e-9
+    assert positions[-1] <= hi + 1e-9
+    # 트랙 뒷부분(50% 이후)에도 장애물이 있어야 한다
+    assert any(p > 0.5 for p in positions), f"장애물이 앞쪽에만 뭉쳐 있습니다: {positions}"
