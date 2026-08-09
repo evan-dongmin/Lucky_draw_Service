@@ -162,10 +162,50 @@ def test_obstacle_layout_is_deterministic_and_well_formed():
     layout2 = obstacle_layout("seed-x", round_index=1)
     assert layout1 == layout2
     assert len(layout1) == race.HAZARDS_PER_ROUND
+    lo, hi = race.HAZARD_SPAN
     for hazard in layout1:
-        assert 0.12 <= hazard["at_ratio"] <= 0.80
+        assert lo <= hazard["at_fraction"] <= hi
         assert 0 <= hazard["lane"] < LANE_COUNT
         assert hazard["penalty"] > 0
+        # 화면에서 움직이게 하는 파라미터 -- 좌우 흔들림이 자기 레인을
+        # 벗어나면 "내 레인이 아닌데 왜 맞았지"로 보인다.
+        assert 0 < hazard["drift_amp"] <= race.HAZARD_DRIFT_LANES
+        assert hazard["drift_speed"] > 0
+
+
+def test_obstacles_are_placed_before_the_finish_line_with_even_spacing():
+    """사용자 요청: 장애물은 결승선 **이후**가 아니라 결승선까지 가는
+    도중에 적절한 간격으로 놓여야 한다."""
+    pass_line_value = 0.55  # R1처럼 결승선이 트랙 중간쯤인 경우
+    layout = obstacle_layout("spacing-seed", 1, pass_line_value)
+
+    # (1) 전부 결승선 앞쪽에 있다
+    assert all(0 < h["at_ratio"] < pass_line_value for h in layout)
+
+    # (2) 한곳에 뭉치지 않는다 -- 이웃 간격이 균등 슬롯의 절반 이상
+    positions = sorted(h["at_ratio"] for h in layout)
+    gaps = [b - a for a, b in zip(positions, positions[1:])]
+    lo, hi = race.HAZARD_SPAN
+    even_gap = (hi - lo) * pass_line_value / race.HAZARDS_PER_ROUND
+    assert min(gaps) > even_gap * 0.5, f"장애물이 뭉쳐 있습니다: {gaps}"
+
+    # (3) 결승선이 더 앞이면 장애물도 함께 앞으로 당겨진다(비율 배치)
+    tight = obstacle_layout("spacing-seed", 1, 0.3)
+    assert all(h["at_ratio"] < 0.3 for h in tight)
+
+
+def test_obstacle_placement_does_not_change_penalty_totals():
+    """결승선 위치는 "어디서 맞는지"만 바꾸고 "얼마나 맞는지"는 못 바꾼다.
+
+    이게 깨지면 순위 -> 통과선 -> 장애물 -> 페널티 -> 순위로 순환 참조가
+    생겨 결정론이 무너진다(app/race.py의 _hazard_specs 설명 참고)."""
+    seed = "no-circular-seed"
+    for pid in (f"P{i:03d}" for i in range(40)):
+        base = total_obstacle_penalty(seed, pid)
+        # obstacle_layout을 어떤 결승선으로 부르든 페널티 합은 그대로다
+        obstacle_layout(seed, 1, 0.3)
+        obstacle_layout(seed, 1, 0.9)
+        assert total_obstacle_penalty(seed, pid) == base
 
 
 def test_obstacle_layout_differs_by_round_for_same_seed():
@@ -218,7 +258,7 @@ def test_position_at_with_seed_dips_then_recovers_exactly_to_target():
     round_index = 1
     hits = kart_hits(seed, pid, round_index)
     assert hits, "이 테스트는 실제로 장애물에 맞는 조합을 전제로 한다"
-    at_ratio = hits[0]["at_ratio"]
+    at_ratio = hits[0]["at_fraction"]  # pass_line_value 미지정 = 트랙 전체 기준
 
     total = 250
     rank_index = 10
@@ -243,7 +283,7 @@ def test_position_at_with_seed_never_goes_negative():
 def test_compute_effects_only_lists_karts_currently_hit():
     seed = "test-seed-1"
     ranking = [f"P{i:03d}" for i in range(30)]
-    at_ratio = kart_hits(seed, "P000", 1)[0]["at_ratio"]
+    at_ratio = kart_hits(seed, "P000", 1)[0]["at_fraction"]
 
     before = compute_effects(ranking, max(0.0, at_ratio - 0.05), round_index=1, seed=seed)
     after = compute_effects(ranking, min(1.0, at_ratio + 0.01), round_index=1, seed=seed)
@@ -307,6 +347,8 @@ def test_crossing_ratio_is_deterministic():
 def test_obstacle_layout_cache_returns_immutable_tuple():
     layout = obstacle_layout("cache-seed", 1)
     assert isinstance(layout, tuple)
-    # 캐시된 값이라 매번 같은 객체가 돌아온다 -- 리스트였다면 호출부가
-    # 실수로 변형해 다른 호출에까지 영향을 줄 수 있었다.
-    assert obstacle_layout("cache-seed", 1) is layout
+    assert obstacle_layout("cache-seed", 1) == layout
+    # 캐시는 위치 무관 명세(_hazard_specs)에 걸려 있다 -- 결승선마다 절대
+    # 위치가 달라지므로 obstacle_layout 자체는 매번 새 튜플을 만든다.
+    # 튜플이라 호출부가 캐시된 내부 값을 실수로 변형할 수 없다.
+    assert race._hazard_specs("cache-seed", 1) is race._hazard_specs("cache-seed", 1)

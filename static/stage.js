@@ -1822,25 +1822,41 @@ function drawObstacle(ctx, o, size) {
   ctx.restore();
 }
 
-// 서버가 보낸 고정 배치(id/at_ratio/lane/type)를 화면 좌표로 바꾼다.
-// lane(0..LANE_COUNT-1)은 트랙 폭을 균등 분할한 고정 축이다(카트 렌더링용
-// laneFor와는 무관). 크기·회전 위상은 id로부터 결정론적으로 뽑아 매 프레임
-// 다시 계산해도 값이 흔들리지 않게 한다(진짜 랜덤이면 프레임마다 깜빡인다).
+// 서버가 보낸 배치(id/at_ratio/lane/type + 움직임 파라미터)를 화면 좌표로
+// 바꾼다. lane(0..LANE_COUNT-1)은 트랙 폭을 균등 분할한 고정 축이다(카트
+// 렌더링용 laneFor와는 무관).
+//
+// **장애물은 제자리에 멈춰 있지 않고 살아 움직인다**(사용자 요청). 다만
+// 움직임은 전부 서버가 시드에서 파생해 내려준 값(drift_*/spin_speed)으로만
+// 만들어지므로, 관전 화면이 몇 대든 똑같이 움직이고 결과에는 영향이 없다.
+// 좌우 흔들림 폭은 자기 레인 안으로 제한돼 있다 -- 옆 레인을 침범하면
+// "저건 내 레인이 아닌데 왜 맞았지"로 보이기 때문이다(충돌 판정은 서버가
+// 레인 일치로만 결정한다).
 function obstacleScreenPoints(obstacles, passLine, round, halfWidth) {
   if (!obstacles || !obstacles.length) return [];
   const laneWidth = (halfWidth * 2 * 0.88) / LANE_COUNT;
-  const now = performance.now();
+  const t = performance.now() / 1000;
   return obstacles.map((o) => {
-    const laneOffset = (o.lane - (LANE_COUNT - 1) / 2) * laneWidth;
-    const center = trackPointAt(warpProgress(o.at_ratio, passLine), round);
+    // 서버가 파라미터를 안 준 경우(구버전 세션)에도 id 해시로 폴백해
+    // 최소한의 움직임은 유지한다.
+    const amp = o.drift_amp !== undefined ? o.drift_amp : 0.3;
+    const speed = o.drift_speed !== undefined ? o.drift_speed : 0.6;
+    const phase = (o.drift_phase !== undefined ? o.drift_phase : hashToUnit(o.id + ":p")) * Math.PI * 2;
+    const spinSpeed = o.spin_speed !== undefined ? o.spin_speed : 0;
+    const sizeScale = o.size_scale !== undefined ? o.size_scale : 1;
+
+    const wobble = Math.sin(t * speed * Math.PI * 2 + phase);
+    const laneOffset = (o.lane - (LANE_COUNT - 1) / 2) * laneWidth + wobble * amp * laneWidth;
+    // 진행 방향으로도 아주 살짝 떠다니게 한다(폭이 작아 충돌 시점 인식에는
+    // 영향을 주지 않으면서 "떠 있는 물체" 느낌을 만든다).
+    const bob = Math.cos(t * speed * Math.PI * 2 * 0.7 + phase) * 0.004;
+    const center = trackPointAt(warpProgress(Math.max(0, o.at_ratio + bob), passLine), round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);
-    const sizeScale = 0.8 + hashToUnit(o.id + ":size") * 0.55;
-    const spinSpeed = (hashToUnit(o.id + ":spinDir") - 0.5) * 0.0015;
     return {
       ...o,
       sizeScale,
-      spinPhase: hashToUnit(o.id + ":spinPhase") * Math.PI * 2 + now * spinSpeed,
+      spinPhase: phase + t * spinSpeed,
       x: center.x + nx * laneOffset,
       y: center.y + ny * laneOffset,
     };

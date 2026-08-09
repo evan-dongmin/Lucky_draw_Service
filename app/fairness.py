@@ -215,6 +215,10 @@ def _compute_outcome(
     if draw_count > len(eligible_ids):
         raise FairnessError("당첨 인원수가 참가 가능 인원보다 많습니다")
 
+    # 순위 자체는 장애물 페널티 합(레인 일치로만 정해짐)으로 조정된다 --
+    # 장애물이 트랙 어디에 놓이는지는 여기에 영향을 주지 않으므로,
+    # "순위 -> 통과선 -> 장애물 위치"로 이어지는 순환 참조가 생기지 않는다
+    # (app/race.py의 _hazard_specs 설명 참고).
     ranking = _obstacle_adjusted_ranking(eligible_ids, seed)
     total0 = len(ranking)
 

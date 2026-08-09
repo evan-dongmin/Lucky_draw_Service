@@ -108,39 +108,105 @@ def lane_for(seed: str, participant_id: str, round_index: int) -> int:
     return int(_pseudo_noise(f"{seed}:{participant_id}:{round_index}:lane") * LANE_COUNT)
 
 
+# 장애물이 놓이는 구간 -- **결승선(통과선)까지 가는 도중**의 몇 %~몇 %인지
+# (사용자 요청: "결승선 이후가 아니라 결승선까지 가는 도중에 적절한 간격으로").
+# 절대 진행률이 아니라 결승선까지의 **비율**이라, 라운드마다 결승선 위치가
+# 달라도 장애물은 항상 결승선 앞쪽에만 고르게 깔린다.
+HAZARD_SPAN = (0.08, 0.92)
+
+# 장애물이 자기 슬롯 안에서 흔들릴 수 있는 최대 폭(슬롯 길이 대비). 1.0이면
+# 옆 장애물과 겹칠 수 있으므로 0.7로 둔다 -- "적절한 간격"을 유지하면서도
+# 기계적으로 정확히 등간격은 아니게 만드는 값.
+HAZARD_JITTER = 0.7
+
+# 장애물이 좌우로 흔들리는 최대 폭(레인 너비 대비). 0.5를 넘으면 옆 레인을
+# 침범해 "저 장애물은 내 레인이 아닌데 왜 맞았지"처럼 보이므로, 레인 정체성이
+# 유지되는 선에서만 움직이게 한다(충돌 판정은 레인 일치로만 정해진다).
+HAZARD_DRIFT_LANES = 0.38
+
+
 @lru_cache(maxsize=64)
-def obstacle_layout(seed: str, round_index: int) -> tuple[dict[str, Any], ...]:
-    """이 라운드의 장애물 배치(트랙 진행률 x 레인). (시드, 라운드)만으로
-    정해지며 참가자 수·화면 크기와 무관하다 -- 커밋 시점에 이미 확정된다.
+def _hazard_specs(seed: str, round_index: int) -> tuple[dict[str, Any], ...]:
+    """이 라운드 장애물의 **위치 무관** 명세(레인·종류·페널티 + 배치 비율).
+
+    여기서 `at_fraction`은 절대 진행률이 아니라 **결승선까지의 비율**(0..1)
+    이다. 절대 위치는 결승선 값이 필요하므로 `obstacle_layout`에서 곱한다.
+
+    이렇게 나눠 둔 이유가 중요하다: 순위 계산에 쓰이는 페널티 합
+    (`total_obstacle_penalty`)은 **레인 일치로만** 정해져서 결승선 위치를
+    전혀 필요로 하지 않는다. 만약 이 함수가 결승선을 인자로 받으면
+    "순위 -> 통과자 수 -> 결승선 -> 장애물 -> 페널티 -> 순위"로 순환 참조가
+    생긴다. 위치가 필요한 것은 dip 타이밍·화면 렌더뿐이고, 그쪽은 결승선이
+    이미 확정된 뒤에만 호출된다(R1 결승선 -> R1 통과자 -> R2 결승선 -> ...
+    순방향 체인이라 순환이 없다).
 
     `lru_cache`를 건다 -- 결승선 컷오프의 크로싱 타임 계산(`crossing_ratio`)이
-    카트마다 수백 번씩 반복 호출하는데, 매번 10개 해저드 x 3회 해시를
-    다시 계산하면 250명 규모에서 눈에 띄게 느려진다. (시드, 라운드) 조합은
-    커밋 하나당 최대 3개뿐이라 캐시 크기 걱정은 없다. 튜플로 반환해
-    캐시된 내부 객체를 호출부가 실수로 변형할 수 없게 막는다."""
+    카트마다 수백 번씩 반복 호출하는데, 매번 해시를 다시 계산하면 250명
+    규모에서 눈에 띄게 느려진다. (시드, 라운드) 조합은 커밋 하나당 최대
+    3개뿐이라 캐시 크기 걱정은 없다. 튜플로 반환해 캐시된 내부 객체를
+    호출부가 실수로 변형할 수 없게 막는다."""
+    lo, hi = HAZARD_SPAN
+    slot = (hi - lo) / HAZARDS_PER_ROUND
     hazards: list[dict[str, Any]] = []
     for i in range(HAZARDS_PER_ROUND):
         base = f"{seed}:{round_index}:hazard:{i}"
-        at_ratio = 0.12 + _pseudo_noise(f"{base}:pos") * 0.68  # 0.12~0.80 구간
+        # 균등 슬롯의 중앙을 기준으로 슬롯 안에서만 흔든다 -- 예전처럼 구간
+        # 전체에 균일 난수를 뿌리면 몇 개가 한곳에 뭉치고 넓은 구간이 텅 빈다.
+        center = lo + slot * (i + 0.5)
+        jitter = (_pseudo_noise(f"{base}:pos") - 0.5) * slot * HAZARD_JITTER
+        at_fraction = min(hi, max(lo, center + jitter))
         lane = int(_pseudo_noise(f"{base}:lane") * LANE_COUNT)
         type_idx = int(_pseudo_noise(f"{base}:type") * len(OBSTACLE_CATALOG))
         obstacle_type, penalty = OBSTACLE_CATALOG[type_idx]
         hazards.append(
             {
                 "id": f"r{round_index}-{i}",
-                "at_ratio": at_ratio,
+                "at_fraction": at_fraction,
                 "lane": lane,
                 "type": obstacle_type,
                 "penalty": penalty,
+                # 화면에서 살아 움직이게 하는 파라미터(연출 전용, 전부 시드
+                # 파생이라 관전자 화면 여러 대가 똑같이 움직인다).
+                "drift_amp": (0.35 + _pseudo_noise(f"{base}:amp") * 0.65) * HAZARD_DRIFT_LANES,
+                "drift_speed": 0.35 + _pseudo_noise(f"{base}:speed") * 0.75,  # Hz
+                "drift_phase": _pseudo_noise(f"{base}:phase"),  # 0..1 (x2pi)
+                "spin_speed": (_pseudo_noise(f"{base}:spin") - 0.5) * 1.6,  # 회전/초
+                "size_scale": 0.85 + _pseudo_noise(f"{base}:size") * 0.5,
             }
         )
     return tuple(hazards)
 
 
+def hazard_line(pass_line_value: float | None) -> float:
+    """장애물 배치의 기준이 되는 결승선 위치.
+
+    `pass_line`은 전원 통과(-0.01)나 전원 탈락(1.01) 같은 극단값을 돌려줄 수
+    있으므로, 장애물이 트랙 밖으로 나가거나 출발선에 뭉치지 않도록 상식적인
+    범위로 자른다. 값이 없으면(테스트 등) 트랙 전체를 쓴다."""
+    if pass_line_value is None:
+        return 1.0
+    return min(1.0, max(0.25, pass_line_value))
+
+
+def obstacle_layout(
+    seed: str, round_index: int, pass_line_value: float | None = None
+) -> tuple[dict[str, Any], ...]:
+    """이 라운드의 장애물 배치(절대 트랙 진행률 x 레인 + 움직임 파라미터).
+
+    `at_ratio`는 **결승선 앞쪽 구간에만** 놓이도록 결승선 값을 곱해 만든다.
+    (시드, 라운드, 결승선)만으로 정해지며 참가자 개개인·화면 크기와는
+    무관하다 -- 커밋 시점에 이미 확정된다."""
+    line = hazard_line(pass_line_value)
+    return tuple({**h, "at_ratio": h["at_fraction"] * line} for h in _hazard_specs(seed, round_index))
+
+
 def kart_hits(seed: str, participant_id: str, round_index: int) -> list[dict[str, Any]]:
-    """이 카트가 이 라운드에 실제로 맞는 장애물 목록(레인 일치 기준)."""
+    """이 카트가 이 라운드에 실제로 맞는 장애물 목록(레인 일치 기준).
+
+    결승선 위치와 무관하다 -- 어디에 놓이든 "레인이 같으면 맞는다"이므로
+    페널티 합(=순위)이 결승선에 의존하지 않는다(`_hazard_specs` 설명 참고)."""
     lane = lane_for(seed, participant_id, round_index)
-    return [h for h in obstacle_layout(seed, round_index) if h["lane"] == lane]
+    return [h for h in _hazard_specs(seed, round_index) if h["lane"] == lane]
 
 
 def round_obstacle_penalty(seed: str, participant_id: str, round_index: int) -> float:
@@ -156,34 +222,48 @@ def total_obstacle_penalty(seed: str, participant_id: str) -> float:
     return min(total, OBSTACLE_PENALTY_CAP)
 
 
-def _obstacle_dip_at(seed: str, participant_id: str, round_index: int, progress_ratio: float) -> float:
+def _obstacle_dip_at(
+    seed: str,
+    participant_id: str,
+    round_index: int,
+    progress_ratio: float,
+    pass_line_value: float | None = None,
+) -> float:
     """이 순간(progress_ratio)에 장애물 때문에 목표 위치에서 실제로 깎여 있는 양.
 
-    맞은 지점(at_ratio)부터 시작해 (1 - at_ratio) 구간에 걸쳐 선형으로
-    회복하므로, progress_ratio=1.0에서는 항상 정확히 0이 된다(장애물이
-    통과 판정을 어긋나게 만들 수 없다). 그 전까지는 진짜로(연출용 오프셋이
-    아니라 이 함수의 반환값 자체가) 위치가 내려간다."""
+    맞은 지점(결승선 앞쪽에 놓인 장애물의 절대 위치)부터 시작해 트랙 끝까지
+    선형으로 회복하므로, progress_ratio=1.0에서는 항상 정확히 0이 된다
+    (장애물이 통과 판정을 어긋나게 만들 수 없다). 그 전까지는 진짜로
+    (연출용 오프셋이 아니라 이 함수의 반환값 자체가) 위치가 내려간다."""
+    line = hazard_line(pass_line_value)
     dip = 0.0
     for h in kart_hits(seed, participant_id, round_index):
-        if progress_ratio < h["at_ratio"]:
+        at_ratio = h["at_fraction"] * line
+        if progress_ratio < at_ratio:
             continue
-        span = max(1e-6, 1.0 - h["at_ratio"])
-        recovered = min(1.0, (progress_ratio - h["at_ratio"]) / span)
+        span = max(1e-6, 1.0 - at_ratio)
+        recovered = min(1.0, (progress_ratio - at_ratio) / span)
         dip += h["penalty"] * (1.0 - recovered)
     return dip
 
 
 def active_effect_at(
-    seed: str, participant_id: str, round_index: int, progress_ratio: float
+    seed: str,
+    participant_id: str,
+    round_index: int,
+    progress_ratio: float,
+    pass_line_value: float | None = None,
 ) -> dict[str, Any] | None:
     """이 순간 이 카트에 걸려 있는 가장 강한 장애물 효과(연출용 -- 스핀/사운드
     트리거에 쓰라고 강도까지 함께 내려준다). 없으면 None."""
+    line = hazard_line(pass_line_value)
     best: dict[str, Any] | None = None
     for h in kart_hits(seed, participant_id, round_index):
-        if progress_ratio < h["at_ratio"]:
+        at_ratio = h["at_fraction"] * line
+        if progress_ratio < at_ratio:
             continue
-        span = max(1e-6, 1.0 - h["at_ratio"])
-        recovered = min(1.0, (progress_ratio - h["at_ratio"]) / span)
+        span = max(1e-6, 1.0 - at_ratio)
+        recovered = min(1.0, (progress_ratio - at_ratio) / span)
         strength = 1.0 - recovered
         if strength <= 0:
             continue
@@ -199,6 +279,7 @@ def position_at(
     participant_id: str,
     round_index: int,
     seed: str | None = None,
+    pass_line_value: float | None = None,
 ) -> float:
     """경과 비율(0..1)에서의 트랙 위치.
 
@@ -223,7 +304,7 @@ def position_at(
     base = target * (progress_ratio ** pace_exponent(participant_id, round_index))
     if seed is None:
         return base
-    dip = _obstacle_dip_at(seed, participant_id, round_index, progress_ratio)
+    dip = _obstacle_dip_at(seed, participant_id, round_index, progress_ratio, pass_line_value)
     return max(0.0, base - dip)
 
 
@@ -247,7 +328,16 @@ def crossing_ratio(
         return 0.0
     for i in range(1, steps + 1):
         ratio = i / steps
-        if position_at(rank_index, total, ratio, participant_id, round_index, seed=seed) >= pass_line_value:
+        position = position_at(
+            rank_index,
+            total,
+            ratio,
+            participant_id,
+            round_index,
+            seed=seed,
+            pass_line_value=pass_line_value,
+        )
+        if position >= pass_line_value:
             return ratio
     return None
 
@@ -257,23 +347,30 @@ def compute_tick(
     progress_ratio: float,
     round_index: int,
     seed: str | None = None,
+    pass_line_value: float | None = None,
 ) -> dict[str, float]:
     total = len(ranking_ids)
     return {
-        pid: position_at(idx, total, progress_ratio, pid, round_index, seed=seed)
+        pid: position_at(
+            idx, total, progress_ratio, pid, round_index, seed=seed, pass_line_value=pass_line_value
+        )
         for idx, pid in enumerate(ranking_ids)
     }
 
 
 def compute_effects(
-    ranking_ids: list[str], progress_ratio: float, round_index: int, seed: str
+    ranking_ids: list[str],
+    progress_ratio: float,
+    round_index: int,
+    seed: str,
+    pass_line_value: float | None = None,
 ) -> dict[str, dict[str, Any]]:
     """이 틱에서 장애물 효과가 걸려 있는 카트만 담은 맵(pid -> {type, strength}).
     무대 화면이 스핀/사운드를 언제 재생할지는 이 값을 그대로 쓴다 --
     클라이언트가 충돌 판정을 직접 재현할 필요가 없다."""
     effects: dict[str, dict[str, Any]] = {}
     for pid in ranking_ids:
-        effect = active_effect_at(seed, pid, round_index, progress_ratio)
+        effect = active_effect_at(seed, pid, round_index, progress_ratio, pass_line_value)
         if effect is not None:
             effects[pid] = {"type": effect["type"], "strength": round(effect["strength"], 3)}
     return effects

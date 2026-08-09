@@ -531,10 +531,11 @@ async def _run_race_phase(
         round_index
     )
 
-    # 이 라운드의 장애물 배치는 시드+라운드로만 정해지는 정적인 값이라
-    # 매 틱 다시 계산할 필요 없이 한 번만 만든다(§12-4). 시드 자체는 절대
-    # 전송하지 않고, 이미 파생된 배치(위치·레인·종류)만 내려준다.
-    obstacles = race.obstacle_layout(draw.seed, round_index)
+    # 이 라운드의 장애물 배치는 (시드, 라운드, 결승선)으로만 정해지는 정적인
+    # 값이라 매 틱 다시 계산할 필요 없이 한 번만 만든다(§12-4). 시드 자체는
+    # 절대 전송하지 않고, 이미 파생된 배치(위치·레인·종류·움직임)만 내려준다.
+    # 결승선을 함께 넘겨야 장애물이 **결승선 앞쪽 구간에만** 고르게 깔린다.
+    obstacles = race.obstacle_layout(draw.seed, round_index, line)
 
     loop = asyncio.get_running_loop()
     start = loop.time()
@@ -548,7 +549,9 @@ async def _run_race_phase(
             # 그대로 유지된다 -- 시간만 절약될 뿐이다.
             fast_forward_requests.discard(session_id)
             ratio = 1.0
-        positions = race.compute_tick(population, ratio, round_index, seed=draw.seed)
+        positions = race.compute_tick(
+            population, ratio, round_index, seed=draw.seed, pass_line_value=line
+        )
         payload: dict[str, Any] = {
             "type": "race_tick",
             "round": round_index,
@@ -560,7 +563,9 @@ async def _run_race_phase(
             # 반영돼 있으므로, 클라이언트는 이 값으로 스핀/사운드 연출만
             # 트리거하면 되고 충돌 판정을 직접 재현할 필요가 없다(§12-4).
             "obstacles": obstacles,
-            "effects": race.compute_effects(population, ratio, round_index, draw.seed),
+            "effects": race.compute_effects(
+                population, ratio, round_index, draw.seed, pass_line_value=line
+            ),
             # 스타트 라이트가 아직 켜져 있는(=출발 전) 틱인지. 무대 화면이
             # 이 구간에는 속도선·엔진음을 올리지 않고 그리드 정지 상태로
             # 보여주는 데 쓴다.
