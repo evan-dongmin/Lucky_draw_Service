@@ -142,3 +142,102 @@ async def test_racing_sequence_broadcasts_prize_winners_after_final_scoring(monk
     assert prize_msg["basis"] == "prediction"
     assert draw.prize_winners == prize_msg["winners"]
     assert draw.prize_basis == "prediction"
+
+
+def test_my_prize_result_before_and_after_announcement():
+    """참가자 폰이 "내가 됐나?"를 폴링만으로도 알 수 있어야 한다.
+
+    WS 이벤트(prize_winners)만으로 처리하면 발표 순간 화면이 꺼져 있었거나
+    새로고침한 사람은 결과를 영영 못 본다."""
+    participants = generate_sample_participants(20, seed=5)
+    session = Session(
+        session_id="prize-me",
+        participants=participants,
+        draw_count=3,
+        mode="racing",
+        total_seconds=300.0,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    draw = fairness.compute_draw("prize-me", participants, draw_count=3, seed="prize-me-seed")
+    session.draws.append(draw)
+
+    # 발표 전에는 아무것도 알려주지 않는다(리빌 전 결과 유출 방지)
+    assert main_module._my_prize_result(session, participants[0].id) is None
+
+    fairness.reveal(draw)
+    draw.prize_winners = list(draw.winners)
+    draw.prize_basis = "race"
+
+    winner = draw.winners[0]
+    loser = next(p.id for p in participants if p.id not in draw.winners)
+
+    won = main_module._my_prize_result(session, winner)
+    assert won["announced"] is True
+    assert won["is_winner"] is True
+    assert won["winner_rank"] == 1
+    assert won["winner_count"] == len(draw.winners)
+    assert won["basis"] == "race"
+
+    lost = main_module._my_prize_result(session, loser)
+    assert lost["announced"] is True
+    assert lost["is_winner"] is False
+    assert lost["winner_rank"] is None
+    # 당첨자 수는 떨어진 사람에게도 알려준다("상위 N명이 당첨" 안내용)
+    assert lost["winner_count"] == len(draw.winners)
+
+
+def test_no_session_or_draw_yields_no_prize_result():
+    """커밋 전(추첨 자체가 없는) 세션에서도 조용히 None -- 폴링이 죽으면 안 된다."""
+    participants = generate_sample_participants(5, seed=6)
+    empty = Session(
+        session_id="prize-empty",
+        participants=participants,
+        draw_count=2,
+        mode="racing",
+        total_seconds=300.0,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    assert main_module._my_prize_result(empty, participants[0].id) is None
+
+
+def test_prize_basis_values_are_limited_to_the_two_known_labels():
+    """basis 문자열은 무대(PRIZE_BASIS_LABEL)와 폰(PRIZE_BASIS_NOTE) 양쪽에서
+    안내 문구를 찾는 키다. 서버가 그 두 값 말고 다른 걸 내보내면 화면에
+    아무 설명도 안 뜨는(조용히 비는) 버그가 된다 -- 실제로 폰 쪽 키가
+    'confidence'로 어긋나 있던 것을 이 검증을 넣으며 잡았다."""
+    import pathlib
+    import re
+
+    allowed = {"race", "prediction"}
+
+    participants = generate_sample_participants(20, seed=7)
+    session = Session(
+        session_id="basis",
+        participants=participants,
+        draw_count=2,
+        mode="racing",
+        total_seconds=300.0,
+        predictions_enabled=False,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    draw = fairness.compute_draw("basis", participants, draw_count=2, seed="basis-seed")
+    session.draws.append(draw)
+    fairness.reveal(draw)
+
+    _, basis, _ = main_module._compute_prize_winners(session, draw)
+    assert basis in allowed
+
+    session.predictions_enabled = True
+    main_module.prediction_engine.reset()
+    main_module.prediction_engine.enroll_all(main_module._department_by_pid(draw))
+    _, basis_pred, _ = main_module._compute_prize_winners(session, draw)
+    assert basis_pred in allowed
+
+    # 프런트 양쪽이 같은 키를 알고 있어야 한다
+    root = pathlib.Path(__file__).resolve().parent.parent / "static"
+    for filename, table in (("stage.js", "PRIZE_BASIS_LABEL"), ("mobile.js", "PRIZE_BASIS_NOTE")):
+        source = (root / filename).read_text(encoding="utf-8")
+        block = re.search(rf"const {table} = \{{(.*?)\}};", source, re.S)
+        assert block, f"{filename}에서 {table}을 찾지 못했습니다"
+        keys = set(re.findall(r"^\s*(\w+):", block.group(1), re.M))
+        assert keys <= allowed, f"{filename}의 {table}에 모르는 basis 키가 있습니다: {keys - allowed}"

@@ -31,6 +31,9 @@ const characterOverlayEl = document.getElementById("character-overlay");
 const characterOverlayListEl = document.getElementById("character-overlay-list");
 const cheerButtonsEl = document.getElementById("cheer-buttons");
 const introBoxEl = document.getElementById("intro-box");
+const prizePanelEl = document.getElementById("prize-panel");
+const prizeHeadlineEl = document.getElementById("prize-headline");
+const prizeDetailEl = document.getElementById("prize-detail");
 
 const CHEER_EMOJI = ["🔥", "👏", "🎉", "💪", "😱", "⚡", "❤️", "😂"]; // app/main.py CHEER_EMOJI_ALLOWLIST와 반드시 일치시킬 것
 
@@ -61,6 +64,7 @@ function showOnboarding() {
   gameViewEl.classList.add("hidden");
   // 아직 참여 전이면 설명이 펼쳐져 있는 게 맞다.
   if (introBoxEl) introBoxEl.open = true;
+  if (prizePanelEl) prizePanelEl.classList.add("hidden");
 }
 
 function showGame() {
@@ -492,6 +496,41 @@ async function chooseTarget(round, target) {
 // 위치를 모바일에 뿌리지 않는다는 원칙은 그대로라, /api/predict/me가
 // 폴링 시점에 이 참가자 한 명분만 계산해 내려준 값을 그대로 표시할
 // 뿐이다(app/main.py의 _my_race_status/_my_department_rank 참고).
+// 최종 당첨 결과. 서버가 발표(prize_winners 확정) 전에는 prize=null을
+// 내려주므로 그때는 패널을 숨긴다. WS 이벤트뿐 아니라 폴링 응답에도 같은
+// 값이 실려 오므로, 발표 순간 화면이 꺼져 있었거나 새로고침한 사람도
+// 결과를 놓치지 않는다.
+// basis 값은 app/main.py가 정하는 두 가지뿐이다("race" = 예측 게임이 꺼진
+// 순수 레이싱 세션, "prediction" = 예측 리더보드가 당첨자를 정한 세션).
+// stage.js의 PRIZE_BASIS_LABEL과 같은 키를 쓴다 -- 한쪽만 바꾸면 안 된다.
+const PRIZE_BASIS_NOTE = {
+  race: "레이스 최종 순위 기준입니다.",
+  prediction: "예측 게임 최종 리더보드 기준입니다 — 레이스 순위와 다를 수 있습니다.",
+};
+
+function renderPrize(me) {
+  const prize = me.prize;
+  if (!prize || !prize.announced) {
+    prizePanelEl.classList.add("hidden");
+    return;
+  }
+  prizePanelEl.classList.remove("hidden");
+  prizePanelEl.classList.toggle("won", prize.is_winner);
+
+  if (prize.is_winner) {
+    prizeHeadlineEl.textContent = `🏆 당첨되셨습니다! (${prize.winner_rank}위)`;
+    prizeDetailEl.textContent =
+      `당첨자 ${prize.winner_count}명 중 ${prize.winner_rank}위 · ` +
+      (PRIZE_BASIS_NOTE[prize.basis] || "");
+  } else {
+    prizeHeadlineEl.textContent = "아쉽지만 이번엔 당첨되지 않았어요";
+    prizeDetailEl.textContent =
+      `최종 포인트 순위 ${me.point_rank}위 / ${me.point_total}명 · ` +
+      `당첨자는 상위 ${prize.winner_count}명입니다. ` +
+      (PRIZE_BASIS_NOTE[prize.basis] || "");
+  }
+}
+
 function renderRaceStatus(me) {
   const rs = me.race_status;
   const dept = me.department_rank;
@@ -529,6 +568,9 @@ function renderRaceStatus(me) {
 
 function renderMe(me) {
   myNameEl.textContent = myName || me.participant_id || (me.card && me.card.participant_id) || "";
+  // 당첨 결과는 예측 게임 on/off와 무관하게 항상 보여준다(순수 레이싱
+  // 세션이면 레이스 순위가 곧 당첨자다).
+  renderPrize(me);
   renderRaceStatus(me);
 
   if (!me.predictions_enabled) {
@@ -640,7 +682,11 @@ const ws = connectWS((data) => {
     // race_r1/race_r2/race_r3 등 -- "내 카트 등수" 폴링을 켤지 여기서 판단한다.
     currentPhase = data.phase;
   }
-  if (["phase", "prediction_window", "round_revealed", "prediction_result"].includes(data.type)) {
+  if (
+    ["phase", "prediction_window", "round_revealed", "prediction_result", "prize_winners", "racing_complete"].includes(
+      data.type
+    )
+  ) {
     refreshMe();
   }
   if (data.type === "prediction_leaderboard" || data.type === "round_revealed") {

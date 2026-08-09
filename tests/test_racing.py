@@ -255,3 +255,40 @@ async def test_final_round_ends_after_countdown_from_first_crossing(monkeypatch)
     race_seconds = main_module._post_countdown_race_seconds(120.0)
     expected = first_ratio + fairness.R3_CUTOFF_WINDOW_SECONDS / race_seconds
     assert last["progress_ratio"] == pytest.approx(expected, abs=0.02)
+
+
+@pytest.mark.asyncio
+async def test_race_tick_cache_is_cleared_when_sequence_completes(monkeypatch):
+    """진행이 끝나면 마지막 레이스 틱 캐시를 비워야 한다.
+
+    안 비우면 모바일 "내 카트 현황"이 시상식 내내(그리고 행사가 끝난
+    뒤로도) 마지막 틱을 그대로 보여준다. 결선이 1위 통과 + 5초로 조기
+    종료되면서부터는 진행률 1.0 전 스냅샷이 얼어붙어 "⏳ 진행 중 /
+    통과선까지 87%"처럼 아직 달리는 것처럼 보인다."""
+    participants = generate_sample_participants(20, seed=31)
+    draw = fairness.compute_draw("cache-clear", participants, draw_count=3, seed="cache-clear-seed")
+    session = Session(
+        session_id="cache-clear",
+        participants=participants,
+        draw_count=3,
+        mode="racing",
+        total_seconds=300.0,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    session.draws.append(draw)
+    main_module.store.set_session(session)
+
+    monkeypatch.setattr(main_module.director, "build_runbook", lambda **kwargs: list(TINY_SEGMENTS))
+    monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.01)
+
+    async def fake_broadcast(message, sender=None, roles=None):
+        pass
+
+    monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
+
+    await main_module.run_racing_sequence("cache-clear", 0, 300.0)
+
+    assert main_module.latest_race_tick is None
+    # 캐시가 비었으면 폰의 레이스 현황 카드는 조용히 사라진다(포인트 순위만 남음)
+    assert main_module._my_race_status(participants[0].id) is None
+    assert main_module._my_department_rank(participants[0].id) is None

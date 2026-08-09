@@ -302,6 +302,41 @@ button {
   color: #c7cedb;
 }
 
+/* -- 최종 당첨 결과 ------------------------------------------------------ */
+
+.prize-panel {
+  text-align: center;
+  border: 1px solid #2a3242;
+  background: #171c26;
+}
+
+/* 당첨됐을 때만 금색으로 확실히 구분한다 -- 스크롤하다 지나칠 수 없어야 한다. */
+.prize-panel.won {
+  border-color: rgba(255, 209, 102, 0.55);
+  background: linear-gradient(180deg, rgba(255, 209, 102, 0.14) 0%, rgba(23, 28, 38, 0.95) 100%);
+  box-shadow: 0 0 1.6rem rgba(255, 209, 102, 0.25);
+}
+
+.prize-headline {
+  margin: 0 0 0.35rem;
+  font-size: 1.25rem;
+  font-weight: 800;
+  line-height: 1.35;
+  color: #c7cedb;
+}
+
+.prize-panel.won .prize-headline {
+  color: #ffd166;
+  font-size: 1.45rem;
+}
+
+.prize-detail {
+  margin: 0;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #8b95a5;
+}
+
 .intro-subhead {
   margin: 0.9rem 0 0.4rem;
   font-size: 0.88rem;

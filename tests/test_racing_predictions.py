@@ -85,10 +85,12 @@ def predictions_top_department(draw, round_index: int) -> str:
 @pytest.mark.asyncio
 async def test_mobile_race_status_helpers_after_race(monkeypatch):
     """모바일 "내 카트 현황" 계산(_my_race_status/_my_department_rank/
-    rank_of)이 실제 레이스 진행 후 합리적인 값을 돌려주는지 확인한다.
-    latest_race_tick 캐시는 R3의 마지막 틱(ratio=1.0)을 담고 있어야 하고,
+    rank_of)이 레이스가 도는 동안 합리적인 값을 돌려주는지 확인한다.
+
     R3는 부서 표시가 없다는 기존 규칙(_department_denom_sets)도 그대로
-    지켜져야 한다."""
+    지켜져야 한다. **런북 전체가 끝난 뒤에는 캐시가 비워져야** 하므로
+    (그래야 시상식 중에 낡은 "진행 중" 카드가 안 남는다) 여기서는
+    결선 구간만 돌려서 진행 중 상태를 검사한다."""
     participants = generate_sample_participants(40, seed=9)
     draw = fairness.compute_draw("mobile-status", participants, draw_count=3, seed="mobile-status-seed")
     session = Session(
@@ -121,7 +123,10 @@ async def test_mobile_race_status_helpers_after_race(monkeypatch):
 
     monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
 
-    await main_module.run_racing_sequence("mobile-status", 0, 300.0)
+    # 결선 구간만 직접 돌려 "레이스가 진행 중인" 상태의 캐시를 만든다.
+    # (run_racing_sequence를 끝까지 돌리면 완료 시점에 캐시가 비워진다 --
+    #  test_race_tick_cache_is_cleared_when_sequence_completes 참고.)
+    await main_module._run_race_phase(draw, 3, duration_seconds=0.05, session_id="mobile-status")
 
     assert main_module.latest_race_tick is not None
     assert main_module.latest_race_tick["round"] == 3
@@ -137,6 +142,7 @@ async def test_mobile_race_status_helpers_after_race(monkeypatch):
     assert main_module._my_race_status("no-such-participant") is None
     assert main_module._my_department_rank(pid) is None  # R3는 부서 표시가 없음
 
+    # enroll_all로 명단 전원 카드가 만들어져 있으므로 채점 전에도 순위가 나온다
     rank = main_module.prediction_engine.rank_of(pid)
     assert rank is not None and rank >= 1
 

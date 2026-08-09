@@ -159,7 +159,8 @@ RACE_TICK_INTERVAL_SECONDS = 0.3
 # 레이스 구간 시작 후 이 시간 동안은 카트를 출발선에 세워 둔다(스타트
 # 라이트 시퀀스가 끝나고 나서 실제로 출발하도록).
 #
-# **static/stage.js의 START_LIGHTS_BUDGET_MS와 반드시 함께 움직여야 한다.**
+# **static/stage.js의 LIGHT_* 상수(LIGHT_INTRO_MS/LIGHT_STEP_MS/
+# LIGHT_HOLD_MAX_MS)와 반드시 함께 움직여야 한다.**
 # 실제 F1처럼 "빨간 등 5개가 하나씩 켜지고 -> 불규칙한 정적 -> 일제 소등"
 # 으로 연출을 늘리면서(사용자 요청) 2.8초 -> 5.2초로 키웠다. 이보다 짧으면
 # 라이트가 켜져 있는 동안 카트가 이미 달려나가는 것이 보인다(과거 버그).
@@ -884,6 +885,15 @@ async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: f
             else:
                 await asyncio.sleep(seg.duration_seconds)
 
+        # 진행이 끝났으면 마지막 레이스 틱 캐시를 비운다. 안 비우면 모바일
+        # "내 카트 현황"이 시상식 내내(그리고 행사가 끝난 뒤로도 영영)
+        # 마지막 틱을 그대로 보여준다 -- 결선이 1위 통과 + 5초로 조기
+        # 종료되면서부터는 진행률 1.0에 도달하기 전 스냅샷이 얼어붙어
+        # "⏳ 진행 중 / 통과선까지 87% 진행"처럼 아직 달리는 것처럼 보인다.
+        # None이 되면 _my_race_status/_my_department_rank가 None을 돌려주고,
+        # 폰은 그 자리에 포인트 순위만 남긴다(정상 종료 상태).
+        global latest_race_tick
+        latest_race_tick = None
         await hub.broadcast({"type": "racing_complete"})
     except Exception:
         logger.exception("레이싱 런북 진행 중 오류 -- 세션 %s", session_id)
@@ -1121,6 +1131,32 @@ def _candidate_stats(session: Session, round_index: int) -> dict[str, dict[str, 
     }
 
 
+def _my_prize_result(session: Session, pid: str) -> dict[str, Any] | None:
+    """이 참가자의 최종 당첨 여부. 아직 발표 전이면 None.
+
+    무대 화면에는 시상대가 뜨지만 **폰에는 아무것도 안 뜨던 것**이 문제였다.
+    참가자 입장에서 "내가 됐나?"는 행사 전체에서 가장 궁금한 한 가지인데,
+    그걸 큰 화면에서 이름을 찾아 확인해야 했다.
+
+    WS 이벤트(prize_winners)만으로 처리하면 그 순간 화면이 꺼져 있었거나
+    새로고침한 사람은 영영 못 보므로, 폴링으로도 항상 같은 값을 받을 수
+    있게 여기서 함께 내려준다."""
+    if not session.draws:
+        return None
+    draw = session.draws[-1]
+    if not draw.prize_winners:
+        return None
+    winners = list(draw.prize_winners)
+    rank = winners.index(pid) + 1 if pid in winners else None
+    return {
+        "announced": True,
+        "is_winner": rank is not None,
+        "winner_rank": rank,
+        "winner_count": len(winners),
+        "basis": draw.prize_basis,
+    }
+
+
 @app.get("/api/predict/me")
 async def predict_me(token: str) -> dict[str, Any]:
     session = _require_session()
@@ -1145,6 +1181,10 @@ async def predict_me(token: str) -> dict[str, Any]:
         "department_rank": _my_department_rank(pid),
         "point_rank": prediction_engine.rank_of(pid),
         "point_total": len(prediction_engine.cards),
+        # 최종 당첨 결과(발표 전에는 None). 폰에서 "내가 됐나?"를 바로
+        # 확인할 수 있어야 한다 -- 예전에는 무대 시상대에서 이름을 찾는
+        # 방법밖에 없었다.
+        "prize": _my_prize_result(session, pid),
     }
 
 

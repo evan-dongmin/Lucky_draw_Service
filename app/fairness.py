@@ -52,12 +52,17 @@ class FairnessError(ValueError):
 
 
 def canonical_json(data: Any) -> str:
-    """Python과 verify.js 양쪽에서 동일한 바이트열이 나오도록 하는 정규화 직렬화.
+    """커밋 해시가 항상 같은 바이트열에서 나오도록 하는 정규화 직렬화.
 
     - 키를 재귀적으로 정렬한다 (json.dumps sort_keys=True는 중첩 dict에도 적용됨).
     - 구분자에 공백을 넣지 않는다.
-    - ensure_ascii=False로 한글을 이스케이프하지 않는다 (JS도 기본이 이와 동일).
-    """
+    - ensure_ascii=False로 한글을 이스케이프하지 않는다.
+
+    원래는 브라우저(`static/fairness.js`)가 같은 결과를 재현하도록 맞춘
+    규칙이었다. 그 검증 페이지는 제거됐지만(작업계획서 §13-6) **규칙은
+    그대로 지켜야 한다** -- 직렬화가 한 글자라도 달라지면 같은 입력에서
+    다른 커밋 해시가 나와, 리빌 후 재계산(`recompute_from_reveal`)이
+    실패하고 정상 추첨이 위변조로 오탐된다."""
     return json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
