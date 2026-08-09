@@ -1863,8 +1863,12 @@ function obstacleScreenPoints(obstacles, passLine, round, halfWidth) {
   });
 }
 
-// 결승선 컷오프(§12-8) 패널 갱신. tick.candidate_count가 없으면(R3 결선,
-// 또는 컷오프 정보 없이 뜬 세션) 패널을 통째로 숨긴다.
+// 결승선 컷오프(§12-8) 패널 갱신. tick.candidate_count가 없으면(컷오프 정보
+// 없이 뜬 세션) 패널을 통째로 숨긴다.
+//
+// R1/R2와 R3는 같은 UI를 쓰지만 의미가 다르다 -- R1/R2에서는 "이 안에 못
+// 들어오면 탈락", R3에서는 "이 시간이 지나면 레이스를 끝내고 결과 발표"다.
+// 문구를 라운드별로 다르게 해서 관객이 헷갈리지 않게 한다.
 function updateCutoffPanel(tick, now) {
   if (!cutoffPanelEl || !tick.candidate_count) {
     if (cutoffPanelEl) cutoffPanelEl.classList.add("hidden");
@@ -1872,11 +1876,12 @@ function updateCutoffPanel(tick, now) {
   }
   cutoffPanelEl.classList.remove("hidden");
 
+  const isFinal = tick.round === 3;
   const windowSeconds = tick.cutoff_window_seconds || 0;
   const liveCount = crossedPassLine.size;
 
   if (cutoffFirstCrossAt === null) {
-    cutoffLabelEl.textContent = "결승선 통과 대기 중";
+    cutoffLabelEl.textContent = isFinal ? "결선 — 1위 통과 대기 중" : "결승선 통과 대기 중";
     cutoffCountEl.textContent = `0/${tick.candidate_count}`;
     cutoffTimerEl.classList.add("hidden");
     cutoffPanelEl.classList.remove("closed");
@@ -1888,7 +1893,7 @@ function updateCutoffPanel(tick, now) {
   cutoffTimerEl.classList.remove("hidden");
 
   if (remain > 0) {
-    cutoffLabelEl.textContent = "🏁 1위 결승 통과! 마감까지";
+    cutoffLabelEl.textContent = isFinal ? "🏁 1위 결승 통과! 결과 발표까지" : "🏁 1위 결승 통과! 마감까지";
     cutoffCountEl.textContent = `${liveCount}/${tick.candidate_count}`;
     cutoffTimerEl.textContent = `${remain.toFixed(1)}s`;
     cutoffTimerEl.classList.toggle("urgent", remain <= 3);
@@ -1898,13 +1903,28 @@ function updateCutoffPanel(tick, now) {
     // 창이 닫혔다 -- 그 순간의 통과 인원을 얼려서 보여준다(이후에도 karts는
     // 계속 결승선을 넘지만, 그건 컷오프에 못 든 카트들이다).
     if (cutoffFrozenCount === null) cutoffFrozenCount = liveCount;
-    cutoffLabelEl.textContent = "🔒 통과 마감";
+    cutoffLabelEl.textContent = isFinal ? "🏁 결선 종료" : "🔒 통과 마감";
     cutoffCountEl.textContent = `${cutoffFrozenCount}/${tick.candidate_count}`;
     cutoffTimerEl.textContent = "0.0s";
     cutoffTimerEl.classList.add("closed");
     cutoffTimerEl.classList.remove("urgent");
     cutoffPanelEl.classList.add("closed");
   }
+}
+
+// 결선 종료(5초 창 마감) 순간의 체커기 연출. 라운드당 한 번만 나가도록
+// 잠근다 -- race_over 틱이 재전송되거나 늦게 도착해도 중복 재생되지 않는다.
+let finalFlagShown = false;
+
+function showFinalCheckeredFlag() {
+  if (finalFlagShown) return;
+  finalFlagShown = true;
+  showBanner("🏁 결선 종료", "잠시 후 최종 결과를 발표합니다", 2400);
+  SFX.finishCross(0);
+  SFX.crowd(0.9, 2.0);
+  FX.screenFlash("rgba(255,255,255,0.5)", 240);
+  FX.confetti(90);
+  showMcLine("photo_finish");
 }
 
 function drawFrame(positions, tick) {
@@ -2214,6 +2234,7 @@ function handleRacingEvent(data) {
       liveMcSuppressed = false; // 새 레이스가 시작됐으니 실황 멘트를 다시 허용
       const roundIndex = RACE_ROUND_INDEX_LOCAL[data.phase];
       finalLapShownForRound = null;
+      finalFlagShown = false;
       if (roundIndex === 3) photoFinishShownForRound = null;
       runStartLights(roundIndex);
       SFX.startEngine();
@@ -2258,6 +2279,10 @@ function handleRacingEvent(data) {
     if (data.department_live_rate) {
       renderDepartmentBars(data.department_live_rate);
     }
+    // 결선에서 5초 창이 닫혀 레이스가 조기 종료된 틱(사용자 요청: "카운트다운
+    // 끝나면 결과 발표"). 곧바로 final_announce phase가 이어지므로 여기서는
+    // 체커기 순간만 연출한다.
+    if (data.race_over) showFinalCheckeredFlag();
   } else if (data.type === "round_revealed") {
     showBanner(
       `ROUND ${data.round} 통과!`,
@@ -2506,6 +2531,7 @@ const ws = connectWS((data) => {
     crossedRound = null;
     cutoffFirstCrossAt = null;
     cutoffFrozenCount = null;
+    finalFlagShown = false;
     if (cutoffPanelEl) cutoffPanelEl.classList.add("hidden");
     cancelPendingMcLines({ clearCaption: true });
     liveMcSuppressed = false;

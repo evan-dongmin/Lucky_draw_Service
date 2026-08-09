@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from app import fairness
@@ -194,3 +196,62 @@ def test_candidate_stats_per_round_shape():
         created_at="2026-01-01T00:00:00Z",
     )
     assert main_module._candidate_stats(empty, 1) == {}
+
+
+@pytest.mark.asyncio
+async def test_final_round_ends_after_countdown_from_first_crossing(monkeypatch):
+    """결선은 1위가 결승선을 넘은 시점부터 5초가 지나면 구간 시간이 남아
+    있어도 끝난다(2026-08-08 사용자 요청: "카운트다운 끝나면 결과 발표").
+
+    R1/R2의 컷오프와 달리 이건 **레이스를 끝내는 규칙**이라, 마지막 틱에
+    race_over 신호가 실려 나가고 진행률이 1.0에 도달하기 전에 멈춘다."""
+    participants = generate_sample_participants(24, seed=21)
+    draw = fairness.compute_draw("r3-cut", participants, draw_count=3, seed="r3-cutoff-seed")
+    session = Session(
+        session_id="r3-cut",
+        participants=participants,
+        draw_count=3,
+        mode="racing",
+        total_seconds=300.0,
+        created_at="2026-01-01T00:00:00Z",
+    )
+    session.draws.append(draw)
+    main_module.store.set_session(session)
+
+    monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.0)
+    # 창(5초)이 구간 안에서 실제로 닫히도록 넉넉한 구간 길이를 준다.
+    monkeypatch.setattr(main_module, "RACE_COUNTDOWN_SECONDS", 0.0)
+
+    messages: list[dict] = []
+
+    async def fake_broadcast(message, sender=None, roles=None):
+        messages.append(message)
+
+    monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
+
+    # loop.time()을 틱마다 일정하게 흐르는 가짜 시계로 대체해, 실제로 초를
+    # 기다리지 않고도 "1위 통과 + 5초"를 재현한다.
+    loop = asyncio.get_running_loop()
+    ticks = iter([i * 0.5 for i in range(2000)])
+    monkeypatch.setattr(loop, "time", lambda: next(ticks))
+
+    await main_module._run_race_phase(draw, 3, duration_seconds=120.0, session_id="r3-cut")
+
+    r3 = [m for m in messages if m["type"] == "race_tick"]
+    assert r3, "결선 틱이 하나도 나오지 않았습니다"
+    last = r3[-1]
+
+    assert last["race_over"] is True, "마지막 틱에 결선 종료 신호가 있어야 한다"
+    assert last["progress_ratio"] < 1.0, "구간 시간을 다 쓰지 않고 조기 종료해야 한다"
+    assert last["cutoff_window_seconds"] == fairness.R3_CUTOFF_WINDOW_SECONDS
+
+    # 종료 신호는 마지막 틱에만 붙는다(중간에 미리 켜지면 안 된다)
+    assert [m for m in r3 if m["race_over"]] == [last]
+
+    # 1위가 결승선을 넘은 시점과 종료 시점의 간격이 창 길이와 맞는지
+    crossed = [m for m in r3 if any(p >= m["pass_line"] for p in m["positions"].values())]
+    assert crossed, "결선에서 아무도 결승선을 넘지 못했습니다"
+    first_ratio = crossed[0]["progress_ratio"]
+    race_seconds = main_module._post_countdown_race_seconds(120.0)
+    expected = first_ratio + fairness.R3_CUTOFF_WINDOW_SECONDS / race_seconds
+    assert last["progress_ratio"] == pytest.approx(expected, abs=0.02)

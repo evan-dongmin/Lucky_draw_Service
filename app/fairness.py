@@ -40,6 +40,11 @@ R1_PASS_COUNT = 100
 # _apply_cutoff_window의 min_survivors).
 R1_CUTOFF_WINDOW_SECONDS = 10.0
 R2_CUTOFF_WINDOW_SECONDS = 5.0
+# 결선(R3)도 같은 규칙을 쓴다(2026-08-08, 사용자 요청: "3라운드는 결승선
+# 처음 통과한 카트 기준으로 카운트다운을 5초로"). R1/R2와 다른 점은 컷오프가
+# **레이스를 실제로 끝내기도 한다**는 것 -- 창이 닫히는 순간 결선은 종료되고
+# 곧바로 결과 발표로 넘어간다(app/main.py의 _run_race_phase 참고).
+R3_CUTOFF_WINDOW_SECONDS = 5.0
 
 
 class FairnessError(ValueError):

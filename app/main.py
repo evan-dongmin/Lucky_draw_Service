@@ -527,9 +527,27 @@ async def _run_race_phase(
     # 결승선 컷오프(§12-8) 창 길이. R1/R2에만 있고, 화면이 "1등 결승 통과 후
     # 몇 초"인지 계산하려면 이 값이 필요하다 -- fairness.py의 상수를
     # 그대로 참조해 값이 어긋날 일이 없게 한다.
-    cutoff_window_seconds = {1: fairness.R1_CUTOFF_WINDOW_SECONDS, 2: fairness.R2_CUTOFF_WINDOW_SECONDS}.get(
-        round_index
-    )
+    cutoff_window_seconds = {
+        1: fairness.R1_CUTOFF_WINDOW_SECONDS,
+        2: fairness.R2_CUTOFF_WINDOW_SECONDS,
+        3: fairness.R3_CUTOFF_WINDOW_SECONDS,
+    }.get(round_index)
+
+    # 결선(R3)의 카운트다운은 R1/R2와 성격이 다르다(2026-08-08, 사용자 요청:
+    # "3라운드는 결승선 처음 통과한 카트 기준으로 카운트다운을 5초로 해 줘.
+    # 카운트다운 끝나면 결과 발표하고").
+    #
+    # - R1/R2에서는 창이 "누가 통과하는가"를 가르지만, 레이스 자체는 구간
+    #   시간을 다 쓴다.
+    # - R3에서는 창이 닫히는 순간 **레이스를 끝낸다**. 남은 구간 시간을
+    #   기다리지 않고 곧바로 결과 발표로 넘어가므로 피날레가 늘어지지 않는다.
+    #
+    # **당첨자 자체는 여전히 순위로 정해진다**(fairness.py가 커밋 시점에 이미
+    # 확정). 결선 결승선은 애초에 "정확히 N대가 넘도록" 놓이기 때문에, 창을
+    # 좁힌다고 해서 당첨자가 바뀔 수는 없다 -- 경품 수는 항상 채워져야 하고,
+    # 늦게 들어온 카트를 떨어뜨려도 그 자리를 채울 사람은 더 뒤에 있는
+    # 카트뿐이기 때문이다. 즉 R3의 창은 "언제 끝낼지"를 정하는 연출 규칙이다.
+    r3_finish_deadline: float | None = None
 
     # 이 라운드의 장애물 배치는 (시드, 라운드, 결승선)으로만 정해지는 정적인
     # 값이라 매 틱 다시 계산할 필요 없이 한 번만 만든다(§12-4). 시드 자체는
@@ -570,13 +588,25 @@ async def _run_race_phase(
             # 이 구간에는 속도선·엔진음을 올리지 않고 그리드 정지 상태로
             # 보여주는 데 쓴다.
             "countdown": elapsed < countdown,
-            # 결승선 컷오프(§12-8, R1/R2만): 순위 기준 후보군 크기와 창
-            # 길이(초). 클라이언트가 "1등 결승 통과" 순간을 스스로 감지해
+            # 결승선 컷오프(§12-8): 순위 기준 후보군 크기와 창 길이(초).
+            # 클라이언트가 "1등 결승 통과" 순간을 스스로 감지해
             # (positions[pid] >= pass_line) 카운트다운을 띄우고, 그 사이
             # 결승선을 넘는 카트 수를 "N/후보수"로 실시간 표시한다.
+            # R3도 같은 UI를 쓰되, 창이 닫히면 레이스가 실제로 끝난다.
             "candidate_count": pass_count,
             "cutoff_window_seconds": cutoff_window_seconds,
+            # 결선에서 창이 닫혀 레이스를 조기 종료하는 틱인지. 무대가 이
+            # 신호로 체커기 연출을 띄우고 렌더 루프를 정리한다.
+            "race_over": False,
         }
+
+        # 결선: 1등이 결승선을 넘는 순간부터 창(5초)을 재고, 창이 닫히면
+        # 남은 구간 시간을 기다리지 않고 곧바로 결과 발표로 넘어간다.
+        if round_index == 3 and cutoff_window_seconds:
+            if r3_finish_deadline is None and any(p >= line for p in positions.values()):
+                r3_finish_deadline = elapsed + cutoff_window_seconds
+            if r3_finish_deadline is not None and elapsed >= r3_finish_deadline:
+                payload["race_over"] = True
         if denom_sets is not None:
             payload["department_live_rate"] = race.department_live_rates(positions, denom_sets, line)
         # race_tick은 위치 데이터 용량이 크므로 Stage 화면에만 전송한다
@@ -586,7 +616,7 @@ async def _run_race_phase(
         global latest_race_tick
         latest_race_tick = payload
         await hub.broadcast(payload, roles={"stage"})
-        if ratio >= 1.0:
+        if ratio >= 1.0 or payload["race_over"]:
             break
         await asyncio.sleep(RACE_TICK_INTERVAL_SECONDS)
 
