@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import hashlib
+from functools import lru_cache
 from typing import Any
 
 
@@ -107,9 +108,16 @@ def lane_for(seed: str, participant_id: str, round_index: int) -> int:
     return int(_pseudo_noise(f"{seed}:{participant_id}:{round_index}:lane") * LANE_COUNT)
 
 
-def obstacle_layout(seed: str, round_index: int) -> list[dict[str, Any]]:
+@lru_cache(maxsize=64)
+def obstacle_layout(seed: str, round_index: int) -> tuple[dict[str, Any], ...]:
     """이 라운드의 장애물 배치(트랙 진행률 x 레인). (시드, 라운드)만으로
-    정해지며 참가자 수·화면 크기와 무관하다 -- 커밋 시점에 이미 확정된다."""
+    정해지며 참가자 수·화면 크기와 무관하다 -- 커밋 시점에 이미 확정된다.
+
+    `lru_cache`를 건다 -- 결승선 컷오프의 크로싱 타임 계산(`crossing_ratio`)이
+    카트마다 수백 번씩 반복 호출하는데, 매번 10개 해저드 x 3회 해시를
+    다시 계산하면 250명 규모에서 눈에 띄게 느려진다. (시드, 라운드) 조합은
+    커밋 하나당 최대 3개뿐이라 캐시 크기 걱정은 없다. 튜플로 반환해
+    캐시된 내부 객체를 호출부가 실수로 변형할 수 없게 막는다."""
     hazards: list[dict[str, Any]] = []
     for i in range(HAZARDS_PER_ROUND):
         base = f"{seed}:{round_index}:hazard:{i}"
@@ -126,7 +134,7 @@ def obstacle_layout(seed: str, round_index: int) -> list[dict[str, Any]]:
                 "penalty": penalty,
             }
         )
-    return hazards
+    return tuple(hazards)
 
 
 def kart_hits(seed: str, participant_id: str, round_index: int) -> list[dict[str, Any]]:
@@ -217,6 +225,31 @@ def position_at(
         return base
     dip = _obstacle_dip_at(seed, participant_id, round_index, progress_ratio)
     return max(0.0, base - dip)
+
+
+def crossing_ratio(
+    rank_index: int,
+    total: int,
+    pass_line_value: float,
+    participant_id: str,
+    round_index: int,
+    seed: str,
+    steps: int = 500,
+) -> float | None:
+    """이 카트가 결승선(`pass_line_value`)에 처음 도달하는 progress_ratio.
+
+    장애물 dip 때문에 곡선이 국소적으로 흔들릴 수 있어(맞는 순간 잠깐
+    내려갔다가 회복) 이분탐색 대신 선형 스캔한다 -- `steps=500`이면
+    ~95초짜리 라운드에서도 0.2초 미만 오차라 결승선 컷오프(§12-8, 5~10초
+    단위)에 충분한 정밀도다. 결승선까지 못 미치면(순위상 애초에 통과권이
+    아닌 경우) None."""
+    if pass_line_value <= 0:
+        return 0.0
+    for i in range(1, steps + 1):
+        ratio = i / steps
+        if position_at(rank_index, total, ratio, participant_id, round_index, seed=seed) >= pass_line_value:
+            return ratio
+    return None
 
 
 def compute_tick(

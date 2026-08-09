@@ -6,6 +6,7 @@ from app.race import (
     LANE_COUNT,
     compute_effects,
     compute_tick,
+    crossing_ratio,
     department_live_rates,
     kart_hits,
     lane_for,
@@ -275,3 +276,37 @@ def test_obstacle_penalty_actually_changes_final_ranking_from_pure_hmac_order():
             break
 
     assert found_difference, "20번 시도했는데도 장애물이 순위를 한 번도 못 바꿨다"
+
+
+# ---------------------------------------------------------------------------
+# 결승선 컷오프 (작업계획서 §12-8)
+# ---------------------------------------------------------------------------
+
+
+def test_crossing_ratio_matches_target_reaching_the_line():
+    """rank_index=0(1등, target=1.0)은 pass_line이 낮을수록 더 일찍 통과해야 한다."""
+    early = crossing_ratio(0, 250, 0.2, "P000", round_index=1, seed="cross-seed")
+    late = crossing_ratio(0, 250, 0.9, "P000", round_index=1, seed="cross-seed")
+    assert early is not None and late is not None
+    assert early < late
+
+
+def test_crossing_ratio_is_none_when_target_never_reaches_the_line():
+    """target이 pass_line보다 낮은 카트는 끝까지 못 넘는다(None)."""
+    # rank_index=249(꼴찌, total=250)의 target은 0.2 -- pass_line 0.5는 못 넘는다.
+    ratio = crossing_ratio(249, 250, 0.5, "P249", round_index=1, seed="cross-seed")
+    assert ratio is None
+
+
+def test_crossing_ratio_is_deterministic():
+    a = crossing_ratio(10, 250, 0.6, "P010", round_index=1, seed="cross-seed-2")
+    b = crossing_ratio(10, 250, 0.6, "P010", round_index=1, seed="cross-seed-2")
+    assert a == b
+
+
+def test_obstacle_layout_cache_returns_immutable_tuple():
+    layout = obstacle_layout("cache-seed", 1)
+    assert isinstance(layout, tuple)
+    # 캐시된 값이라 매번 같은 객체가 돌아온다 -- 리스트였다면 호출부가
+    # 실수로 변형해 다른 호출에까지 영향을 줄 수 있었다.
+    assert obstacle_layout("cache-seed", 1) is layout

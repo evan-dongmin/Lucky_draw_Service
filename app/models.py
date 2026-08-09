@@ -44,6 +44,11 @@ class DrawResult:
     winners: list[str] = field(default_factory=list)
     ranking: list[str] = field(default_factory=list)
     round_pass_ids: dict[int, list[str]] = field(default_factory=dict)
+    # 결승선 컷오프(§12-8) 적용 "전" 순위 기준 후보군 크기(1·2라운드).
+    # round_pass_ids[N]의 실제 길이(컷오프로 줄었을 수 있음)와는 다른 값 --
+    # 통과선(결승선) 위치 계산과 무대의 "N/후보수" 실시간 카운터가 이 값을
+    # 쓴다. round_pass_ids로부터 역산할 수 없어 별도로 들고 있어야 한다.
+    round_candidate_count: dict[int, int] = field(default_factory=dict)
     department_pass_rate: dict[int, dict[str, float]] = field(default_factory=dict)
     finalist_count: int = 0
     revealed: bool = False
@@ -71,6 +76,7 @@ class DrawResult:
             "winners": list(self.winners),
             "ranking": list(self.ranking),
             "round_pass_ids": {str(k): v for k, v in self.round_pass_ids.items()},
+            "round_candidate_count": {str(k): v for k, v in self.round_candidate_count.items()},
             "department_pass_rate": {
                 str(k): v for k, v in self.department_pass_rate.items()
             },
@@ -93,6 +99,9 @@ class DrawResult:
             winners=list(data.get("winners", [])),
             ranking=list(data.get("ranking", [])),
             round_pass_ids={int(k): v for k, v in data.get("round_pass_ids", {}).items()},
+            round_candidate_count={
+                int(k): v for k, v in data.get("round_candidate_count", {}).items()
+            },
             department_pass_rate={
                 int(k): v for k, v in data.get("department_pass_rate", {}).items()
             },

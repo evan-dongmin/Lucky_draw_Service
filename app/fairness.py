@@ -31,6 +31,16 @@ from app.models import DrawResult, Participant
 
 R1_PASS_COUNT = 100
 
+# **결승선 컷오프(작업계획서 §12-8, 2026-08-08, 사용자 요청)**: R1/R2는
+# 순위(위 R1_PASS_COUNT/resolve_finalist_count)로 정해지는 후보군 중에서도,
+# "1등이 결승선을 통과한 시점부터 이 초 안에 들어온 카트만" 실제로
+# 통과한다. 순위 조건과 시간 조건 둘 다 만족해야 하는 AND 조건이다(사용자
+# 확인: "순위 개념과 시간 제한 개념"). 그래도 다음 라운드/최종 당첨자가
+# 텅 비는 사고를 막기 위해 최소 인원은 항상 보장한다(아래
+# _apply_cutoff_window의 min_survivors).
+R1_CUTOFF_WINDOW_SECONDS = 10.0
+R2_CUTOFF_WINDOW_SECONDS = 5.0
+
 
 class FairnessError(ValueError):
     pass
@@ -75,6 +85,59 @@ def _obstacle_adjusted_ranking(eligible_ids: list[str], seed: str) -> list[str]:
     return sorted(eligible_ids, key=adjusted_key)
 
 
+def _apply_cutoff_window(
+    candidates: list[str],
+    population: list[str],
+    seed: str,
+    round_index: int,
+    pass_line_value: float,
+    race_seconds: float | None,
+    window_seconds: float,
+    min_survivors: int,
+) -> list[str]:
+    """`candidates`(순위 기준 후보군, `population` 안에서의 등수 순으로
+    정렬돼 있어야 한다) 중 "첫 통과자 + window_seconds" 안에 실제로
+    결승선(`pass_line_value`)을 통과하는 카트만 남긴다.
+
+    - `race_seconds`가 없으면(런북 밖에서 순위만 보고 싶은 호출 -- 대부분의
+      기존 테스트) 컷오프를 건너뛰고 candidates를 그대로 돌려준다(예전
+      "순위만으로 통과" 동작과 100% 동일).
+    - 컷오프를 적용한 결과가 `min_survivors`보다 적으면, 순위 순으로
+      모자란 만큼 추가로 채운다 -- 다음 라운드/최종 당첨자가 텅 비는
+      사고를 방지하는 안전장치다(시간 컷오프가 "추가 탈락"은 만들 수
+      있어도 "정원 미달"은 절대 만들지 않는다).
+    - 반환 순서는 항상 `candidates`의 원래 순위 순서를 유지한다.
+    """
+    if race_seconds is None or not candidates:
+        return list(candidates)
+
+    total = len(population)
+    rank_index_of = {pid: i for i, pid in enumerate(population)}
+    crossing: dict[str, float] = {}
+    for pid in candidates:
+        ratio = race.crossing_ratio(rank_index_of[pid], total, pass_line_value, pid, round_index, seed)
+        crossing[pid] = ratio if ratio is not None else float("inf")
+
+    first_ratio = min(crossing.values())
+    if first_ratio == float("inf"):
+        # 극단적인 경우(후보 전원이 결승선에 못 미침) -- 컷오프를 적용할
+        # 기준점 자체가 없으므로 순위 그대로 반환한다.
+        return list(candidates)
+
+    cutoff_ratio = first_ratio + window_seconds / race_seconds
+    within_window = {pid for pid in candidates if crossing[pid] <= cutoff_ratio}
+
+    if len(within_window) < min_survivors:
+        # 컷오프 창이 너무 좁아 정원을 못 채운다 -- 순위 순으로 모자란
+        # 만큼 채운다(시간 조건을 못 맞춰도 순위가 높으면 구제된다).
+        for pid in candidates:
+            if len(within_window) >= min_survivors:
+                break
+            within_window.add(pid)
+
+    return [pid for pid in candidates if pid in within_window]
+
+
 def resolve_finalist_count(draw_count: int) -> int:
     """F(결선 진출 카트 수). N <= F가 항상 성립하도록 보장한다."""
     if draw_count < 1:
@@ -89,9 +152,17 @@ def build_snapshot(
     draw_count: int,
     excluded_ids: list[str],
     created_at: str,
+    race_r1_seconds: float | None = None,
+    race_r2_seconds: float | None = None,
 ) -> dict[str, Any]:
     """커밋 대상 스냅샷. 시드뿐 아니라 명단·부서 편성·파라미터까지 포함해
-    "추첨 직전 명단/인원수 바꿔치기" 의심을 원천 차단한다."""
+    "추첨 직전 명단/인원수 바꿔치기" 의심을 원천 차단한다.
+
+    `race_r1_seconds`/`race_r2_seconds`(결승선 컷오프 계산에 쓰는 그
+    라운드의 실제 레이스 시간)도 스냅샷에 포함한다 -- 리빌 후
+    `recompute_from_reveal`이 이 스냅샷만으로 커밋 당시와 100% 동일한
+    결과를 재현하려면, 컷오프 판정에 쓰인 타이밍 값도 함께 봉인돼 있어야
+    한다."""
     participants_sorted = sorted(participants, key=lambda p: p.id)
     departments = compute_department_groups(participants)
     return {
@@ -103,6 +174,8 @@ def build_snapshot(
         "draw_count": draw_count,
         "excluded_ids": sorted(set(excluded_ids)),
         "created_at": created_at,
+        "race_r1_seconds": race_r1_seconds,
+        "race_r2_seconds": race_r2_seconds,
     }
 
 
@@ -127,22 +200,67 @@ def _compute_outcome(
     seed: str,
     draw_count: int,
     departments: dict[str, list[str]],
+    race_r1_seconds: float | None = None,
+    race_r2_seconds: float | None = None,
 ) -> dict[str, Any]:
     """(참가 가능 id 목록, 시드, 당첨 인원수, 부서 편성) -> 순위/통과자/부서집계.
 
     draw 시점과 리빌 재계산 시점 양쪽에서 동일하게 호출되는 순수 함수다.
+
+    `race_r1_seconds`/`race_r2_seconds`(그 라운드의 실제 레이스 진행
+    시간, 스타트 라이트 리드인 제외 -- `app/main.py`의 `_run_race_phase`가
+    쓰는 것과 같은 값)를 주면 결승선 컷오프(§12-8)가 함께 적용된다. 안
+    주면(대부분의 기존 테스트) 예전과 똑같이 순위만으로 통과가 정해진다.
     """
     if draw_count > len(eligible_ids):
         raise FairnessError("당첨 인원수가 참가 가능 인원보다 많습니다")
 
     ranking = _obstacle_adjusted_ranking(eligible_ids, seed)
+    total0 = len(ranking)
 
-    finalist_count = min(resolve_finalist_count(draw_count), len(ranking))
-    r1_count = min(max(R1_PASS_COUNT, finalist_count), len(ranking))
+    finalist_count = min(resolve_finalist_count(draw_count), total0)
+    r1_count = min(max(R1_PASS_COUNT, finalist_count), total0)
 
-    r1_pass = ranking[:r1_count]
-    r2_pass = ranking[:finalist_count]
-    winners = ranking[:draw_count]
+    # --- 1라운드: 순위 상위 r1_count 후보 중 "1등 결승 통과 + 10초" 컷오프.
+    # 결승선(통과선) 자체는 순위 기준 후보군(r1_count) 그대로 유지한다 --
+    # 실제 통과자 수가 컷오프로 줄어도 통과선 위치는 안 바뀌어야, 시간에
+    # 밀려 탈락한 카트도 "원래는 통과권이었다"는 게 화면에서 그대로
+    # 보인다(결승선을 늦게라도 넘는 모습 자체는 그대로 나온다).
+    r1_candidates = ranking[:r1_count]
+    r1_line = race.pass_line(r1_count, total0)
+    r1_pass = _apply_cutoff_window(
+        r1_candidates,
+        ranking,
+        seed,
+        round_index=1,
+        pass_line_value=r1_line,
+        race_seconds=race_r1_seconds,
+        window_seconds=R1_CUTOFF_WINDOW_SECONDS,
+        min_survivors=finalist_count,  # R2가 항상 치러질 만큼은 보장
+    )
+
+    # --- 2라운드: R1 생존자 중 순위 상위 finalist_count 후보 + "1등 결승
+    # 통과 + 5초" 컷오프. population이 r1_pass(=R1 생존자, r1_count보다
+    # 적을 수 있음)라서 등수·통과선 모두 그 안에서 다시 정해진다(실제
+    # R2 레이스가 이 인원으로 열리는 것과 동일한 기준).
+    r2_population = r1_pass
+    r2_candidate_count = min(finalist_count, len(r2_population))
+    r2_candidates = r2_population[:r2_candidate_count]
+    r2_line = race.pass_line(r2_candidate_count, len(r2_population))
+    r2_pass = _apply_cutoff_window(
+        r2_candidates,
+        r2_population,
+        seed,
+        round_index=2,
+        pass_line_value=r2_line,
+        race_seconds=race_r2_seconds,
+        window_seconds=R2_CUTOFF_WINDOW_SECONDS,
+        min_survivors=min(draw_count, len(r2_population)),  # 당첨자 수만큼은 보장
+    )
+
+    # --- 결선: 컷오프 없음(사용자 요청 범위 밖) -- R2 생존자 중 순위
+    # 그대로 상위 draw_count명이 최종 당첨자.
+    winners = r2_pass[:draw_count]
 
     r1_pass_set = set(r1_pass)
     r2_pass_set = set(r2_pass)
@@ -161,6 +279,10 @@ def _compute_outcome(
         "ranking": ranking,
         "winners": winners,
         "round_pass_ids": {1: r1_pass, 2: r2_pass, 3: winners},
+        # 통과선(결승선) 계산 및 무대 화면의 "N/후보수" 실시간 카운터가
+        # 쓰는, 컷오프 전 순위 기준 후보군 크기. round_pass_ids의 실제
+        # 길이(컷오프 후)와는 다른 값일 수 있다.
+        "round_candidate_count": {1: r1_count, 2: r2_candidate_count},
         "department_pass_rate": round_pass_rate,
         "finalist_count": finalist_count,
     }
@@ -173,10 +295,14 @@ def compute_draw(
     excluded_ids: list[str] | None = None,
     created_at: str | None = None,
     seed: str | None = None,
+    race_r1_seconds: float | None = None,
+    race_r2_seconds: float | None = None,
 ) -> DrawResult:
     """커밋-리빌 사이클의 1~3단계: 시드 생성 -> 커밋 -> 순위/통과자 계산.
 
     반환된 DrawResult.seed·commit은 리빌 전까지 seed는 비공개, commit만 공개한다.
+    `race_r1_seconds`/`race_r2_seconds`는 결승선 컷오프(§12-8) 계산용 --
+    `app/main.py`가 런북에서 그 라운드의 실제 레이스 시간을 구해 넘긴다.
     """
     excluded_ids = list(excluded_ids or [])
     created_at = created_at or datetime.now(timezone.utc).isoformat()
@@ -185,10 +311,16 @@ def compute_draw(
     excluded = set(excluded_ids)
     eligible_ids = [p.id for p in participants if p.id not in excluded]
 
-    snapshot = build_snapshot(session_id, participants, draw_count, excluded_ids, created_at)
+    snapshot = build_snapshot(
+        session_id, participants, draw_count, excluded_ids, created_at,
+        race_r1_seconds=race_r1_seconds, race_r2_seconds=race_r2_seconds,
+    )
     commit = compute_commit(seed, snapshot)
 
-    outcome = _compute_outcome(eligible_ids, seed, draw_count, snapshot["departments"])
+    outcome = _compute_outcome(
+        eligible_ids, seed, draw_count, snapshot["departments"],
+        race_r1_seconds=race_r1_seconds, race_r2_seconds=race_r2_seconds,
+    )
 
     return DrawResult(
         seed=seed,
@@ -197,6 +329,7 @@ def compute_draw(
         winners=outcome["winners"],
         ranking=outcome["ranking"],
         round_pass_ids=outcome["round_pass_ids"],
+        round_candidate_count=outcome["round_candidate_count"],
         department_pass_rate=outcome["department_pass_rate"],
         finalist_count=outcome["finalist_count"],
         created_at=created_at,
@@ -218,7 +351,12 @@ def recompute_from_reveal(seed: str, snapshot: dict[str, Any]) -> dict[str, Any]
     excluded = set(snapshot.get("excluded_ids", []))
     eligible_ids = [p["id"] for p in snapshot["participants"] if p["id"] not in excluded]
     outcome = _compute_outcome(
-        eligible_ids, seed, snapshot["draw_count"], snapshot["departments"]
+        eligible_ids,
+        seed,
+        snapshot["draw_count"],
+        snapshot["departments"],
+        race_r1_seconds=snapshot.get("race_r1_seconds"),
+        race_r2_seconds=snapshot.get("race_r2_seconds"),
     )
     return {"commit": commit, **outcome}
 

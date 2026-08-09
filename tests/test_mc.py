@@ -111,8 +111,24 @@ def test_mc_agent_uses_gemini_directly_when_only_gemini_key_set(tmp_path, monkey
 def test_mc_agent_pick_line_rotates_without_immediate_repeat():
     agent = MCAgent(cache_path=None)
     tag = "opening"
-    seen = [agent.pick_line(tag) for _ in range(len(STATIC_TEMPLATES[tag]))]
+    # opening 풀에는 {participant_count}/{department_count}가 필요한 줄이
+    # 하나 있다 -- 전체 풀을 대상으로 셔플백이 도는지 보려면 그 값도 줘야
+    # 그 줄도 후보에 포함된다(안 주면 pick_line이 그 줄을 걸러낸다).
+    seen = [
+        agent.pick_line(tag, participant_count=250, department_count=6)
+        for _ in range(len(STATIC_TEMPLATES[tag]))
+    ]
     assert len(set(seen)) == len(STATIC_TEMPLATES[tag])
+
+
+def test_mc_agent_pick_line_never_leaves_unfilled_placeholder():
+    """close_call처럼 team 없이 호출되는 태그가 실제로 있다 -- team이
+    필요한 줄이 뽑혀서 "{team}"이 화면에 그대로 남는 사고를 막는다."""
+    agent = MCAgent(cache_path=None)
+    for _ in range(30):
+        line = agent.pick_line("close_call")  # team 파라미터 없이 호출
+        assert "{team}" not in line
+        assert "{" not in line
 
 
 def test_mc_agent_load_cache_from_disk(tmp_path):

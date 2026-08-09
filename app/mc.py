@@ -183,15 +183,24 @@ def render_line(template: str, **params: Any) -> str:
     return template.format_map(_SafeDict(**params))
 
 
+def _required_fields(template: str) -> set[str] | None:
+    """줄에 들어 있는 `{placeholder}` 이름 집합. 중괄호가 깨져 있으면(예:
+    짝이 안 맞는 `{`) None을 돌려준다 -- 렌더링 시점에 크래시 나기 전에
+    호출부가 걸러낼 수 있도록."""
+    try:
+        return {name for _, name, _, _ in Formatter().parse(template) if name}
+    except ValueError:
+        return None
+
+
 def _validate_llm_templates(lines: list[str]) -> list[str]:
     """LLM 응답에서 허용되지 않은 플레이스홀더가 포함된 줄은 버린다
     (실명/사번 유출 방지의 마지막 방어선)."""
     valid: list[str] = []
-    formatter = Formatter()
     for line in lines:
-        try:
-            fields = {name for _, name, _, _ in formatter.parse(line) if name}
-        except ValueError:
+        fields = _required_fields(line)
+        if fields is None:
+            logger.warning("중괄호가 깨진 LLM 멘트 폐기: %s", line)
             continue
         if fields - ALLOWED_PLACEHOLDERS:
             logger.warning("허용되지 않은 플레이스홀더로 LLM 멘트 폐기: %s", line)
@@ -307,14 +316,29 @@ class MCAgent:
     def pick_line(self, tag: str, **params: Any) -> str:
         """셔플백 방식: 폴 전체를 무작위 순서로 한 번씩 다 쓴 뒤에만 다시
         섞는다. 라운드로빈보다 반복 시 티가 덜 나면서도(매번 다른 순서),
-        같은 줄이 한 사이클 안에서 두 번 나오지는 않는다."""
+        같은 줄이 한 사이클 안에서 두 번 나오지는 않는다.
+
+        **호출부가 이번에 실제로 값을 준 플레이스홀더만 요구하는 줄로
+        후보를 미리 거른다** -- 그래야 "{team}"처럼 값을 안 준 자리가
+        화면에 그대로 남는 사고가 안 난다(실제로 close_call/race_progress/
+        final_announce 등이 team·winner_count 없이 호출되는 경로가 있었다).
+        같은 태그라도 호출마다 넘기는 파라미터 조합이 다를 수 있어, 셔플백은
+        태그+파라미터 조합 단위로 따로 관리한다."""
         pool = self.pool_for(tag)
         if not pool:
             return ""
-        bag = self._bags.get(tag)
+        available = {k for k, v in params.items() if v is not None}
+        compatible = [line for line in pool if (_required_fields(line) or set()) <= available]
+        if not compatible:
+            # 이 조합으로 채울 수 있는 줄이 하나도 없다 -- 그래도 뭔가는
+            # 보여줘야 하므로 폴 전체로 물러난다(빈 자리는 render_line이
+            # 안전하게 그대로 남긴다).
+            compatible = pool
+        bag_key = f"{tag}:{','.join(sorted(available))}"
+        bag = self._bags.get(bag_key)
         if not bag:
-            bag = deque(pool)
+            bag = deque(compatible)
             random.shuffle(bag)
-            self._bags[tag] = bag
+            self._bags[bag_key] = bag
         line = bag.popleft()
         return render_line(line, **params)

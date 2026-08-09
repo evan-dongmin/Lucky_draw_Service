@@ -190,6 +190,15 @@ def public_draw_dict(draw: DrawResult) -> dict[str, Any]:
         data["round_pass_ids"] = {
             str(r): ids for r, ids in draw.round_pass_ids.items() if r in draw.revealed_rounds
         }
+        # round_candidate_count[1]은 참가자 수·당첨 인원수 같은 공개 정보만으로
+        # 계산되는 값이라 리빌 전에 보여도 안전하지만, [2]는 R1이 결승선
+        # 컷오프(§12-8)로 몇 명이나 걸러졌는지를 드러내(레이스 진행 상황
+        # 유출) round_pass_ids와 같은 규칙으로 가린다.
+        data["round_candidate_count"] = {
+            str(r): count
+            for r, count in draw.round_candidate_count.items()
+            if r == 1 or r in draw.revealed_rounds
+        }
         data["department_pass_rate"] = {
             str(r): rates
             for r, rates in draw.department_pass_rate.items()
@@ -358,16 +367,47 @@ async def reset_session() -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _post_countdown_race_seconds(duration_seconds: float) -> float:
+    """스타트 라이트 리드인을 뺀 실제 레이스 진행 시간. `_run_race_phase`가
+    실제 틱을 돌릴 때 쓰는 것과 반드시 같은 공식이어야 한다 -- 결승선
+    컷오프(§12-8) 판정이 이 값을 기준으로 초 단위 창을 계산하므로,
+    어긋나면 화면에서 보이는 컷오프 시점과 판정이 안 맞게 된다."""
+    countdown = min(RACE_COUNTDOWN_SECONDS, duration_seconds * 0.25)
+    return max(1e-6, duration_seconds - countdown)
+
+
+def _race_cutoff_seconds_for_commit(session: Session) -> tuple[float | None, float | None]:
+    """결승선 컷오프(§12-8) 계산에 쓸 race_r1/r2의 실제 레이스 시간을
+    커밋 시점에 런북에서 미리 구한다. 레이싱 모드가 아니거나(룰렛)
+    런북 계산이 실패하면(짧은 total_seconds 등) 컷오프 없이(순위만으로
+    통과) 예전과 동일하게 동작하도록 (None, None)을 돌려준다."""
+    if session.mode != "racing":
+        return None, None
+    try:
+        segments = director.build_runbook(
+            total_seconds=session.total_seconds, predictions_enabled=session.predictions_enabled
+        )
+    except director.DirectorError:
+        return None, None
+    by_phase = {seg.phase: seg.duration_seconds for seg in segments}
+    r1 = _post_countdown_race_seconds(by_phase["race_r1"]) if "race_r1" in by_phase else None
+    r2 = _post_countdown_race_seconds(by_phase["race_r2"]) if "race_r2" in by_phase else None
+    return r1, r2
+
+
 @app.post("/api/draw/commit")
 async def commit_draw() -> dict[str, Any]:
     async with state_lock:
         session = _require_session()
+        race_r1_seconds, race_r2_seconds = _race_cutoff_seconds_for_commit(session)
         try:
             draw = fairness.compute_draw(
                 session_id=session.session_id,
                 participants=session.participants,
                 draw_count=session.draw_count,
                 excluded_ids=session.excluded_ids,
+                race_r1_seconds=race_r1_seconds,
+                race_r2_seconds=race_r2_seconds,
             )
         except fairness.FairnessError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -418,12 +458,15 @@ async def redraw(payload: RedrawRequest) -> dict[str, Any]:
             for winner_id in last.winners:
                 if winner_id not in session.excluded_ids:
                     session.excluded_ids.append(winner_id)
+        race_r1_seconds, race_r2_seconds = _race_cutoff_seconds_for_commit(session)
         try:
             draw = fairness.compute_draw(
                 session_id=session.session_id,
                 participants=session.participants,
                 draw_count=session.draw_count,
                 excluded_ids=session.excluded_ids,
+                race_r1_seconds=race_r1_seconds,
+                race_r2_seconds=race_r2_seconds,
             )
         except fairness.FairnessError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -461,8 +504,14 @@ async def _run_race_phase(
     draw: DrawResult, round_index: int, duration_seconds: float, session_id: str
 ) -> None:
     population = draw.ranking if round_index == 1 else draw.round_pass_ids[round_index - 1]
-    pass_count = len(draw.round_pass_ids[round_index])
     total = len(population)
+    # 통과선(결승선) 위치는 순위 기준 후보군 크기(round_candidate_count)로
+    # 계산한다 -- round_pass_ids의 실제 길이는 결승선 컷오프(§12-8)로 줄어들
+    # 수 있는데, 그걸 기준으로 하면 시간에 밀려 탈락한(하지만 순위상으로는
+    # 후보였던) 카트가 화면에서 아예 결승선에 못 미치는 것처럼 보여
+    # "1등 통과 후 카운트다운"이라는 연출의 전제 자체가 깨진다. R3는
+    # round_candidate_count가 없다(컷오프 대상이 아니라 순위 그대로).
+    pass_count = draw.round_candidate_count.get(round_index, len(draw.round_pass_ids[round_index]))
     line = race.pass_line(pass_count, total)
     departments = draw.snapshot.get("departments", {})
     denom_sets = _department_denom_sets(departments, round_index, draw)
@@ -474,7 +523,13 @@ async def _run_race_phase(
     # 런북 시간 배분에는 영향이 없다. 아주 짧은 구간(테스트용 0.02초 등)
     # 에서는 리드인이 구간을 잡아먹지 않도록 비율로 제한한다.
     countdown = min(RACE_COUNTDOWN_SECONDS, duration_seconds * 0.25)
-    race_seconds = max(1e-6, duration_seconds - countdown)
+    race_seconds = _post_countdown_race_seconds(duration_seconds)
+    # 결승선 컷오프(§12-8) 창 길이. R1/R2에만 있고, 화면이 "1등 결승 통과 후
+    # 몇 초"인지 계산하려면 이 값이 필요하다 -- fairness.py의 상수를
+    # 그대로 참조해 값이 어긋날 일이 없게 한다.
+    cutoff_window_seconds = {1: fairness.R1_CUTOFF_WINDOW_SECONDS, 2: fairness.R2_CUTOFF_WINDOW_SECONDS}.get(
+        round_index
+    )
 
     # 이 라운드의 장애물 배치는 시드+라운드로만 정해지는 정적인 값이라
     # 매 틱 다시 계산할 필요 없이 한 번만 만든다(§12-4). 시드 자체는 절대
@@ -510,6 +565,12 @@ async def _run_race_phase(
             # 이 구간에는 속도선·엔진음을 올리지 않고 그리드 정지 상태로
             # 보여주는 데 쓴다.
             "countdown": elapsed < countdown,
+            # 결승선 컷오프(§12-8, R1/R2만): 순위 기준 후보군 크기와 창
+            # 길이(초). 클라이언트가 "1등 결승 통과" 순간을 스스로 감지해
+            # (positions[pid] >= pass_line) 카운트다운을 띄우고, 그 사이
+            # 결승선을 넘는 카트 수를 "N/후보수"로 실시간 표시한다.
+            "candidate_count": pass_count,
+            "cutoff_window_seconds": cutoff_window_seconds,
         }
         if denom_sets is not None:
             payload["department_live_rate"] = race.department_live_rates(positions, denom_sets, line)
@@ -1270,12 +1331,15 @@ async def demo_start(payload: DemoStartRequest) -> dict[str, Any]:
         store.set_session(session)
         await hub.broadcast({"type": "session_created", "session": public_session_dict(session)})
 
+        race_r1_seconds, race_r2_seconds = _race_cutoff_seconds_for_commit(session)
         try:
             draw = fairness.compute_draw(
                 session_id=session.session_id,
                 participants=session.participants,
                 draw_count=session.draw_count,
                 excluded_ids=session.excluded_ids,
+                race_r1_seconds=race_r1_seconds,
+                race_r2_seconds=race_r2_seconds,
             )
         except fairness.FairnessError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

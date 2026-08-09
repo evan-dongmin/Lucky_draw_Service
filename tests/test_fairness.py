@@ -159,3 +159,103 @@ def test_canonical_json_is_deterministic_regardless_of_key_order():
     a = {"b": 1, "a": {"z": 1, "y": 2}}
     b = {"a": {"y": 2, "z": 1}, "b": 1}
     assert compute_commit("seed", a) == compute_commit("seed", b)
+
+
+# ---------------------------------------------------------------------------
+# 결승선 컷오프 (작업계획서 §12-8, 2026-08-08)
+# ---------------------------------------------------------------------------
+
+
+def test_without_timing_params_cutoff_is_skipped_no_regression():
+    """race_r1_seconds/race_r2_seconds를 안 주면(대부분의 기존 호출) 예전과
+    100% 동일하게 순위만으로 통과가 정해진다 -- round_pass_ids 길이가
+    round_candidate_count와 같아야 한다(컷오프로 걸러진 사람이 없다는 뜻)."""
+    participants = _participants(250)
+    draw = compute_draw("s1", participants, draw_count=5, seed="no-timing-seed")
+    assert len(draw.round_pass_ids[1]) == draw.round_candidate_count[1]
+    assert len(draw.round_pass_ids[2]) == draw.round_candidate_count[2]
+    assert len(draw.winners) == 5
+
+
+def test_cutoff_window_can_actually_eliminate_rank_eligible_karts():
+    """현실적인 라운드 시간(약 95초)에 10초 창을 적용하면, 순위상으로는
+    통과권이었던 카트 중 일부가 실제로는 탈락해야 한다(그래야 "카운트다운
+    안에 못 들어오면 탈락"이라는 요청이 실제로 의미가 있다)."""
+    participants = _participants(250)
+    found_elimination = False
+    for i in range(10):
+        draw = compute_draw(
+            "s1", participants, draw_count=5, seed=f"cutoff-elim-seed-{i}",
+            race_r1_seconds=95.45, race_r2_seconds=95.45,
+        )
+        if len(draw.round_pass_ids[1]) < draw.round_candidate_count[1]:
+            found_elimination = True
+            break
+    assert found_elimination, "10번 시도했는데 결승선 컷오프가 한 번도 후보를 탈락시키지 못했다"
+
+
+def test_cutoff_never_starves_next_round_below_minimum():
+    """시간 컷오프가 아무리 타이트해도(극단적으로 짧은 창) R2/최종 당첨자
+    인원이 모자라면 안 된다 -- 순위 순으로 최소 인원을 채워 넣는 안전장치가
+    실제로 동작해야 한다."""
+    import app.fairness as fairness_module
+
+    original_r1, original_r2 = (
+        fairness_module.R1_CUTOFF_WINDOW_SECONDS,
+        fairness_module.R2_CUTOFF_WINDOW_SECONDS,
+    )
+    fairness_module.R1_CUTOFF_WINDOW_SECONDS = 1e-6
+    fairness_module.R2_CUTOFF_WINDOW_SECONDS = 1e-6
+    try:
+        participants = _participants(250)
+        draw = compute_draw(
+            "s1", participants, draw_count=5, seed="floor-guard-seed",
+            race_r1_seconds=95.45, race_r2_seconds=95.45,
+        )
+        assert len(draw.round_pass_ids[1]) >= draw.finalist_count
+        assert len(draw.round_pass_ids[2]) >= 5
+        assert len(draw.winners) == 5
+    finally:
+        fairness_module.R1_CUTOFF_WINDOW_SECONDS = original_r1
+        fairness_module.R2_CUTOFF_WINDOW_SECONDS = original_r2
+
+
+def test_nested_survivor_invariant_holds_with_cutoff_active():
+    participants = _participants(250)
+    draw = compute_draw(
+        "s1", participants, draw_count=4, seed="nested-cutoff-seed",
+        race_r1_seconds=95.45, race_r2_seconds=95.45,
+    )
+    winners = set(draw.winners)
+    r2_pass = set(draw.round_pass_ids[2])
+    r1_pass = set(draw.round_pass_ids[1])
+    assert winners <= r2_pass <= r1_pass
+
+
+def test_cutoff_is_deterministic_same_seed_same_result():
+    participants = _participants(250)
+    draw1 = compute_draw(
+        "s1", participants, draw_count=3, seed="det-cutoff-seed",
+        race_r1_seconds=95.45, race_r2_seconds=95.45,
+    )
+    draw2 = compute_draw(
+        "s1", participants, draw_count=3, seed="det-cutoff-seed",
+        race_r1_seconds=95.45, race_r2_seconds=95.45,
+    )
+    assert draw1.round_pass_ids == draw2.round_pass_ids
+    assert draw1.round_candidate_count == draw2.round_candidate_count
+
+
+def test_recompute_from_reveal_reproduces_cutoff_via_snapshot():
+    """스냅샷에 race_r1/r2_seconds가 봉인돼 있어야 리빌 후 재계산이
+    커밋 당시와 동일한 컷오프 결과를 재현할 수 있다."""
+    participants = _participants(250)
+    draw = compute_draw(
+        "s1", participants, draw_count=3, seed="recompute-cutoff-seed",
+        race_r1_seconds=95.45, race_r2_seconds=95.45,
+    )
+    assert draw.snapshot["race_r1_seconds"] == 95.45
+    assert draw.snapshot["race_r2_seconds"] == 95.45
+    recomputed = recompute_from_reveal(draw.seed, draw.snapshot)
+    assert recomputed["round_pass_ids"] == draw.round_pass_ids
+    assert recomputed["round_candidate_count"] == draw.round_candidate_count
