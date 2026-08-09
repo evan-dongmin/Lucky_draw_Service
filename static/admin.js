@@ -226,7 +226,7 @@ function renderSession(session) {
   if (!latest) {
     commitDisplayEl.innerHTML = "";
   } else if (!latest.revealed) {
-    commitDisplayEl.innerHTML = `<strong>커밋 해시(공개됨):</strong><br><code>${latest.commit}</code>`;
+    commitDisplayEl.innerHTML = `<strong>봉인 완료</strong> -- 결과는 이미 확정되었고, 레이스가 끝나면 공개됩니다.`;
   } else {
     const labelFor = (id) => {
       const p = latest.snapshot.participants.find((x) => x.id === id);
@@ -250,13 +250,13 @@ function renderSession(session) {
       latest.prize_winners && latest.prize_basis !== "race"
         ? `<strong>참고 -- 레이스 결과(${latest.winners.length}명):</strong> ${raceNames}<br>`
         : "";
-    commitDisplayEl.innerHTML = `<strong>커밋 해시:</strong> <code>${latest.commit}</code><br>${prizeLine}${raceLine}<strong>시드(리빌됨):</strong> <code>${latest.seed}</code>`;
+    commitDisplayEl.innerHTML = `${prizeLine}${raceLine}`;
   }
 
   drawsHistoryEl.innerHTML =
     "<h3>추첨 이력</h3>" +
     session.draws
-      .map((d, i) => `<div class="draw-history-item">#${i} ${d.revealed ? "리빌됨" : "커밋만"} - ${d.commit.slice(0, 16)}...</div>`)
+      .map((d, i) => `<div class="draw-history-item">#${i} ${d.revealed ? "리빌됨(공개)" : "봉인됨(대기 중)"}</div>`)
       .join("");
 }
 

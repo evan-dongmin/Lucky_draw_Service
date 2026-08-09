@@ -13,7 +13,6 @@ const bodyEl = document.body;
 const statusEl = document.getElementById("ws-status");
 const participantCountEl = document.getElementById("participant-count");
 const departmentCountEl = document.getElementById("department-count");
-const commitBadgeEl = document.getElementById("commit-badge");
 const reelEl = document.getElementById("reel");
 const winnerListEl = document.getElementById("winner-list");
 const mcCaptionEl = document.getElementById("mc-caption");
@@ -719,105 +718,79 @@ let crossedSoundCount = 0;
 const CROSS_SOUND_BUDGET = 24; // 라운드당 통과음 최대 횟수(그 뒤는 조용히 지나간다)
 
 // ---------------------------------------------------------------------------
-// 장애물 (연출 전용 -- 순위/progress 값에는 절대 영향 없음)
+// 장애물 (작업계획서 §12-4, 2026-08-08) -- 이제 서버가 계산한 실제 값이다.
 //
-// 사용자 요청으로 종류·크기·개수를 늘리고, 부딪히면 스핀아웃/정지/감속처럼
-// 눈에 띄는 변수가 생기도록 했다. **다만 실제 통과 판정은 서버가 보낸
-// positions[pid]로만 결정되므로, 여기서 만드는 효과는 전부 "보이는 위치"에만
-// 적용되는 일시적 오프셋이고 반드시 0으로 되돌아온다**:
-//   - 각 효과는 자기 지속시간 안에서 감쇠해 사라진다.
-//   - 그와 별개로 레이스 막판(EFFECT_FADE_TAIL 구간)에는 전체 효과 강도에
-//     0으로 수렴하는 페이드를 곱한다 -> 결승선 통과 시점(ratio=1.0)에는
-//     보이는 위치와 실제 위치가 정확히 일치한다(통과선 판정과 어긋날 수 없음).
+// 배치(tick.obstacles: 이 라운드의 고정된 위치·레인·종류)와 "지금 이 틱에
+// 누가 맞고 있는지"(tick.effects: pid -> {type, strength})는 매 race_tick에
+// 서버가 그대로 실어 보낸다(app/race.py: obstacle_layout/compute_effects).
+// **positions[pid] 자체에 이미 장애물 감속이 실제 값으로 반영돼 있으므로**
+// (연출용 오프셋이 아니다 -- 서버가 계산해 내려주는 진짜 위치), 여기서는
+// 그 값을 그대로 그리고 + tick.effects를 보고 스프라이트/사운드/스핀 같은
+// 연출만 트리거한다. 클라이언트는 충돌 판정을 직접 재현하지 않는다(재현하면
+// 서버 계산과 어긋날 여지가 생긴다 -- §12-4 이전에는 이 파일이 자체적으로
+// Math.random()으로 장애물을 뿌리고 충돌도 직접 판정해서, 실제 결과와
+// 무관한 "보이는 위치"만 흔드는 순수 연출이었다).
 // ---------------------------------------------------------------------------
-let activeObstacles = [];
-let nextObstacleSpawnAt = 0;
-let obstacleSeq = 0;
-let obstacleRound = null; // 라운드가 바뀌면 이전 라운드 트랙 좌표로 계산된 장애물을 전부 버린다
-let kartEffects = {}; // pid -> { kind, until, duration, lag, lateral, spin }
 
-// 종류별 스프라이트/크기/충돌 효과. severity가 클수록 크게 밀린다.
-// lag/duration은 사용자 피드백(부딪혀도 진행이 안 더뎌 보인다)에 따라 크게
-// 올렸다 -- 부딪힌 카트가 눈에 띄게 뒤처졌다가 1~2초에 걸쳐 따라잡는 정도.
-// EFFECT_FADE_TAIL이 결승선 앞 12% 구간에서 모든 효과를 강제로 0까지
-// 줄이므로, lag를 아무리 키워도 결승선에서 보이는 위치=실제 위치는 항상
-// 보장된다(통과 판정과 절대 어긋나지 않음).
-const OBSTACLE_DEFS = {
-  cone: { emoji: "🚧", size: 0.9, kind: "wobble", duration: 350, lag: 0, lateral: 0.25, spin: 0.2 },
-  oil: { emoji: "🛢️", size: 1.05, kind: "slow", duration: 1400, lag: 0.045, lateral: 0.5, spin: 0.5 },
-  tire: { emoji: "🛞", size: 1.0, kind: "slow", duration: 1200, lag: 0.035, lateral: 0.7, spin: 0.35 },
-  banana: { emoji: "🍌", size: 0.85, kind: "spin", duration: 1600, lag: 0.05, lateral: 1.2, spin: 6.3 },
-  puddle: { emoji: "💧", size: 1.15, kind: "slide", duration: 1300, lag: 0.03, lateral: 1.6, spin: 0.3 },
-  rock: { emoji: "🪨", size: 1.25, kind: "stall", duration: 1700, lag: 0.07, lateral: 0.4, spin: 0.8 },
-  bomb: { emoji: "💣", size: 1.1, kind: "stall", duration: 2000, lag: 0.09, lateral: 1.4, spin: 9.4 },
-  ice: { emoji: "🧊", size: 1.0, kind: "slide", duration: 1500, lag: 0.035, lateral: 1.9, spin: 1.2 },
+// app/race.py의 LANE_COUNT와 반드시 같아야 한다 -- 장애물 배치(obstacles[].lane)를
+// 해석하는 기준이다. 카트 자체의 화면 표시 차선(laneFor, 화면 크기에 따라
+// 5~28차선)과는 다른 별개 축이라 혼동하면 안 된다: 저건 "몇 명이 나란히
+// 그려지는지"를 정하는 순수 연출용 값이고, 이건 "이 장애물이 트랙 폭의 어느
+// 지점에 있는지"를 정하는 값이다.
+const LANE_COUNT = 8;
+
+// 종류별 스프라이트/충돌 연출(스핀·좌우 흔들림·사운드 종류). 실제로 얼마나
+// 세게 맞았는지(strength)는 서버가 계산해 내려주고, 여기서는 "그 강도를
+// 화면에서 어떻게 표현할지"만 결정한다.
+const OBSTACLE_VISUAL = {
+  cone: { emoji: "🚧", kind: "wobble", lateral: 0.25, spin: 0.2 },
+  oil: { emoji: "🛢️", kind: "slow", lateral: 0.5, spin: 0.5 },
+  tire: { emoji: "🛞", kind: "slow", lateral: 0.7, spin: 0.35 },
+  banana: { emoji: "🍌", kind: "spin", lateral: 1.2, spin: 6.3 },
+  puddle: { emoji: "💧", kind: "slide", lateral: 1.6, spin: 0.3 },
+  rock: { emoji: "🪨", kind: "stall", lateral: 0.4, spin: 0.8 },
+  bomb: { emoji: "💣", kind: "stall", lateral: 1.4, spin: 9.4 },
+  ice: { emoji: "🧊", kind: "slide", lateral: 1.9, spin: 1.2 },
 };
-const OBSTACLE_TYPES = Object.keys(OBSTACLE_DEFS);
-
-// 라운드별 동시 활성 개수 -- 사용자 요청(장애물을 훨씬 더 많이)에 따라
-// 예전 대비 4~5배로 늘렸다. 카메라가 이제 R1도 확대·추적이라(computeCamera
-// 참고) 항상 화면에 보이는 건 선두권뿐이라, 250대가 한꺼번에 화면에 잡혀
-// 빽빽해지는 걱정 없이 개수를 키울 수 있었다.
-const OBSTACLE_MAX_ACTIVE_BY_ROUND = { 1: 35, 2: 45, 3: 50 };
-
-// 레이스 막판 이 비율 구간에서 모든 시각 효과를 0으로 수렴시킨다
-// (결승선에서 보이는 위치 = 실제 위치 보장).
-const EFFECT_FADE_TAIL = 0.12;
-
-function effectFadeFor(progressRatio) {
-  const remain = 1 - Math.min(1, Math.max(0, progressRatio));
-  return Math.min(1, remain / EFFECT_FADE_TAIL);
-}
-
-// 카트가 장애물에 닿았을 때 효과를 건다. 이미 더 센 효과가 걸려 있으면
-// 덮어쓰지 않는다(연달아 스치며 영원히 멈춰 있는 것을 방지).
-// 새로 효과가 걸렸을 때만 true -- 호출부가 이때만 충돌음을 낸다(같은 카트가
-// 장애물에 붙어 있는 동안 매 프레임 소리가 나면 안 된다).
-function applyKartEffect(pid, type, now) {
-  const def = OBSTACLE_DEFS[type];
-  if (!def) return false;
-  const current = kartEffects[pid];
-  if (current && current.until > now && current.lag >= def.lag) return false;
-  kartEffects[pid] = {
-    kind: def.kind,
-    until: now + def.duration,
-    duration: def.duration,
-    lag: def.lag,
-    lateral: def.lateral,
-    spin: def.spin,
-    dir: Math.random() < 0.5 ? -1 : 1,
-  };
-  return true;
-}
 
 // 장애물 종류 -> 충돌음 종류. 폭탄만 kind가 'stall'이면서도 화면에서는
 // 폭발이므로 별도 사운드로 뺀다.
 function hitSoundKindFor(type) {
   if (type === "bomb") return "explode";
-  const def = OBSTACLE_DEFS[type];
+  const def = OBSTACLE_VISUAL[type];
   return def ? def.kind : null;
 }
 
-// 남은 시간 비율(1 -> 0)로 감쇠한 현재 효과 강도. 없으면 null.
-function kartEffectStateFor(pid, now, fade) {
-  const e = kartEffects[pid];
-  if (!e) return null;
-  const remain = e.until - now;
-  if (remain <= 0) {
-    delete kartEffects[pid];
-    return null;
+// 카트가 옆으로 밀리는 연출 방향(왼쪽/오른쪽)은 결과에 영향이 없는 순수
+// 화면 연출이라 클라이언트에서 pid 해시로 정해도 무방하다 -- 같은 카트는
+// 항상 같은 방향으로 밀리게 캐시해 둔다(매 프레임 랜덤이면 떨림처럼 보인다).
+const effectDirCache = new Map();
+// pid -> 가장 최근에 사운드를 재생해 준 장애물 종류. tick.effects[pid]의
+// type이 바뀔 때(=새로 맞았을 때)만 다시 소리를 낸다.
+const lastEffectType = new Map();
+function effectDirFor(pid) {
+  let dir = effectDirCache.get(pid);
+  if (dir === undefined) {
+    dir = hashToUnit(pid + ":effectDir") < 0.5 ? -1 : 1;
+    effectDirCache.set(pid, dir);
   }
-  const t = remain / e.duration; // 1 -> 0
-  const strength = t * fade;
+  return dir;
+}
+
+// tick.effects[pid](서버 값)를 화면 연출에 필요한 형태로 바꾼다. 서버가 보낸
+// strength는 이미 "장애물에 맞은 뒤 결승선까지 선형 회복" 곡선의 현재 값이라
+// 여기서 별도로 감쇠시킬 필요가 없다.
+function kartEffectStateFor(pid, effects) {
+  const e = effects && effects[pid];
+  if (!e) return null;
+  const visual = OBSTACLE_VISUAL[e.type] || OBSTACLE_VISUAL.cone;
+  const dir = effectDirFor(pid);
   return {
-    kind: e.kind,
-    strength,
-    // 감속/정지는 "뒤로 처져 보였다가 따라잡는" 형태 -- 진행률에서 잠시 뺀다
-    lag: e.lag * strength,
-    // 코스 이탈: 옆으로 밀렸다가 제자리로 복귀
-    lateral: e.lateral * strength * e.dir,
-    // 스핀: 남은 시간 동안 회전하고 멈춘다
-    spin: e.spin * strength * e.dir,
+    kind: visual.kind,
+    type: e.type,
+    strength: e.strength,
+    lateral: visual.lateral * e.strength * dir,
+    spin: visual.spin * e.strength * dir,
   };
 }
 
@@ -882,10 +855,18 @@ function jitterFor(pid) {
 // 카트끼리 계속 엎치락뒤치락하며 선두가 바뀌는 것처럼 보이게 하는 잔물결
 // (사용자 요청: 서로 추월하면서 선두가 계속 바뀌었으면). 카트마다 다른
 // 주기·위상으로 흔들어 근접한 순위끼리 자연스럽게 앞서거니 뒤서거니
-// 한다. **"보이는 위치"에만 더해지는 연출**이라 실제 순위(positions,
-// 통과 판정, POSITION 패널·카메라가 따라가는 리더)는 전혀 바뀌지 않고,
-// 결승선 앞 12%(fade)에서 0으로 수렴해 결승선에서는 다시 정확히 실제
-// 위치와 일치한다.
+// 한다. **장애물과 무관한 순수 연출**이라 실제 순위(positions, 통과 판정,
+// POSITION 패널·카메라가 따라가는 리더)는 전혀 바뀌지 않고, 결승선 앞
+// 12%(fade)에서 0으로 수렴해 결승선에서는 다시 정확히 실제 위치와
+// 일치한다. (장애물 감속은 이제 이 함수와 별개로 positions[pid] 자체에
+// 이미 실제 값으로 반영돼 있다 -- §12-4.)
+const WIGGLE_FADE_TAIL = 0.12;
+
+function wiggleFadeFor(progressRatio) {
+  const remain = 1 - Math.min(1, Math.max(0, progressRatio));
+  return Math.min(1, remain / WIGGLE_FADE_TAIL);
+}
+
 function jockeyOffsetFor(pid, now, fade) {
   const freqSeed = hashToUnit(pid + ":jockeyFreq");
   const phaseSeed = hashToUnit(pid + ":jockeyPhase");
@@ -895,16 +876,8 @@ function jockeyOffsetFor(pid, now, fade) {
   return Math.sin(now * freq + phase) * amp * fade;
 }
 
-// 장애물 lag + 잔물결을 합친 "보이는 위치" 이동량의 안전 상한. R3처럼 트랙이
-// 굴곡지고 카메라가 많이 확대된 상태에서는 진행률 0.1 정도의 어긋남도
-// 카트가 화면 밖으로 통째로 사라져 보이는 사고로 이어질 수 있어(실제로
-// 겪음), 개별 장애물 정의값과 무관하게 여기서 한 번 더 묶어둔다.
-const VISUAL_DELTA_MIN = -0.06;
-const VISUAL_DELTA_MAX = 0.02;
-
-function visualDeltaFor(pid, now, fade, effect) {
-  const raw = jockeyOffsetFor(pid, now, fade) - (effect ? effect.lag : 0);
-  return Math.max(VISUAL_DELTA_MIN, Math.min(VISUAL_DELTA_MAX, raw));
+function visualDeltaFor(pid, now, fade) {
+  return jockeyOffsetFor(pid, now, fade);
 }
 
 // ---------------------------------------------------------------------------
@@ -1779,10 +1752,10 @@ function drawKart(ctx, x, y, h, angle, color, glow, isLeader, atRisk, pulse, eff
 }
 
 // ---------------------------------------------------------------------------
-// 장애물 렌더/스폰: 마블 레이스 느낌의 움직이는 방해물(연출 전용). 트랙 위를
-// 좌우로 요동치며 떠 있다가, 카트가 닿으면 applyKartEffect로 스핀/정지/감속
-// 효과를 건다 -- positions[pid](순위 판정 값)는 이 파일 어디서도 바꾸지 않고,
-// 효과는 결승선 전에 반드시 0으로 수렴한다(EFFECT_FADE_TAIL 참고).
+// 장애물 렌더: 서버가 이 라운드용으로 확정해 보낸 배치(tick.obstacles)를
+// 고정된 위치에 그린다(§12-4). 예전에는 여기서 Math.random()으로 스폰하고
+// 화면 밖으로 흘려보냈지만, 이제 장애물은 커밋 시점에 이미 확정된 실제
+// 게임 요소라 위치가 라운드 내내 고정이다.
 // ---------------------------------------------------------------------------
 
 const obstacleSpriteCache = new Map();
@@ -1795,7 +1768,7 @@ function buildObstacleSprite(type) {
   g.font = "40px serif";
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.fillText((OBSTACLE_DEFS[type] || OBSTACLE_DEFS.cone).emoji, 28, 30);
+  g.fillText((OBSTACLE_VISUAL[type] || OBSTACLE_VISUAL.cone).emoji, 28, 30);
   return c;
 }
 
@@ -1820,73 +1793,25 @@ function drawObstacle(ctx, o, size) {
   ctx.restore();
 }
 
-// 화면에 보이는 무리(tailProgress~leaderProgress)를 기준으로 앞쪽에 장애물을
-// 스폰하고, 그 무리 전체가 한참 지나친 것만 제거한다(사용자 요청: 장애물이
-// 없어지지 않게). tailProgress는 카메라 밖으로 밀려난 카트까지 포함해서
-// 넉넉하게 잡으므로, 예전(리더 기준 0.08)보다 훨씬 오래 트랙 위에 남는다.
-// 라운드가 바뀌면 이전 라운드 트랙 좌표로 만든 장애물은 의미가 없으므로
-// 전부 비운다.
-function maybeSpawnObstacle(now, leaderProgress, tailProgress, passLine, round) {
-  if (obstacleRound !== round) {
-    obstacleRound = round;
-    activeObstacles = [];
-    nextObstacleSpawnAt = 0;
-  }
-  const PERSIST_MARGIN = 0.2;
-  activeObstacles = activeObstacles.filter((o) => tailProgress - o.spawnProgress < PERSIST_MARGIN);
-  const maxActive = OBSTACLE_MAX_ACTIVE_BY_ROUND[round] || 35;
-  if (activeObstacles.length >= maxActive) return;
-  if (now < nextObstacleSpawnAt) return;
-  // 결승선을 넘은 자리에는 장애물을 두지 않는다(사용자 요청).
-  //
-  // 예전에는 후보 위치를 `min(0.97, finishLimit, leader + 0.1 + rand)`로
-  // **잘라냈다**. 그래서 리더가 결승선 0.1 앞까지 오면 그 뒤로 뿌리는
-  // 장애물이 전부 정확히 finishLimit 한 지점으로 clamp되어, 결승선
-  // 바로 앞에만 수십 개가 겹쳐 쌓였다(사용자 피드백: "1라운드에서
-  // 결승선 바로 직전에만 너무 많은 장애물이 몰려 있다").
-  // 이제는 자를 수 있는 구간이 남아 있을 때만 그 구간 안에서 무작위로
-  // 고르고, 남은 구간이 없으면 아예 스폰하지 않는다.
-  const finishLimit = Math.min(0.97, Math.max(0, passLine - 0.02));
-  const lo = leaderProgress + 0.08;
-  if (lo >= finishLimit) return; // 결승선 앞 구간을 이미 다 지나쳤다 -- 더 뿌리지 않는다
-  const spawnProgress = lo + Math.random() * (finishLimit - lo);
-  const type = OBSTACLE_TYPES[Math.floor(Math.random() * OBSTACLE_TYPES.length)];
-  activeObstacles.push({
-    id: `obs-${obstacleSeq++}`,
-    type,
-    // 같은 종류라도 크기를 흔들어 "다양한 크기"가 실제로 보이게 한다
-    sizeScale: OBSTACLE_DEFS[type].size * (0.75 + Math.random() * 0.7),
-    spawnProgress,
-    laneCenter: Math.random() * lastLaneCount,
-    weaveAmp: 1.5 + Math.random() * 3,
-    weaveSpeed: 0.0015 + Math.random() * 0.0018,
-    spinPhase: Math.random() * Math.PI * 2,
-    spinSpeed: (Math.random() - 0.5) * 0.0025,
-    spawnedAt: now,
-  });
-  // 상한을 훨씬 올린 만큼 그 상한까지 빨리 채워지도록 간격도 더 좁혔다
-  // (사용자 요청: 장애물 수를 훨씬 많게).
-  nextObstacleSpawnAt = now + 120 + Math.random() * 220;
-}
-
-function obstacleScreenPoints(now, laneCount, laneWidth, passLine, round, halfWidth, obstacleSize) {
-  return activeObstacles.map((o) => {
-    const weaveLane = o.laneCenter + Math.sin((now - o.spawnedAt) * o.weaveSpeed) * o.weaveAmp;
-    let laneOffset = (weaveLane - (laneCount - 1) / 2) * laneWidth;
-    // 트랙 밖으로 나가지 않게 가장자리 안쪽으로 묶는다(사용자 피드백:
-    // "장애물이 맵 밖에 위치한 경우가 있음"). laneCenter가 0..laneCount
-    // 난수인 데다 weave 진폭이 최대 4.5차선이라, 예전에는 합쳐서 트랙 폭을
-    // 훌쩍 넘어 잔디밭이나 허공에 떠 있는 장애물이 생겼다. 자기 반지름만큼
-    // 여유를 두고 클램프하면 항상 노면 위에 고루 분포한다.
-    const radius = ((obstacleSize || 0) * o.sizeScale) / 2;
-    const maxOffset = Math.max(0, halfWidth - radius);
-    laneOffset = Math.max(-maxOffset, Math.min(maxOffset, laneOffset));
-    const center = trackPointAt(warpProgress(o.spawnProgress, passLine), round);
+// 서버가 보낸 고정 배치(id/at_ratio/lane/type)를 화면 좌표로 바꾼다.
+// lane(0..LANE_COUNT-1)은 트랙 폭을 균등 분할한 고정 축이다(카트 렌더링용
+// laneFor와는 무관). 크기·회전 위상은 id로부터 결정론적으로 뽑아 매 프레임
+// 다시 계산해도 값이 흔들리지 않게 한다(진짜 랜덤이면 프레임마다 깜빡인다).
+function obstacleScreenPoints(obstacles, passLine, round, halfWidth) {
+  if (!obstacles || !obstacles.length) return [];
+  const laneWidth = (halfWidth * 2 * 0.88) / LANE_COUNT;
+  const now = performance.now();
+  return obstacles.map((o) => {
+    const laneOffset = (o.lane - (LANE_COUNT - 1) / 2) * laneWidth;
+    const center = trackPointAt(warpProgress(o.at_ratio, passLine), round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);
+    const sizeScale = 0.8 + hashToUnit(o.id + ":size") * 0.55;
+    const spinSpeed = (hashToUnit(o.id + ":spinDir") - 0.5) * 0.0015;
     return {
       ...o,
-      spinPhase: o.spinPhase + (now - o.spawnedAt) * o.spinSpeed,
+      sizeScale,
+      spinPhase: hashToUnit(o.id + ":spinPhase") * Math.PI * 2 + now * spinSpeed,
       x: center.x + nx * laneOffset,
       y: center.y + ny * laneOffset,
     };
@@ -1907,7 +1832,7 @@ function drawFrame(positions, tick) {
 
   const sorted = [...ids].sort((a, b) => positions[b] - positions[a]);
   const leaderPos = positions[sorted[0]];
-  const fade = effectFadeFor(tick.progress_ratio);
+  const fade = wiggleFadeFor(tick.progress_ratio);
   // 카메라는 리더의 "실제" 진행률이 아니라 리더 본인에게 걸린 효과까지
   // 반영한 "보이는" 위치를 따라간다 -- 그래야 리더가 장애물에 맞아
   // 뒤로 밀린 순간에도 카메라 중심 = 리더가 그려지는 자리가 항상
@@ -1953,14 +1878,10 @@ function drawFrame(positions, tick) {
   // 장애물은 카트와 비슷하거나 살짝 큰 정도가 적당하다(예전엔 카트의
   // 1.5배 + 최소 18px이라 작아진 카트보다 훨씬 커 보였다).
   const obstacleSize = Math.max(16, kartH * 1.05);
-  maybeSpawnObstacle(now, leaderPos, tailProgress, tick.pass_line, tick.round);
-  const obstaclePoints = obstacleScreenPoints(
-    now, laneCount, laneWidth, tick.pass_line, tick.round, halfWidth, obstacleSize
-  );
+  const obstaclePoints = obstacleScreenPoints(tick.obstacles, tick.pass_line, tick.round, halfWidth);
   for (const o of obstaclePoints) {
     drawObstacle(raceCtx, o, obstacleSize);
   }
-  const hitRadius = Math.max(14, kartH * 1.2);
 
   if (crossedRound !== tick.round) {
     crossedRound = tick.round;
@@ -1973,46 +1894,40 @@ function drawFrame(positions, tick) {
     const pid = sorted[i];
     const p = positions[pid];
     if (p < tailProgress) continue; // 카메라 밖 후미 -- 그리지도 판정하지도 않음
-    const effect = kartEffectStateFor(pid, now, fade);
+    // 장애물 충돌 여부·강도는 서버가 계산해 tick.effects로 내려준 값을
+    // 그대로 쓴다(§12-4) -- 클라이언트는 판정을 재현하지 않는다.
+    const rawEffect = tick.effects && tick.effects[pid];
+    const effect = kartEffectStateFor(pid, tick.effects);
 
-    // 충돌 효과 + 엎치락뒤치락 잔물결 모두 "보이는 위치"에만 적용한다
-    // -- p(순위 판정 값)는 불변.
-    const shownP = Math.max(0, p + visualDeltaFor(pid, now, fade, effect));
+    // 잔물결(jockey wiggle)만 "보이는 위치"에 더한다 -- p(서버가 계산한
+    // 실제 위치, 장애물 감속이 이미 반영돼 있음)는 불변.
+    const shownP = Math.max(0, p + visualDeltaFor(pid, now, fade));
     const lane = laneFor(pid, laneCount);
     const lateral = effect ? effect.lateral * laneWidth : 0;
     const laneOffset =
       (lane - (laneCount - 1) / 2) * laneWidth + jitterFor(pid) * laneWidth * 0.5 + lateral;
-    // 장애물도 같은 워프를 거쳐 화면 좌표를 얻으므로(obstacleScreenPoints),
-    // 여기서도 반드시 워프한 값으로 화면 좌표를 구해야 충돌 판정(화면
-    // 좌표 기준 거리 비교)이 어긋나지 않는다.
     const center = trackPointAt(warpProgress(shownP, tick.pass_line), tick.round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);
     const x = center.x + nx * laneOffset;
     const y = center.y + ny * laneOffset;
 
-    // 장애물에 닿으면 종류별 효과(스핀아웃/정지/감속/미끄러짐)를 건다.
-    if (fade > 0) {
-      for (const o of obstaclePoints) {
-        const dx = x - o.x;
-        const dy = y - o.y;
-        const r = hitRadius + (obstacleSize * o.sizeScale) / 2;
-        if (dx * dx + dy * dy < r * r) {
-          if (applyKartEffect(pid, o.type, now)) {
-            // 충돌음은 선두권일수록 크게. 250대가 동시에 부딪히는 R1에서도
-            // 소리가 뭉치지 않도록 볼륨을 순위로 깎고, 나머지는 audio.js의
-            // 게이트가 솎아낸다. 화면 밖(카메라 줌 아웃 전) 뒤쪽 집단은
-            // 아주 작게만 들린다.
-            // sorted는 선두가 0번(루프는 겹침 순서 때문에 뒤에서부터 돈다)
-            const scale = i === 0 ? 1.15 : i < 5 ? 0.85 : i < 20 ? 0.5 : 0.28;
-            SFX.hit(hitSoundKindFor(o.type), scale);
-            if (i === 0 && (o.type === "bomb" || o.type === "rock")) {
-              FX.screenShake(o.type === "bomb" ? 8 : 5, 240);
-            }
-          }
-          break;
-        }
+    // 새로 맞은 순간에만 충돌음을 낸다(같은 장애물에 계속 붙어 있는 동안
+    // 매 프레임 소리가 나면 안 된다) -- rawEffect.type이 바뀔 때만 감지.
+    if (rawEffect && lastEffectType.get(pid) !== rawEffect.type) {
+      lastEffectType.set(pid, rawEffect.type);
+      // 충돌음은 선두권일수록 크게. 250대가 동시에 부딪히는 R1에서도
+      // 소리가 뭉치지 않도록 볼륨을 순위로 깎고, 나머지는 audio.js의
+      // 게이트가 솎아낸다. 화면 밖(카메라 줌 아웃 전) 뒤쪽 집단은
+      // 아주 작게만 들린다.
+      // sorted는 선두가 0번(루프는 겹침 순서 때문에 뒤에서부터 돈다)
+      const scale = i === 0 ? 1.15 : i < 5 ? 0.85 : i < 20 ? 0.5 : 0.28;
+      SFX.hit(hitSoundKindFor(rawEffect.type), scale);
+      if (i === 0 && (rawEffect.type === "bomb" || rawEffect.type === "rock")) {
+        FX.screenShake(rawEffect.type === "bomb" ? 8 : 5, 240);
       }
+    } else if (!rawEffect) {
+      lastEffectType.delete(pid);
     }
 
     const group = currentPidToGroup[pid];
@@ -2172,7 +2087,9 @@ const PHASE_LABELS = {
   score_r2_select_r3: "2라운드 결과 발표",
   race_r3: "결선",
   final_announce: "최종 발표",
-  verify: "공정성 검증",
+  // 내부 구간 이름은 여전히 "verify"지만(app/director.py), /verify 페이지가
+  // 사라졌으므로(§12-4) 화면에는 시상 축하 여운 구간으로 표시한다.
+  verify: "시상 축하",
 };
 
 function handleRacingEvent(data) {
@@ -2409,7 +2326,6 @@ function render(session) {
     if (racingStarted) {
       return; // race_tick/phase 이벤트가 실시간 갱신을 담당
     }
-    commitBadgeEl.textContent = latest.commit;
     showOverlay("committed");
     if (lastOpeningShownFor !== latest.commit) {
       lastOpeningShownFor = latest.commit;
@@ -2420,7 +2336,6 @@ function render(session) {
 
   // 룰렛 모드
   if (!latest.revealed) {
-    commitBadgeEl.textContent = latest.commit;
     showOverlay("committed");
     if (lastOpeningShownFor !== latest.commit) {
       lastOpeningShownFor = latest.commit;
@@ -2491,9 +2406,7 @@ const ws = connectWS((data) => {
     lastMcLiveCallAt = 0;
     finalLapShownForRound = null;
     photoFinishShownForRound = null;
-    activeObstacles = [];
-    nextObstacleSpawnAt = 0;
-    kartEffects = {};
+    lastEffectType.clear();
     cancelPendingMcLines({ clearCaption: true });
     liveMcSuppressed = false;
     shownLightsForRound.clear();
