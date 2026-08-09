@@ -437,6 +437,7 @@ function renderPredictionCard(me, round) {
     const dist = live.distribution || {};
     const counts = live.counts || {};
     const bonus = live.minority_bonus || {};
+    const minority = live.is_minority || {};
     const stats = (me.candidate_stats && me.candidate_stats[round]) || {};
     // 미선택 시 자동 배정 규칙이 라운드마다 다르다 -- R1·R2는 자기 부서,
     // R3는 무작위(결선 진출자 개인이라 "자기 팀"이 없다).
@@ -453,9 +454,8 @@ function renderPredictionCard(me, round) {
           const pct = dist[c] ? Math.round(dist[c] * 100) : 0;
           const n = counts[c] || 0;
           const mult = bonus[c];
-          // 아무도/거의 안 고른 곳을 표시한다 -- 소수파를 맞히면 배수가
-          // 커지므로, 이게 보여야 선택이 한쪽으로만 쏠리지 않는다.
-          const isMinority = live.chosen > 0 && mult !== undefined && mult >= 1.8;
+          // 소수파 판정은 서버가 한다(무대와 같은 규칙을 쓰기 위해).
+          const isMinority = !!minority[c];
           const multLabel = mult !== undefined ? ` · 적중 시 ×${mult.toFixed(1)}` : "";
           return `<button class="choice-btn target-btn ${target === c ? "selected" : ""}${isMinority ? " minority" : ""}" data-round="${round}" data-target="${c}">
             <span class="target-name">${isMinority ? "💎 " : ""}${c}</span>

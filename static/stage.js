@@ -487,6 +487,7 @@ function renderDistributionBlock(roundKey, stats) {
   const counts = (stats && stats.counts) || {};
   const dist = (stats && stats.distribution) || {};
   const bonus = (stats && stats.minority_bonus) || {};
+  const minority = (stats && stats.is_minority) || {};
   const chosen = (stats && stats.chosen) || 0;
   const eligible = (stats && stats.eligible) || 0;
 
@@ -502,10 +503,12 @@ function renderDistributionBlock(roundKey, stats) {
     .map((target) => {
       const n = counts[target] || 0;
       const pct = Math.round((dist[target] || 0) * 100);
-      // 아무도/거의 안 고른 곳을 눈에 띄게 표시한다. 배수가 1.8배 이상이면
-      // "1위 맞히면 거의 2배"라는 뜻이라 역배 후보로 볼 만하다.
+      // 소수파 판정은 **서버가 한다**(app/predictions.py: MINORITY_SHARE_RATIO).
+      // 배수만 보고 자르면 후보가 많을수록 전부 소수파가 된다 -- 8개 팀이
+      // 고루 갈리면 배수가 전부 1.87쯤이라 여덟 팀 모두에 💎가 붙는다.
+      // 규칙을 한 곳에 두면 무대와 폰의 표시도 저절로 일치한다.
       const mult = bonus[target];
-      const isMinority = chosen > 0 && mult !== undefined && mult >= 1.8;
+      const isMinority = !!minority[target];
       const isTop = n > 0 && n === topCount;
       const cls = isTop ? " dist-top" : isMinority ? " dist-minority" : "";
       const multLabel = mult !== undefined ? `×${mult.toFixed(1)}` : "";

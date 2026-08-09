@@ -67,6 +67,11 @@ FLOOR_RATIO = 0.05  # "참여만 해도 들어오는" 최소 보상
 # 성과 점수(예측 적중 여부와 무관하게 쌓인다). R1을 1위로 맞히면
 # 300점(ROUND_BASE_POINTS x ROUND_WEIGHTS[1])이므로, 팀 1위 45점은
 # "무시 못 하지만 예측을 대체하지도 않는" 크기다.
+# 실시간 통계에서 "소수파(💎)"로 표시할 기준: 균등 배분(1/후보수) 대비
+# 이 비율 미만이면 소수파다. 절대 배수로 자르면 후보가 많을수록 전부
+# 소수파가 되어 표시가 무의미해진다(live_stats 주석 참고).
+MINORITY_SHARE_RATIO = 0.6
+
 FINISH_POINTS = 20  # 그 라운드 통과선을 넘은 개인 전원
 TEAM_RANK_POINTS = [45, 30, 18]  # 통과율 1~3위 부서 소속 통과자(4위 이하 0)
 FINAL_WIN_POINTS = 150  # 결선(R3) 최종 당첨자
@@ -228,6 +233,16 @@ class PredictionEngine:
             chosen += 1
 
         distribution = {name: (n / chosen if chosen else 0.0) for name, n in counts.items()}
+
+        # "소수파"는 **균등 배분 대비 상대적으로** 판단해야 한다.
+        # 절대 배수(1 + (1 - share))로 자르면 후보가 많을수록 전부 소수파가
+        # 된다 -- 후보 8개가 고루 갈리면 각 share가 0.125라 배수가 전부
+        # 1.875여서, 임계값을 1.8로 두면 여덟 팀 모두에 💎가 붙어 표시가
+        # 아무 의미도 갖지 못한다(실제로 데모에서 그렇게 나왔다).
+        # 균등 배분(1/후보수)의 MINORITY_SHARE_RATIO 미만인 후보만 소수파다.
+        even_share = 1.0 / len(counts) if counts else 0.0
+        threshold = even_share * MINORITY_SHARE_RATIO
+
         return {
             "round": round_index,
             "distribution": distribution,
@@ -237,6 +252,12 @@ class PredictionEngine:
             "eligible": len(self.cards),
             "minority_bonus": {
                 name: round(1 + (1 - share), 2) for name, share in distribution.items()
+            },
+            # 표가 눈에 띄게 덜 몰린 후보. 아직 아무도 안 골랐으면(chosen=0)
+            # 비교할 기준 자체가 없으므로 아무것도 소수파로 치지 않는다.
+            "is_minority": {
+                name: bool(chosen > 0 and share < threshold)
+                for name, share in distribution.items()
             },
         }
 

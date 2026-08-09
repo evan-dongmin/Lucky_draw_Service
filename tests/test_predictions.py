@@ -638,3 +638,51 @@ def test_live_stats_excludes_auto_assigned_choices():
     stats = engine.live_stats(1, candidates=["A팀", "B팀"])
     assert stats["chosen"] == 1
     assert stats["counts"] == {"A팀": 0, "B팀": 1}
+
+
+def test_minority_flag_is_relative_not_absolute():
+    """소수파 판정은 **균등 배분 대비 상대적**이어야 한다.
+
+    절대 배수(1 + (1 - share))로 자르면 후보가 많을수록 전부 소수파가
+    된다 -- 후보 8개가 고루 갈리면 share가 0.125씩이라 배수가 전부
+    1.875여서, 임계값을 1.8로 두면 여덟 팀 모두에 소수파 표시가 붙는다.
+    실제 데모에서 그렇게 나온 것을 잡아 고친 회귀 테스트다."""
+    engine = PredictionEngine()
+    names = [f"T{i}" for i in range(8)]
+    engine.enroll_all({f"P{i}": names[0] for i in range(80)})
+    engine.open_round(1, names)
+
+    # 8개 후보에 10명씩 균등 분배 -- 아무도 소수파가 아니어야 한다
+    pid = 0
+    for name in names:
+        for _ in range(10):
+            engine.set_target(f"P{pid}", 1, name)
+            pid += 1
+
+    stats = engine.live_stats(1, candidates=names)
+    assert all(b >= 1.8 for b in stats["minority_bonus"].values()), "전제: 배수는 전부 1.8 이상"
+    assert not any(stats["is_minority"].values()), "균등 분배인데 소수파가 생겼습니다"
+
+    # 한 팀에 표가 쏠리면, 덜 받은 쪽이 소수파가 된다
+    engine2 = PredictionEngine()
+    engine2.enroll_all({f"P{i}": "T0" for i in range(20)})
+    engine2.open_round(1, ["T0", "T1", "T2"])
+    for i in range(18):
+        engine2.set_target(f"P{i}", 1, "T0")
+    engine2.set_target("P18", 1, "T1")
+
+    stats2 = engine2.live_stats(1, candidates=["T0", "T1", "T2"])
+    assert stats2["is_minority"]["T0"] is False  # 90% -- 몰린 쪽
+    assert stats2["is_minority"]["T1"] is True  # 5% -- 균등(33%) 대비 한참 아래
+    assert stats2["is_minority"]["T2"] is True  # 0%
+
+
+def test_no_minority_flag_before_anyone_chooses():
+    """아직 아무도 안 골랐으면 비교할 기준이 없다 -- 전부 소수파로 칠하면
+    선택 창이 열리자마자 화면이 💎로 도배된다."""
+    engine = PredictionEngine()
+    engine.enroll_all({"P0": "A", "P1": "A"})
+    engine.open_round(1, ["A", "B"])
+    stats = engine.live_stats(1, candidates=["A", "B"])
+    assert stats["chosen"] == 0
+    assert not any(stats["is_minority"].values())
