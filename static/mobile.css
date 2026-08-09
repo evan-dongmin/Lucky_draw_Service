@@ -182,6 +182,31 @@ h2 {
   background: #2a3242;
 }
 
+/* 이 라운드에 무엇을 고르는지(부서 / 개인 카트). 상태 배지와 색을 달리해
+   "지금 상태"와 "고르는 대상"이 섞이지 않게 한다. */
+.pred-target-badge {
+  margin-right: auto;
+  margin-left: 0.5rem;
+  font-size: 0.72rem;
+  padding: 0.12rem 0.45rem;
+  border-radius: 1rem;
+  background: rgba(79, 140, 255, 0.16);
+  border: 1px solid rgba(79, 140, 255, 0.4);
+  color: #9dc0ff;
+  white-space: nowrap;
+}
+
+.pred-question {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+  line-height: 1.4;
+  color: #e7ecf3;
+}
+
+.pred-question b {
+  color: #7cf29c;
+}
+
 .countdown-badge {
   font-family: "Consolas", monospace;
   color: #ffd166;
@@ -275,6 +300,64 @@ button {
   font-size: 0.9rem;
   line-height: 1.5;
   color: #c7cedb;
+}
+
+.intro-subhead {
+  margin: 0.9rem 0 0.4rem;
+  font-size: 0.88rem;
+  color: #ffd166;
+}
+
+/* 라운드별 예측 대상 표 -- 첫 화면에서 "무엇을 고르는지"가 바로 보여야
+   한다(R1·R2는 부서, R3는 개인 카트로 대상이 완전히 다르다). */
+.intro-target-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.intro-target-table th,
+.intro-target-table td {
+  padding: 0.4rem 0.35rem;
+  text-align: left;
+  vertical-align: top;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.09);
+}
+
+.intro-target-table thead th {
+  font-size: 0.72rem;
+  color: #8b95a5;
+  font-weight: 600;
+}
+
+.intro-target-table tbody th {
+  color: #c7cedb;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.intro-target-table td {
+  color: #c7cedb;
+}
+
+.intro-target-table b {
+  color: #7cf29c;
+}
+
+.intro-weight {
+  display: inline-block;
+  margin-top: 0.15rem;
+  font-size: 0.66rem;
+  font-weight: 600;
+  color: #ffd166;
+}
+
+.intro-note-line {
+  margin: 0.5rem 0 0;
+  font-size: 0.78rem;
+  line-height: 1.45;
+  color: #8b95a5;
 }
 
 .intro-steps-m {

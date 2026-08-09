@@ -34,7 +34,17 @@ const introBoxEl = document.getElementById("intro-box");
 
 const CHEER_EMOJI = ["🔥", "👏", "🎉", "💪", "😱", "⚡", "❤️", "😂"]; // app/main.py CHEER_EMOJI_ALLOWLIST와 반드시 일치시킬 것
 
-const ROUND_LABELS = { 1: "1라운드", 2: "2라운드", 3: "3라운드" };
+const ROUND_LABELS = { 1: "1라운드", 2: "2라운드", 3: "3라운드 (결선)" };
+
+// 라운드마다 "무엇을 고르는가"가 다르다(R1·R2는 부서, R3는 개인 카트).
+// 카드 제목 옆에 항상 붙여서, 설명을 안 읽고 들어온 사람도 선택 창이
+// 열린 순간 무엇을 고르는지 바로 알 수 있게 한다(사용자 요청).
+const ROUND_TARGET_LABEL = { 1: "부서(팀) 선택", 2: "부서(팀) 선택", 3: "카트(개인) 선택" };
+const ROUND_TARGET_QUESTION = {
+  1: "어느 <b>부서</b>가 1라운드 통과율 1위일까요?",
+  2: "살아남은 <b>부서</b> 중 2라운드 통과율 1위는?",
+  3: "결선에 오른 <b>카트(개인)</b> 중 1등은 누구일까요?",
+};
 const STATE_LABELS = { pending: "대기 중", open: "선택 중", locked: "확정" };
 
 let departmentsData = {};
@@ -414,7 +424,9 @@ function renderPredictionCard(me, round) {
 
   let targetHtml = "";
   if (state === "pending") {
-    targetHtml = `<p>대상은 이 라운드가 시작될 때 선택할 수 있습니다.</p>`;
+    targetHtml =
+      `<p class="pred-question">${ROUND_TARGET_QUESTION[round]}</p>` +
+      `<p class="hint-line">이 라운드가 시작되기 전에 선택 창이 열립니다.</p>`;
   } else if (state === "open") {
     const candidates = me.round_candidates[round] || [];
     const dist = (me.live && me.live[round] && me.live[round].distribution) || {};
@@ -426,6 +438,7 @@ function renderPredictionCard(me, round) {
         ? "미선택 시 무작위 배정"
         : "미선택 시 <strong>우리 부서</strong>가 자동 선택됩니다";
     targetHtml =
+      `<p class="pred-question">${ROUND_TARGET_QUESTION[round]}</p>` +
       `<p>지금 선택하세요! (${autoNote})</p>` +
       `<div class="choice-list">` +
       candidates
@@ -449,6 +462,7 @@ function renderPredictionCard(me, round) {
     <div class="pred-card state-${state}">
       <div class="pred-card-header">
         <strong>${ROUND_LABELS[round]}</strong>
+        <span class="pred-target-badge">${ROUND_TARGET_LABEL[round]}</span>
         <span class="pred-card-badge">${STATE_LABELS[state]}</span>
       </div>
       ${targetHtml}
