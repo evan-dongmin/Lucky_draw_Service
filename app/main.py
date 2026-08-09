@@ -1059,12 +1059,6 @@ def _live_stats_full(round_index: int) -> dict[str, Any]:
     )
 
 
-def _live_stats(round_index: int) -> dict[str, Any]:
-    """선택 창이 열려 있는 동안의 실시간 선택 분포(%). 상태를 바꾸지 않는
-    순수 조회라 자주 폴링해도 안전하다."""
-    return {"round": round_index, "distribution": prediction_engine.live_distribution(round_index)}
-
-
 def _my_race_status(pid: str) -> dict[str, Any] | None:
     """모바일 "내 카트 현황" 카드용. latest_race_tick 캐시에서 이 참가자
     한 명분의 등수·통과 여부·통과선까지 진행률만 뽑아 계산한다(모바일에
