@@ -477,6 +477,101 @@ html, body {
   backdrop-filter: blur(10px);
 }
 
+/* ---------------------------------------------------------------------
+   라운드 결과 전체 화면 (사용자 요청: "각 라운드 끝난 후에는 라운드의
+   결과를 전체 화면에 보여주도록").
+
+   라운드가 끝난 직후 몇 초 동안만 이 상태로 화면을 통째로 덮었다가,
+   남은 선택 창 시간에는 원래의 작은 카드로 돌아간다. 계속 전체 화면으로
+   두면 우측의 실시간 선택 통계(어디에 표가 몰리는지)가 가려져서, 정작
+   참가자가 다음 라운드를 고를 근거를 못 보게 된다.
+
+   상단 HUD(z-index 30)보다는 아래에 둔다 -- 다음 구간까지 남은 시간이
+   계속 보이는 편이 진행에 유리하다. 시상대 같은 오버레이(40)에는 당연히
+   가린다.
+--------------------------------------------------------------------- */
+.round-transition.fullscreen {
+  top: 0;
+  left: 0;
+  transform: none;
+  width: 100vw;
+  height: 100vh;
+  max-height: none;
+  z-index: 28;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.2rem;
+  padding: 4.5rem 3rem 3rem;
+  border: none;
+  border-radius: 0;
+  background: radial-gradient(
+    ellipse at 50% 38%,
+    rgba(20, 26, 38, 0.94) 0%,
+    rgba(5, 7, 12, 0.985) 72%
+  );
+  animation: rt-fullscreen-in 0.45s ease-out;
+}
+
+@keyframes rt-fullscreen-in {
+  from {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+.round-transition.fullscreen .round-transition-title {
+  font-size: clamp(2rem, 4vw, 3.4rem);
+  margin-bottom: 0.5rem;
+  text-align: center;
+}
+
+.round-transition.fullscreen .round-transition-summary {
+  font-size: clamp(1rem, 1.6vw, 1.5rem);
+  margin-bottom: 2rem;
+  color: #cfd6e2;
+  text-align: center;
+}
+
+.round-transition.fullscreen .round-transition-body {
+  width: min(64rem, 88vw);
+}
+
+.round-transition.fullscreen .rt-row {
+  grid-template-columns: 15rem 1fr 8rem;
+  gap: 1.1rem;
+  margin-bottom: 0.85rem;
+}
+
+.round-transition.fullscreen .rt-name,
+.round-transition.fullscreen .rt-count {
+  font-size: 1.45rem;
+}
+
+.round-transition.fullscreen .rt-track {
+  height: 1.5rem;
+}
+
+.round-transition.fullscreen .rt-swatch {
+  width: 1.1rem;
+  height: 1.1rem;
+}
+
+.round-transition.fullscreen .rt-finalist {
+  font-size: 1.45rem;
+  padding: 0.55rem 0.9rem;
+}
+
+.round-transition.fullscreen .rt-rank {
+  font-size: 1.7rem;
+  min-width: 2.4rem;
+}
+
 .round-transition-title {
   margin: 0 0 0.2rem;
   font-size: 1.5rem;
@@ -1137,6 +1232,22 @@ html, body {
   justify-content: center;
   pointer-events: none;
   text-align: center;
+}
+
+/* 라운드 결과가 전체 화면으로 떠 있는 동안에는 배너를 아래로 내린다.
+   배너는 inset:0 + 가운데 정렬이라 그대로 두면 결과 표 한복판을 덮어
+   양쪽 다 읽을 수 없게 된다(실제로 팀별 막대 두 줄이 가려졌다). */
+body.round-result-open .overlay-banner {
+  justify-content: flex-end;
+  padding-bottom: 3.5rem;
+}
+
+body.round-result-open #banner-text {
+  font-size: clamp(1.5rem, 3vw, 2.4rem);
+}
+
+body.round-result-open #banner-sub {
+  font-size: clamp(0.85rem, 1.2vw, 1.05rem);
 }
 
 #banner-text {

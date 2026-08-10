@@ -580,8 +580,39 @@ function stopLiveDistributionPolling() {
 // 상태로 들고 있는다).
 let lastRoundRevealed = null;
 
+// 라운드 결과를 전체 화면으로 보여주는 시간(사용자 요청). 이 시간이 지나면
+// 같은 패널이 작은 카드로 줄어들어 남은 선택 창 동안 계속 떠 있는다 --
+// 계속 전체 화면이면 우측 실시간 선택 통계가 가려져서 참가자가 다음 라운드를
+// 고를 근거를 못 본다.
+const ROUND_RESULT_FULLSCREEN_MS = 7000;
+let roundResultFullscreenTimer = null;
+
 function hideRoundTransition() {
   roundTransitionEl.classList.add("hidden");
+  exitRoundResultFullscreen();
+}
+
+function exitRoundResultFullscreen() {
+  if (roundResultFullscreenTimer) {
+    clearTimeout(roundResultFullscreenTimer);
+    roundResultFullscreenTimer = null;
+  }
+  roundTransitionEl.classList.remove("fullscreen");
+  // 화면 한가운데 뜨는 배너를 원위치로 돌려놓는다(아래 설명 참고).
+  document.body.classList.remove("round-result-open");
+}
+
+/** 라운드 결과를 전체 화면으로 띄운다. ROUND_RESULT_FULLSCREEN_MS 뒤에
+ *  자동으로 작은 카드로 돌아간다(내용은 그대로 남는다). */
+function enterRoundResultFullscreen() {
+  if (roundResultFullscreenTimer) clearTimeout(roundResultFullscreenTimer);
+  roundTransitionEl.classList.add("fullscreen");
+  // 배너(.overlay-banner)는 inset:0 + 가운데 정렬이라 전체 화면 결과의
+  // 한복판을 그대로 덮는다 -- 실제로 "ROUND 1 예측 채점!"이 팀별 막대
+  // 두 줄을 가려 양쪽 다 못 읽는 상태가 나왔다. 전체 화면 동안에는 배너를
+  // 아래쪽으로 내리고 작게 줄인다(내용은 유지).
+  document.body.classList.add("round-result-open");
+  roundResultFullscreenTimer = setTimeout(exitRoundResultFullscreen, ROUND_RESULT_FULLSCREEN_MS);
 }
 
 function renderSurvivorPanel(data) {
@@ -2425,6 +2456,10 @@ function handleRacingEvent(data) {
     // 같은 패널을 라운드에 맞는 내용(생존 수 / 결선 등수)으로 갈아끼운다.
     lastRoundRevealed = data;
     showRoundTransition("survivors");
+    // 결과는 **전체 화면으로** 먼저 보여준다(사용자 요청). 몇 초 뒤 자동으로
+    // 작은 카드로 줄어들어, 남은 선택 창 동안 우측 실시간 선택 통계를 가리지
+    // 않는다. 결선(R3) 결과는 이 경로가 아니라 시상대 오버레이가 맡는다.
+    enterRoundResultFullscreen();
     // 후속 멘트("elimination")는 2.2초 뒤에 나가는데, 그 사이 다음 구간으로
     // 넘어갔으면 흘러간 멘트이므로 내보내지 않는다.
     const revealEpoch = mcEpoch;
