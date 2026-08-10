@@ -309,29 +309,113 @@ def total_obstacle_penalty(seed: str, participant_id: str) -> float:
     return min(total, OBSTACLE_PENALTY_CAP)
 
 
-def _obstacle_dip_at(
-    seed: str,
-    participant_id: str,
-    round_index: int,
-    progress_ratio: float,
-    pass_line_value: float | None = None,
-) -> float:
-    """이 순간(progress_ratio)에 장애물 때문에 목표 위치에서 실제로 깎여 있는 양.
+# 장애물에 맞았을 때 **카트가 실제로 어떻게 느려지는가**(2026-08-10, 사용자
+# 요청: "장애물에 카트가 맞으면 실질적 패널티가 없어 보여. 속도가 느려진다던가,
+# 잠시 멈춘다던가. 장애물 특성에 맞게 패널티를 적용해 줘").
+#
+# 예전에는 맞은 순간 목표 위치에서 `penalty`(0.006~0.030)만큼 빼고 결승선까지
+# 선형으로 되돌리는 방식이었다. 트랙 전체가 1.0인데 최대 3%를 **전체 남은
+# 구간에 걸쳐** 나눠 돌려주니 순간 속도 변화가 사실상 0이라, 화면에서는
+# 아무 일도 안 일어나는 것처럼 보였다.
+#
+# 이제 위치를 빼는 대신 **속도를 떨어뜨린다**. 맞은 지점부터 duration 동안
+# 진행 속도가 speed 배로 줄고(0에 가까우면 사실상 정지), 그만큼 뒤처진
+# 거리는 남은 구간에서 저절로 따라잡는다(아래 _speed_profile의 정규화).
+#
+#   speed    : 감속 구간 동안의 진행 속도 배수(1.0 = 평소, 0.05 = 거의 정지)
+#   duration : 감속이 지속되는 구간 길이(트랙 진행률 기준)
+#
+# 종류별 성격은 OBSTACLE_VISUAL(stage.js)의 kind와 맞춘다 -- 화면에서 스핀이
+# 걸리는 장애물은 실제로도 크게 멈추고, 미끄러지는 장애물은 오래 완만하게
+# 느려진다. "무거운 장애물일수록 크게 멈춘다"가 기본 감각이다.
+OBSTACLE_IMPACT: dict[str, dict[str, float]] = {
+    "cone": {"speed": 0.72, "duration": 0.035},  # 살짝 휘청
+    "tire": {"speed": 0.52, "duration": 0.060},  # 눈에 띄게 감속
+    "oil": {"speed": 0.45, "duration": 0.075},  # 오래 미끄러지며 감속
+    "puddle": {"speed": 0.48, "duration": 0.070},
+    "ice": {"speed": 0.40, "duration": 0.085},  # 가장 오래 끌린다
+    "banana": {"speed": 0.16, "duration": 0.055},  # 팽그르르 -- 거의 정지
+    "rock": {"speed": 0.10, "duration": 0.050},  # 쿵 -- 정지에 가까움
+    "bomb": {"speed": 0.06, "duration": 0.065},  # 완전 정지
+}
 
-    맞은 지점(결승선 앞쪽에 놓인 장애물의 절대 위치)부터 시작해 트랙 끝까지
-    선형으로 회복하므로, progress_ratio=1.0에서는 항상 정확히 0이 된다
-    (장애물이 통과 판정을 어긋나게 만들 수 없다). 그 전까지는 진짜로
-    (연출용 오프셋이 아니라 이 함수의 반환값 자체가) 위치가 내려간다."""
-    line = hazard_line(pass_line_value)
-    dip = 0.0
+# 감속 구간이 아닌 곳의 기본 속도.
+_NORMAL_SPEED = 1.0
+
+
+@lru_cache(maxsize=8192)
+def _speed_profile(
+    seed: str, participant_id: str, round_index: int, line: float
+) -> tuple[tuple[float, float, float], ...]:
+    """이 카트의 **구간별 진행 속도 배수** 목록: (시작, 끝, 누적적분).
+
+    맞는 장애물마다 [at_ratio, at_ratio+duration) 구간의 속도를 낮춘다.
+    구간이 겹치면 더 느린 쪽을 쓴다(연달아 맞으면 더 심하게 막힌다).
+
+    반환값은 진행률 구간을 잘게 쪼갠 (시작, 끝, 그 구간 끝까지의 누적 적분)
+    이고, 마지막 원소의 누적값이 전체 적분(=평소 속도로 갔다면 1.0이었을 값
+    보다 작다)이다. `_warp`가 이 값으로 나눠 정규화하므로 **뒤처진 만큼은
+    남은 구간에서 반드시 따라잡고, progress_ratio=1.0에서는 정확히 목표
+    위치에 도달한다**(공정성 판정이 여기에 의존한다).
+
+    (시드, 참가자, 라운드, 결승선)만으로 정해지는 정적인 값이라 캐시한다 --
+    crossing_ratio가 카트당 수백 번 position_at을 부르기 때문에 매번 다시
+    만들면 250명 규모에서 눈에 띄게 느려진다.
+    """
+    windows: list[tuple[float, float, float]] = []
     for h in kart_hits(seed, participant_id, round_index):
-        at_ratio = h["at_fraction"] * line
-        if progress_ratio < at_ratio:
+        impact = OBSTACLE_IMPACT.get(h["type"])
+        if impact is None:
             continue
-        span = max(1e-6, 1.0 - at_ratio)
-        recovered = min(1.0, (progress_ratio - at_ratio) / span)
-        dip += h["penalty"] * (1.0 - recovered)
-    return dip
+        start = h["at_fraction"] * line
+        end = min(1.0, start + impact["duration"])
+        if end > start:
+            windows.append((start, end, impact["speed"]))
+
+    if not windows:
+        return ((0.0, 1.0, 1.0),)
+
+    # 모든 구간 경계를 모아 잘게 쪼갠 뒤, 각 조각의 속도를 결정한다.
+    edges = sorted({0.0, 1.0, *(w[0] for w in windows), *(w[1] for w in windows)})
+    segments: list[tuple[float, float, float]] = []
+    cumulative = 0.0
+    for lo, hi in zip(edges, edges[1:]):
+        if hi <= lo:
+            continue
+        mid = (lo + hi) / 2
+        speed = _NORMAL_SPEED
+        for w_start, w_end, w_speed in windows:
+            if w_start <= mid < w_end:
+                speed = min(speed, w_speed)
+        cumulative += (hi - lo) * speed
+        segments.append((lo, hi, cumulative))
+    return tuple(segments)
+
+
+def _warp(progress_ratio: float, segments: tuple[tuple[float, float, float], ...]) -> float:
+    """감속을 반영한 **실효 진행률**(0..1). 단조 증가하고 1.0에서 정확히 1.0.
+
+    구간별 속도를 적분해 전체 적분으로 나눈 값이다. 감속 구간에서는 기울기가
+    완만해지고(=카트가 느려지거나 멈춰 보이고), 그 대신 나머지 구간의
+    기울기가 커져(=따라잡아) 끝에서는 반드시 목표에 도달한다."""
+    total = segments[-1][2]
+    if total <= 0:
+        return progress_ratio
+    if progress_ratio <= 0.0:
+        return 0.0
+    if progress_ratio >= 1.0:
+        return 1.0
+    accumulated = 0.0
+    for lo, hi, cumulative in segments:
+        if progress_ratio >= hi:
+            accumulated = cumulative
+            continue
+        # 이 조각 안에서 끝났다 -- 조각 시작까지의 누적 + 남은 부분
+        span = hi - lo
+        speed = (cumulative - accumulated) / span if span > 0 else 0.0
+        accumulated += (progress_ratio - lo) * speed
+        break
+    return accumulated / total
 
 
 def active_effect_at(
@@ -341,17 +425,25 @@ def active_effect_at(
     progress_ratio: float,
     pass_line_value: float | None = None,
 ) -> dict[str, Any] | None:
-    """이 순간 이 카트에 걸려 있는 가장 강한 장애물 효과(연출용 -- 스핀/사운드
-    트리거에 쓰라고 강도까지 함께 내려준다). 없으면 None."""
+    """이 순간 이 카트에 걸려 있는 장애물 효과(연출용 -- 스핀/사운드 트리거에
+    쓰라고 강도까지 함께 내려준다). 없으면 None.
+
+    **감속이 실제로 걸려 있는 구간에서만** 효과를 돌려준다. 예전에는 맞은
+    지점부터 결승선까지 강도가 서서히 줄도록 해서, 트랙 20%에서 맞은 카트가
+    90% 지점에서도 여전히 "맞는 중"으로 표시됐다 -- 늘 켜져 있으니 아무
+    의미가 없었다. 이제는 OBSTACLE_IMPACT의 duration 안에서만 켜지고, 그
+    구간 안에서 1 -> 0으로 줄어 화면 연출이 실제 감속과 맞물린다."""
     line = hazard_line(pass_line_value)
     best: dict[str, Any] | None = None
     for h in kart_hits(seed, participant_id, round_index):
-        at_ratio = h["at_fraction"] * line
-        if progress_ratio < at_ratio:
+        impact = OBSTACLE_IMPACT.get(h["type"])
+        if impact is None:
             continue
-        span = max(1e-6, 1.0 - at_ratio)
-        recovered = min(1.0, (progress_ratio - at_ratio) / span)
-        strength = 1.0 - recovered
+        at_ratio = h["at_fraction"] * line
+        duration = impact["duration"]
+        if progress_ratio < at_ratio or progress_ratio >= at_ratio + duration:
+            continue
+        strength = 1.0 - (progress_ratio - at_ratio) / duration
         if strength <= 0:
             continue
         if best is None or strength > best["strength"]:
@@ -388,11 +480,18 @@ def position_at(
     """
     progress_ratio = min(max(progress_ratio, 0.0), 1.0)
     target = target_position(rank_index, total)
-    base = target * (progress_ratio ** pace_exponent(participant_id, round_index))
     if seed is None:
-        return base
-    dip = _obstacle_dip_at(seed, participant_id, round_index, progress_ratio, pass_line_value)
-    return max(0.0, base - dip)
+        return target * (progress_ratio ** pace_exponent(participant_id, round_index))
+    # 장애물에 맞으면 그 구간 동안 **진행 속도**가 떨어진다(위치를 빼는 게
+    # 아니다). 실효 진행률로 바꿔 넣으므로 위치는 절대 뒤로 가지 않고,
+    # 감속 구간에서는 눈에 띄게 느려지거나 멈춘 것처럼 보이며, 뒤처진 만큼은
+    # 남은 구간에서 따라잡는다. _warp(1.0)은 항상 정확히 1.0이라
+    # progress_ratio=1.0에서 target_position과 어긋날 수 없다.
+    effective = _warp(
+        progress_ratio,
+        _speed_profile(seed, participant_id, round_index, hazard_line(pass_line_value)),
+    )
+    return target * (effective ** pace_exponent(participant_id, round_index))
 
 
 def crossing_ratio(

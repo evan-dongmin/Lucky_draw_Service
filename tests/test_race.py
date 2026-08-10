@@ -296,29 +296,76 @@ def test_position_at_without_seed_is_unaffected_by_obstacles():
     assert pos == pos_explicit_none
 
 
-def test_position_at_with_seed_dips_then_recovers_exactly_to_target():
-    """P000/round1/'obstacle-dip-seed'는 미리 확인해 둔, 실제로 장애물에
-    맞는 조합이다. 맞는 순간부터 실제로(오프셋이 아니라 반환값 자체가)
-    내려갔다가, progress_ratio=1.0에서는 항상 정확히 target과 일치해야
-    한다(통과 판정과 어긋나면 안 된다)."""
+def test_position_at_slows_the_kart_down_while_an_obstacle_is_in_effect():
+    """장애물에 맞으면 **진행 속도가 실제로 떨어져야** 한다(사용자 요청:
+    "맞으면 실질적 패널티가 없어 보여. 속도가 느려진다던가, 잠시 멈춘다던가").
+
+    예전 구현은 목표 위치에서 penalty(최대 0.03)만큼 빼고 남은 구간 전체에
+    걸쳐 되돌려주는 방식이라 순간 속도 변화가 사실상 0이었다 -- 화면에서는
+    아무 일도 일어나지 않는 것처럼 보였다. 이제는 맞은 구간 동안 속도 자체가
+    떨어진다. 여기서는 그 감속이 **눈에 띄는 크기인지**를 고정한다."""
     seed = "test-seed-1"
     pid = "P000"
     round_index = 1
     hits = kart_hits(seed, pid, round_index)
     assert hits, "이 테스트는 실제로 장애물에 맞는 조합을 전제로 한다"
-    at_ratio = hits[0]["at_fraction"]  # pass_line_value 미지정 = 트랙 전체 기준
 
-    total = 250
-    rank_index = 10
-    target = target_position(rank_index, total)
+    total, rank_index = 250, 10
+    hit = min(hits, key=lambda h: h["at_fraction"])
+    at_ratio = hit["at_fraction"]  # pass_line_value 미지정 = 트랙 전체 기준
+    duration = race.OBSTACLE_IMPACT[hit["type"]]["duration"]
 
-    just_after = position_at(rank_index, total, min(1.0, at_ratio + 0.01), pid, round_index, seed=seed)
-    no_obstacle = position_at(rank_index, total, min(1.0, at_ratio + 0.01), pid, round_index, seed=None)
+    def speed_around(ratio: float) -> float:
+        step = 0.004
+        lo = position_at(rank_index, total, ratio, pid, round_index, seed=seed)
+        hi = position_at(rank_index, total, ratio + step, pid, round_index, seed=seed)
+        return (hi - lo) / step
 
-    assert just_after < no_obstacle, "장애물에 맞은 직후에는 실제로 위치가 내려가 있어야 한다"
+    before = speed_around(max(0.0, at_ratio - 0.02))
+    during = speed_around(at_ratio + duration * 0.3)
 
+    assert during < before * 0.75, (
+        f"장애물에 맞았는데 속도가 거의 안 줄었습니다: {before:.3f} -> {during:.3f}"
+    )
+
+
+def test_position_at_recovers_exactly_to_target_at_the_finish():
+    """감속을 넣어도 progress_ratio=1.0에서는 항상 정확히 target과 일치해야
+    한다. 통과 판정이 전적으로 이 성질에 의존한다(어긋나면 화면에서 넘은
+    카트가 탈락하는 사고가 난다)."""
+    seed = "test-seed-1"
+    pid = "P000"
+    round_index = 1
+    assert kart_hits(seed, pid, round_index), "장애물에 맞는 조합을 전제로 한다"
+
+    total, rank_index = 250, 10
     at_finish = position_at(rank_index, total, 1.0, pid, round_index, seed=seed)
-    assert at_finish == pytest.approx(target), "결승선에서는 장애물과 무관하게 항상 목표 위치와 일치해야 한다"
+    assert at_finish == pytest.approx(target_position(rank_index, total))
+
+
+def test_obstacle_effect_is_only_active_during_its_impact_window():
+    """연출 효과는 **감속이 실제로 걸린 구간에서만** 켜져야 한다.
+
+    예전에는 맞은 지점부터 결승선까지 강도가 서서히 줄어서, 트랙 20%에서
+    맞은 카트가 90% 지점에서도 여전히 "맞는 중"으로 표시됐다 -- 늘 켜져
+    있으니 아무 의미가 없었다."""
+    seed = "test-seed-1"
+    pid = "P000"
+    round_index = 1
+    hits = kart_hits(seed, pid, round_index)
+    assert hits
+    hit = min(hits, key=lambda h: h["at_fraction"])
+    at_ratio = hit["at_fraction"]
+    duration = race.OBSTACLE_IMPACT[hit["type"]]["duration"]
+
+    # 맞기 직전: 아무 효과 없음
+    assert race.active_effect_at(seed, pid, round_index, max(0.0, at_ratio - 0.01)) is None
+    # 맞은 직후: 해당 종류의 효과가 최대 강도에 가깝게 걸린다
+    just_after = race.active_effect_at(seed, pid, round_index, at_ratio + duration * 0.05)
+    assert just_after is not None and just_after["type"] == hit["type"]
+    assert just_after["strength"] > 0.8
+    # 구간이 끝난 뒤에는 꺼진다
+    assert race.active_effect_at(seed, pid, round_index, at_ratio + duration * 1.5) is None
 
 
 def test_position_at_with_seed_never_goes_negative():

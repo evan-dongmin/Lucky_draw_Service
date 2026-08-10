@@ -670,7 +670,11 @@ async def _run_race_phase(
 
         # 결선: 1등이 결승선을 넘는 순간부터 창(5초)을 재고, 창이 닫히면
         # 남은 구간 시간을 기다리지 않고 곧바로 결과 발표로 넘어간다.
-        if round_index == 3 and cutoff_window_seconds and round_has_finish_line:
+        # truthy가 아니라 `is not None`으로 검사한다 -- 창 길이를 0(1등 통과
+        # 즉시 종료)으로 바꾸면 truthy 검사는 조용히 실패해서 결선이 영영 안
+        # 끝나고 구간 시간을 다 쓴다. 실제로 0으로 내렸다가 되돌린 적이 있어
+        # 방어적으로 남겨둔다.
+        if round_index == 3 and cutoff_window_seconds is not None and round_has_finish_line:
             if r3_finish_deadline is None and any(p >= line for p in positions.values()):
                 r3_finish_deadline = elapsed + cutoff_window_seconds
             if r3_finish_deadline is not None and elapsed >= r3_finish_deadline:
