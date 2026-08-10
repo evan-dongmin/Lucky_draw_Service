@@ -408,6 +408,20 @@ button {
   color: #8b95a5;
 }
 
+/* 직접 선택 보너스 -- "폰을 들 이유"라서 회색 본문에 묻히면 안 된다. */
+.intro-bonus-line {
+  margin-top: 0.6rem;
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.5rem;
+  background: rgba(110, 231, 183, 0.1);
+  border: 1px solid rgba(110, 231, 183, 0.28);
+  color: #cfe9dd;
+}
+
+.intro-bonus-line b {
+  color: #6ee7b7;
+}
+
 .intro-steps-m {
   margin: 0 0 0.7rem;
   padding-left: 1.2rem;
