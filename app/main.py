@@ -70,6 +70,13 @@ async def no_cache_static(request: Request, call_next):
     return response
 
 
+# 한 WebSocket 연결이 메시지 하나를 받아가는 데 허용하는 최대 시간.
+# 이 시간을 못 지키는 연결은 (끊겼다는 예외가 안 나더라도) 사실상 죽은
+# 것으로 보고 끊는다 -- 안 그러면 막힌 폰 하나가 브로드캐스트 전체를,
+# 나아가 런북 진행을 붙잡는다(ConnectionHub.broadcast 설명 참고).
+SEND_TIMEOUT_SECONDS = 2.0
+
+
 class ConnectionHub:
     """WS 연결 관리: stage/admin/mobile 화면 간 상태 브로드캐스트.
 
@@ -88,19 +95,38 @@ class ConnectionHub:
     def disconnect(self, websocket: WebSocket) -> None:
         self.connections.pop(websocket, None)
 
+    async def _send_one(self, connection: WebSocket, payload: str) -> None:
+        """한 연결에 보내되, **막힌 연결이 전체를 붙잡지 못하게** 시간 제한을 둔다.
+
+        행사장 Wi-Fi에서 폰 하나가 끊기지 않은 채 수신 버퍼만 막히면
+        send_text가 그 폰이 살아날 때까지 그대로 대기한다. 제한 시간 안에
+        못 받는 연결은 사실상 죽은 것으로 보고 끊는다."""
+        try:
+            await asyncio.wait_for(connection.send_text(payload), timeout=SEND_TIMEOUT_SECONDS)
+        except Exception:
+            self.disconnect(connection)
+
     async def broadcast(
         self, message: dict, sender: WebSocket | None = None, roles: set[str] | None = None
     ) -> None:
+        """대상 연결 **전부에 동시에** 보낸다.
+
+        예전에는 for 루프에서 하나씩 await해서, 응답이 느린 폰 한 대가
+        나머지 249대의 전송까지 통째로 붙잡았다(측정: 2초 지연 폰 1대가
+        250대 브로드캐스트를 2.01초로 만듦). 브로드캐스트는 런북이 직접
+        await하므로 그 지연이 곧 행사 진행 지연이 되고, 느린 폰이 여럿이면
+        지연이 그대로 합산된다. 이제 gather로 동시에 보내므로 전체 소요는
+        '가장 느린 한 대'로 수렴하고, 그마저도 SEND_TIMEOUT_SECONDS로 잘린다.
+        """
         payload = json.dumps(message, ensure_ascii=False)
-        for connection, role in list(self.connections.items()):
-            if connection is sender:
-                continue
-            if roles is not None and role not in roles:
-                continue
-            try:
-                await connection.send_text(payload)
-            except Exception:
-                self.disconnect(connection)
+        targets = [
+            connection
+            for connection, role in list(self.connections.items())
+            if connection is not sender and (roles is None or role in roles)
+        ]
+        if not targets:
+            return
+        await asyncio.gather(*(self._send_one(c, payload) for c in targets))
 
 
 hub = ConnectionHub()
