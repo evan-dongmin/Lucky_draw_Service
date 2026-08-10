@@ -502,6 +502,12 @@ button {
   color: #ffd166;
 }
 
+.reward-manual {
+  margin: 0.35rem 0 0;
+  font-size: 0.76rem;
+  color: #6ee7b7;
+}
+
 #btn-change-character {
   padding: 0.35rem 0.7rem;
   font-size: 0.85rem;

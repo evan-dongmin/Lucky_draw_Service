@@ -317,11 +317,18 @@ function renderRewardBreakdown(me, round) {
     reward.ability_bonus
       ? `<p class="reward-ability">🏎️ 카트 능력 효과 포함 (${reward.ability_bonus > 0 ? "+" : ""}${reward.ability_bonus}점)</p>`
       : "";
+  // 자동 배정이 아니라 직접 골라서 받은 보너스. 위 예측 항목에 이미 포함된
+  // 값의 내역 표시라 합계를 다시 더하면 안 된다.
+  const manualNote =
+    reward.manual_bonus
+      ? `<p class="reward-manual">🎯 직접 선택 보너스 포함 (+${reward.manual_bonus}점)</p>`
+      : "";
   return `
     <div class="reward-box">
       <div class="reward-title">이번 라운드 소계 <span class="reward-total">+${reward.total}</span></div>
       ${items.length ? `<ul class="reward-list">${items.join("")}</ul>` : ""}
       ${abilityNote}
+      ${manualNote}
     </div>
   `;
 }

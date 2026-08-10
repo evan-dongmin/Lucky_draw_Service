@@ -76,6 +76,13 @@ FINISH_POINTS = 20  # 그 라운드 통과선을 넘은 개인 전원
 TEAM_RANK_POINTS = [45, 30, 18]  # 통과율 1~3위 부서 소속 통과자(4위 이하 0)
 FINAL_WIN_POINTS = 150  # 결선(R3) 최종 당첨자
 
+# 예측을 손수 고른 참가자에게 붙는 소폭 배수(사용자 요청, 2026-08-10).
+# 미선택(자동 배정)도 적중하면 예측 점수를 100% 받는다는 원칙(참여
+# 페널티 없음)은 그대로 두되, 직접 고른 사람에게는 이 배수만큼 더 준다.
+# ability_bonus(카트 능력)와 독립적인 항목으로 분리해서 계산·표시한다 --
+# 두 배수를 하나로 뭉치면 "왜 이만큼 더 받았는지"를 참가자가 알 수 없다.
+MANUAL_PREDICT_MULTIPLIER = 1.1
+
 RoundState = str  # "pending" | "open" | "locked"
 
 
@@ -359,6 +366,7 @@ class PredictionEngine:
 
             predict_gain = 0
             plain_predict = 0
+            predict_gain_no_manual = 0
             if target is not None:
                 rank = rank_of.get(target)
                 ratio = rank_ratio(rank) if rank is not None else FLOOR_RATIO
@@ -382,7 +390,13 @@ class PredictionEngine:
                 if rank is None or rank > len(RANK_RATIOS):
                     # FLOOR_RATIO(참여 보상)를 받은 경우
                     multiplier *= ability.floor_multiplier
-                predict_gain = int(base * multiplier)
+                predict_gain_no_manual = int(base * multiplier)
+                predict_gain = predict_gain_no_manual
+                if not card.is_auto[round_index]:
+                    predict_gain = int(predict_gain_no_manual * MANUAL_PREDICT_MULTIPLIER)
+                    manual_bonus = predict_gain - predict_gain_no_manual
+                    if manual_bonus:
+                        detail["manual_bonus"] = manual_bonus
                 detail["hit_rank"] = rank if rank is not None else 0
                 detail["predict"] = predict_gain
 
@@ -405,7 +419,7 @@ class PredictionEngine:
                 plain_perf += FINAL_WIN_POINTS
                 detail["final"] = FINAL_WIN_POINTS
 
-            ability_bonus = (predict_gain + perf_gain) - (plain_predict + plain_perf)
+            ability_bonus = (predict_gain_no_manual + perf_gain) - (plain_predict + plain_perf)
             if character_id and ability_bonus:
                 detail["ability_bonus"] = ability_bonus
 

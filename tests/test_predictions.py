@@ -4,6 +4,7 @@ from app.predictions import (
     FINAL_WIN_POINTS,
     FINISH_POINTS,
     FLOOR_RATIO,
+    MANUAL_PREDICT_MULTIPLIER,
     RANK_RATIOS,
     ROUND_BASE_POINTS,
     TEAM_RANK_POINTS,
@@ -207,7 +208,10 @@ def test_target_outside_ranked_list_still_gets_participation_floor():
     engine.lock_round(1, seed="seed")
     engine.score_round(1, ["A"])  # B는 순위 목록에 없음
 
-    assert engine.cards["P1"].gain[1] == int(ROUND_BASE_POINTS * 1.0 * FLOOR_RATIO)
+    # 직접 골랐으므로(P1은 set_target 사용) MANUAL_PREDICT_MULTIPLIER도 곱해진다.
+    assert engine.cards["P1"].gain[1] == int(
+        int(ROUND_BASE_POINTS * 1.0 * FLOOR_RATIO) * MANUAL_PREDICT_MULTIPLIER
+    )
 
 
 def test_minority_bonus_applies_only_to_the_exact_top_pick():
@@ -221,11 +225,41 @@ def test_minority_bonus_applies_only_to_the_exact_top_pick():
     engine.lock_round(1, seed="seed")
     engine.score_round(1, ["A", "B"])
 
-    # P1: 100 * 1.0 * 1.0 * (1 + (1 - 1/3)) = 166
-    assert engine.cards["P1"].gain[1] == int(ROUND_BASE_POINTS * 1.0 * (1 + (1 - 1 / 3)))
-    # P2/P3: 보너스 없이 2위 비율만 -- 100 * 0.6 = 60
-    assert engine.cards["P2"].gain[1] == int(ROUND_BASE_POINTS * RANK_RATIOS[1])
+    # 셋 다 직접 골랐으므로(set_target) MANUAL_PREDICT_MULTIPLIER가 곱해진다.
+    # P1: 100 * 1.0 * 1.0 * (1 + (1 - 1/3)) = 166, 여기에 직접선택 보너스
+    assert engine.cards["P1"].gain[1] == int(
+        int(ROUND_BASE_POINTS * 1.0 * (1 + (1 - 1 / 3))) * MANUAL_PREDICT_MULTIPLIER
+    )
+    # P2/P3: 보너스 없이 2위 비율만 -- 100 * 0.6 = 60, 여기에 직접선택 보너스
+    assert engine.cards["P2"].gain[1] == int(
+        int(ROUND_BASE_POINTS * RANK_RATIOS[1]) * MANUAL_PREDICT_MULTIPLIER
+    )
     assert engine.cards["P3"].gain[1] == engine.cards["P2"].gain[1]
+
+
+def test_manual_pick_scores_higher_than_identical_autopick():
+    """사용자 요청(2026-08-10): 예측에 직접 참여한 사람이 자동 배정으로
+    같은 결과를 맞춘 사람보다 더 받아야 한다 -- 안 그러면 굳이 폰을 들여다볼
+    이유가 없다. R1·R2는 자동 배정이 자기 부서라서 같은 대상을 직접 고른
+    사람과 비교하면 배수 차이만 남는다."""
+    engine = PredictionEngine()
+    engine.enroll_all({"manual": "개발팀", "auto": "개발팀"})
+    engine.open_round(1, ["개발팀", "영업팀"])
+    engine.set_target("manual", 1, "개발팀")  # 자기 부서를 굳이 직접 선택
+    # "auto"는 아무것도 선택하지 않음 -> lock_round가 자기 부서(개발팀)로 자동 배정
+    engine.lock_round(1, seed="seed")
+    engine.score_round(1, ["개발팀", "영업팀"])
+
+    manual_card = engine.cards["manual"]
+    auto_card = engine.cards["auto"]
+    assert manual_card.target[1] == auto_card.target[1] == "개발팀"
+    assert manual_card.is_auto[1] is False
+    assert auto_card.is_auto[1] is True
+    assert manual_card.rewards[1]["predict"] == int(
+        auto_card.rewards[1]["predict"] * MANUAL_PREDICT_MULTIPLIER
+    )
+    assert manual_card.rewards[1]["manual_bonus"] > 0
+    assert "manual_bonus" not in auto_card.rewards[1]
 
 
 def test_bonus_is_neutral_when_no_explicit_choosers():
@@ -234,6 +268,7 @@ def test_bonus_is_neutral_when_no_explicit_choosers():
     engine.lock_round(1, seed="seed")  # 아무도 명시적으로 선택하지 않음
     card = engine.get_or_create_card("P1")
     card.target[1] = "개발팀"  # 강제로 적중 상황을 만들어 보너스 배수만 검증
+    card.is_auto[1] = True  # 이 테스트의 전제(비명시적 선택)를 유지 -- 직접선택 보너스 배제
 
     engine.score_round(1, ["개발팀", "영업팀"])
     # bonus=1.0이므로 gain = ROUND_BASE_POINTS(100) * weight(1.0) * ratio(1.0) = 100
@@ -440,14 +475,23 @@ def _engine_with(pids, round_index=1, candidates=("A", "B")):
     return engine
 
 
+def _set_target_no_manual_bonus(engine, pid, round_index, target):
+    """카트 능력 테스트 전용 도우미: 대상은 명시적으로 정하되, 이후 추가된
+    직접선택 보너스(MANUAL_PREDICT_MULTIPLIER)는 꺼서 순수 능력 배수만 남긴다.
+    두 배수를 같이 곱하면 int() 이중 절삭 때문에 이 구간의 "정확히 N배"
+    assert들이 반올림 오차로 깨진다."""
+    engine.set_target(pid, round_index, target)
+    engine.cards[pid].is_auto[round_index] = True
+
+
 def test_ability_multiplier_applies_only_to_chooser():
     """같은 예측을 해도 카트를 고른 사람만 배수를 받는다.
 
     미선택자에게 중립 1.0배를 주는 건 의도된 설계다 -- 안 고른 사람이
     우연히 유리해지면 "고르는 재미"를 주려던 취지가 뒤집힌다."""
     engine = _engine_with(["chooser", "nobody"])
-    engine.set_target("chooser", 1, "A")
-    engine.set_target("nobody", 1, "A")
+    _set_target_no_manual_bonus(engine, "chooser", 1, "A")
+    _set_target_no_manual_bonus(engine, "nobody", 1, "A")
     engine.lock_round(1, "seed")
 
     # nitro = R1 예측 점수 +25%
@@ -465,8 +509,8 @@ def test_ability_multiplier_applies_only_to_chooser():
 def test_ability_only_applies_to_its_own_round():
     """rocket은 R3 전용이라 R1 점수는 그대로여야 한다."""
     engine = _engine_with(["P1", "P2"])
-    engine.set_target("P1", 1, "A")
-    engine.set_target("P2", 1, "A")
+    _set_target_no_manual_bonus(engine, "P1", 1, "A")
+    _set_target_no_manual_bonus(engine, "P2", 1, "A")
     engine.lock_round(1, "seed")
     engine.score_round(1, ["A", "B"], character_by_pid={"P1": "rocket"})
 
@@ -484,8 +528,8 @@ def test_shield_doubles_only_the_participation_floor():
     ranked = list(candidates)
 
     engine = _engine_with(["floor_hit", "floor_plain"], candidates=candidates)
-    engine.set_target("floor_hit", 1, candidates[-1])  # 꼴찌 -> 참여 보상 구간
-    engine.set_target("floor_plain", 1, candidates[-1])
+    _set_target_no_manual_bonus(engine, "floor_hit", 1, candidates[-1])  # 꼴찌 -> 참여 보상 구간
+    _set_target_no_manual_bonus(engine, "floor_plain", 1, candidates[-1])
     engine.lock_round(1, "seed")
     engine.score_round(1, ranked, character_by_pid={"floor_hit": "shield"})
 
@@ -495,8 +539,8 @@ def test_shield_doubles_only_the_participation_floor():
 
     # 1위 적중 시에는 shield 효과가 없다
     engine2 = _engine_with(["top_hit", "top_plain"], candidates=candidates)
-    engine2.set_target("top_hit", 1, candidates[0])
-    engine2.set_target("top_plain", 1, candidates[0])
+    _set_target_no_manual_bonus(engine2, "top_hit", 1, candidates[0])
+    _set_target_no_manual_bonus(engine2, "top_plain", 1, candidates[0])
     engine2.lock_round(1, "seed")
     engine2.score_round(1, ranked, character_by_pid={"top_hit": "shield"})
 
@@ -538,8 +582,8 @@ def test_stardust_doubles_finish_and_wave_boosts_team_bonus():
 def test_unknown_character_id_is_neutral():
     """모르는 id(구버전 스냅샷 등)는 조용히 중립 처리한다 -- 채점이 죽으면 안 된다."""
     engine = _engine_with(["P1", "P2"])
-    engine.set_target("P1", 1, "A")
-    engine.set_target("P2", 1, "A")
+    _set_target_no_manual_bonus(engine, "P1", 1, "A")
+    _set_target_no_manual_bonus(engine, "P2", 1, "A")
     engine.lock_round(1, "seed")
     engine.score_round(1, ["A", "B"], character_by_pid={"P1": "no-such-kart"})
 
@@ -622,7 +666,8 @@ def test_live_stats_minority_bonus_matches_actual_scoring():
     engine.score_round(1, ["B팀", "A팀"])  # B팀이 1위 -- 소수파 적중
 
     got = engine.cards["P3"].rewards[1]["predict"]
-    expected = int(ROUND_BASE_POINTS * 1.0 * RANK_RATIOS[0] * shown)
+    # P3는 직접 골랐으므로(set_target) MANUAL_PREDICT_MULTIPLIER도 곱해진다.
+    expected = int(int(ROUND_BASE_POINTS * 1.0 * RANK_RATIOS[0] * shown) * MANUAL_PREDICT_MULTIPLIER)
     assert got == expected
 
 
