@@ -2130,7 +2130,7 @@ function drawFrame(positions, tick) {
   raceCtx.globalAlpha = 1;
   raceCtx.restore();
 
-  drawHud(raceCtx, W, H, positions, tick, sorted);
+  drawHud(raceCtx, W, tick);
   renderPositionTower(sorted, positions, tick.pass_line);
   updateCutoffPanel(tick, now);
 
@@ -2186,23 +2186,34 @@ function drawFrame(positions, tick) {
   }
 }
 
-function drawHud(ctx, W, H, positions, tick, sorted) {
-  const passing = sorted.filter((pid) => positions[pid] >= tick.pass_line).length;
-  const barY = H * 0.06;
+// 구간 진행률 바. **DOM HUD와 겹치지 않는 띠에만 그린다.**
+//
+// 예전에는 barY를 H * 0.06으로 잡고 그 위(barY - 8)에 "통과권 N대"와
+// "N%"를 함께 그렸는데, 화면 높이 900px에서 barY가 54px이라 4rem(64px)
+// 높이인 #hud-top 바로 아래가 아니라 **그 안쪽**이었다. 결과적으로
+// "🏁 타추위 GRAND PRIX" 타이틀 위에 초록색 "통과권 N대"가, 우측
+// 아이콘 버튼 위에 "N%"가 겹쳐 찍혀 대형 스크린에서 글자가 뭉개졌다
+// (화면이 낮을수록 더 심해진다 -- 비율 기반이라 헤더는 고정 64px인데
+// 바만 위로 올라온다).
+//
+// 헤더 아래 64px, 좌우 패널 위 80px(#position-tower/#side-right의
+// top: 5rem) 사이의 빈 띠에 바만 그린다. 겹쳐 있던 두 텍스트는 되살리지
+// 않았다 -- 둘 다 이미 다른 곳에 더 나은 형태로 있다: "통과권 N대"는
+// 결승선 컷오프 패널(#cutoff-panel)이 "N/후보수"에 카운트다운까지 붙여
+// 보여주고, "N%"는 이 바 자체와 헤더의 구간 타이머가 대신한다.
+const HUD_BAR_Y = 69;
+const HUD_BAR_HEIGHT = 5;
+
+function drawHud(ctx, W, tick) {
   ctx.fillStyle = "rgba(255,255,255,0.08)";
-  ctx.fillRect(TRACK_PAD_X, barY, W - TRACK_PAD_X * 2, 6);
+  ctx.fillRect(TRACK_PAD_X, HUD_BAR_Y, W - TRACK_PAD_X * 2, HUD_BAR_HEIGHT);
   ctx.fillStyle = "#4f8cff";
-  ctx.fillRect(TRACK_PAD_X, barY, (W - TRACK_PAD_X * 2) * tick.progress_ratio, 6);
-
-  ctx.font = "bold 18px 'Malgun Gothic', sans-serif";
-  ctx.fillStyle = "#7cf29c";
-  ctx.textAlign = "left";
-  ctx.fillText(`통과권 ${passing}대`, TRACK_PAD_X, barY - 8);
-
-  ctx.textAlign = "right";
-  ctx.fillStyle = "#8b95a5";
-  ctx.fillText(`${Math.round(tick.progress_ratio * 100)}%`, W - TRACK_PAD_X, barY - 8);
-  ctx.textAlign = "left";
+  ctx.fillRect(
+    TRACK_PAD_X,
+    HUD_BAR_Y,
+    (W - TRACK_PAD_X * 2) * tick.progress_ratio,
+    HUD_BAR_HEIGHT
+  );
 }
 
 function renderTrack(tick) {
