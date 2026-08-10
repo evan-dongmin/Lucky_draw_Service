@@ -294,6 +294,32 @@ class CreateSessionRequest(BaseModel):
     predictions_enabled: bool = False
 
 
+def _cancel_active_races() -> None:
+    """진행 중인 레이스 런북을 중단시킨다.
+
+    **새 세션·재추첨·초기화 때 반드시 불러야 한다.** 안 부르면 옛 런북이
+    계속 돌면서 마지막에 `fairness.reveal`까지 실행해 **옛 추첨 결과를 최종
+    당첨자로 발표해버린다**. 재추첨은 같은 session_id에 draw만 덧붙이므로
+    런북의 구간 경계 검사(`session.session_id != session_id`)에도 걸리지
+    않아 끝까지 완주한다 -- 진행자는 다시 뽑았다고 생각하는데 화면에는
+    재추첨 전 당첨자가 뜬다.
+
+    취소를 await하지는 않는다. 이 함수는 state_lock을 쥔 채로 불리는데
+    런북도 final_announce 구간에서 같은 락을 잡으므로, 기다리면 교착이
+    생긴다. cancel()만 걸어두면 런북은 다음 await(틱 sleep)에서 곧바로
+    빠져나온다.
+    """
+    global latest_race_tick
+    for session_id, task in list(active_race_tasks.items()):
+        if not task.done():
+            task.cancel()
+        active_race_tasks.pop(session_id, None)
+    fast_forward_requests.clear()
+    # 멈춘 레이스의 마지막 틱이 남아 있으면 폰의 "내 카트 현황"이 계속
+    # 그 순간을 진행 중인 것처럼 보여준다.
+    latest_race_tick = None
+
+
 def _reset_prediction_state() -> None:
     """새 세션·재추첨·초기화 시 예측 엔진과 캐릭터 선택, 스냅샷 파일을 모두
     정리한다. 하나라도 남으면 다음 세션에 낡은 점수/신원이 새어 들어간다."""
@@ -324,6 +350,10 @@ async def create_session(payload: CreateSessionRequest) -> dict[str, Any]:
             created_at=datetime.now(timezone.utc).isoformat(),
         )
         store.set_session(session)
+        # 진행 중이던 레이스가 있으면 먼저 끊는다 -- 세션이 바뀌어도 옛
+        # 런북은 레이스 구간(기본 95초) 하나를 다 쓸 때까지 구간 경계 검사에
+        # 도달하지 않아, 그동안 새 세션 화면에 옛 레이스 틱이 계속 흘러간다.
+        _cancel_active_races()
         _reset_prediction_state()
         await hub.broadcast({"type": "session_created", "session": public_session_dict(session)})
         return public_session_dict(session)
@@ -353,12 +383,8 @@ async def set_excluded(payload: ExcludeRequest) -> dict[str, Any]:
 async def reset_session() -> dict[str, Any]:
     async with state_lock:
         store.clear()
+        _cancel_active_races()
         _reset_prediction_state()
-        fast_forward_requests.clear()
-        for session_id, task in list(active_race_tasks.items()):
-            if not task.done():
-                task.cancel()
-            active_race_tasks.pop(session_id, None)
         await hub.broadcast({"type": "reset"})
         return {"ok": True}
 
@@ -473,6 +499,11 @@ async def redraw(payload: RedrawRequest) -> dict[str, Any]:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         session.draws.append(draw)
         store.set_session(session)
+        # 레이스가 돌고 있는 중에 재추첨을 눌렀다면 옛 런북을 반드시 끊는다.
+        # 재추첨은 session_id를 그대로 두고 draw만 덧붙이므로 런북의 구간
+        # 경계 검사에 안 걸려 끝까지 완주하고, 결국 **재추첨 전 당첨자**를
+        # 최종 발표해버린다(회귀 테스트로 고정).
+        _cancel_active_races()
         if session.predictions_enabled:
             # 새 추첨 회차 -- 예측 게임도 처음부터 새로 시작한다
             prediction_engine.reset()

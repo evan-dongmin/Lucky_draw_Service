@@ -362,3 +362,128 @@ def test_obstacles_spread_over_whole_track_when_everyone_passes():
     assert positions[-1] <= hi + 1e-9
     # 트랙 뒷부분(50% 이후)에도 장애물이 있어야 한다
     assert any(p > 0.5 for p in positions), f"장애물이 앞쪽에만 뭉쳐 있습니다: {positions}"
+
+
+# ---------------------------------------------------------------------------
+# 진행 중인 레이스와 세션 조작(재추첨/새 세션/초기화)의 상호작용
+# ---------------------------------------------------------------------------
+
+_LONG_RACE_SEGMENTS = [
+    RunbookSegment(phase="opening", duration_seconds=0.01, is_selection_window=False),
+    RunbookSegment(phase="race_r1", duration_seconds=3.0, is_selection_window=False),
+    RunbookSegment(phase="score_r1_select_r2", duration_seconds=0.01, is_selection_window=False),
+    RunbookSegment(phase="race_r2", duration_seconds=0.05, is_selection_window=False),
+    RunbookSegment(phase="score_r2_select_r3", duration_seconds=0.01, is_selection_window=False),
+    RunbookSegment(phase="race_r3", duration_seconds=0.05, is_selection_window=False),
+    RunbookSegment(phase="final_announce", duration_seconds=0.01, is_selection_window=False),
+    RunbookSegment(phase="verify", duration_seconds=0.01, is_selection_window=False),
+]
+
+
+def _racing_session(session_id: str, seed: str):
+    participants = generate_sample_participants(30, seed=1)
+    draw = fairness.compute_draw(session_id, participants, draw_count=3, seed=seed)
+    session = Session(
+        session_id=session_id,
+        participants=participants,
+        draw_count=3,
+        mode="racing",
+        total_seconds=300.0,
+        created_at="2026-01-01T00:00:00Z",
+        predictions_enabled=False,
+    )
+    session.draws.append(draw)
+    return session, draw
+
+
+@pytest.mark.asyncio
+async def test_redraw_during_a_race_stops_it_instead_of_announcing_the_old_winners(monkeypatch):
+    """**재추첨을 누르면 진행 중이던 레이스가 즉시 멈춰야 한다.**
+
+    재추첨은 session_id를 그대로 두고 draw만 덧붙이기 때문에, 런북의 구간
+    경계 검사(session_id 비교)로는 걸러지지 않는다. 옛 런북을 끊지 않으면
+    끝까지 완주하면서 `fairness.reveal`까지 실행해 **재추첨 전 당첨자**를
+    최종 발표해버린다 -- 진행자는 다시 뽑았다고 생각하는데 화면에는 옛
+    결과가 뜨는, 행사에서 가장 곤란한 종류의 사고다.
+
+    실제로 재현됐던 회귀라 테스트로 고정한다(재추첨 후에도 33틱이 더 나가고
+    옛 draw의 winners가 그대로 발표됐다).
+    """
+    session, old_draw = _racing_session("sess-redraw", "seed-old")
+    main_module.store.set_session(session)
+
+    monkeypatch.setattr(main_module.director, "build_runbook", lambda **kw: list(_LONG_RACE_SEGMENTS))
+    monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.02)
+    monkeypatch.setattr(main_module, "RACE_COUNTDOWN_SECONDS", 0.01)
+
+    messages: list[dict] = []
+
+    async def fake_broadcast(message, sender=None, roles=None):
+        messages.append(message)
+
+    monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
+
+    task = asyncio.create_task(main_module.run_racing_sequence("sess-redraw", 0, 300.0))
+    main_module.active_race_tasks["sess-redraw"] = task
+    await asyncio.sleep(0.4)  # R1 레이스 구간 한복판
+    assert any(m["type"] == "race_tick" for m in messages), "전제: 레이스가 실제로 돌고 있어야 함"
+
+    await main_module.redraw(main_module.RedrawRequest(exclude_previous_winners=False))
+
+    ticks_at_redraw = sum(1 for m in messages if m["type"] == "race_tick")
+    await asyncio.sleep(0.5)
+    ticks_after = sum(1 for m in messages if m["type"] == "race_tick")
+
+    assert ticks_after == ticks_at_redraw, "재추첨 후에도 옛 레이스가 계속 틱을 쏘고 있습니다"
+    assert task.done() or task.cancelled()
+    # 옛 추첨이 최종 발표까지 가지 못했어야 한다
+    assert not any(m["type"] == "revealed" for m in messages)
+    assert not any(m["type"] == "prize_winners" for m in messages)
+    assert old_draw.revealed is False
+    # 다음 레이스를 바로 시작할 수 있어야 한다(태스크 슬롯이 비었는지)
+    assert "sess-redraw" not in main_module.active_race_tasks
+    main_module.store.clear()
+
+
+@pytest.mark.asyncio
+async def test_new_session_during_a_race_stops_the_old_one_immediately(monkeypatch):
+    """새 세션을 만들면 옛 레이스가 **즉시** 멈춰야 한다.
+
+    session_id가 바뀌므로 런북은 결국 스스로 멈추지만, 그 검사는 **구간
+    경계에서만** 이뤄진다 -- 레이스 구간 하나가 기본 95초라 그동안 새 세션
+    화면 위로 옛 레이스 틱이 계속 흘러간다."""
+    session, _ = _racing_session("sess-old", "seed-1")
+    main_module.store.set_session(session)
+
+    monkeypatch.setattr(main_module.director, "build_runbook", lambda **kw: list(_LONG_RACE_SEGMENTS))
+    monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.02)
+    monkeypatch.setattr(main_module, "RACE_COUNTDOWN_SECONDS", 0.01)
+
+    messages: list[dict] = []
+
+    async def fake_broadcast(message, sender=None, roles=None):
+        messages.append(message)
+
+    monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
+
+    task = asyncio.create_task(main_module.run_racing_sequence("sess-old", 0, 300.0))
+    main_module.active_race_tasks["sess-old"] = task
+    await asyncio.sleep(0.4)
+    assert any(m["type"] == "race_tick" for m in messages)
+
+    await main_module.create_session(
+        main_module.CreateSessionRequest(
+            participants=[p.to_dict() for p in generate_sample_participants(30, seed=2)],
+            draw_count=3,
+            mode="racing",
+            total_seconds=300.0,
+            predictions_enabled=False,
+        )
+    )
+
+    ticks_at_switch = sum(1 for m in messages if m["type"] == "race_tick")
+    await asyncio.sleep(0.4)
+    assert sum(1 for m in messages if m["type"] == "race_tick") == ticks_at_switch
+    # 폰 "내 카트 현황"이 옛 레이스의 마지막 틱에 얼어붙어 있으면 안 된다
+    assert main_module.latest_race_tick is None
+    main_module.store.clear()
