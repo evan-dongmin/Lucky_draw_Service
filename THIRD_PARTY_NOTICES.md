@@ -17,7 +17,15 @@
 | pytest | 8.3.4 | MIT | 테스트 프레임워크 |
 | pytest-asyncio | 0.25.2 | Apache-2.0 | 비동기(asyncio) 테스트 지원 |
 
+위 표는 `requirements.txt`에 고정된 직접 의존성입니다. 그중 `qrcode[pil]`이
+끌어오는 아래 패키지도 실행 시 함께 배포되므로 라이선스를 함께 밝힙니다.
+
+| 패키지 | 라이선스 | 비고 |
+|---|---|---|
+| Pillow | MIT-CMU | `qrcode[pil]`의 이미지 백엔드(QR 이미지 렌더링) |
+
 프런트엔드(static/)는 순수 HTML/CSS/JavaScript로 작성되었으며 외부
-라이브러리·CDN·빌드 도구에 의존하지 않습니다. 공정성 검증 페이지
-(verify.html)는 브라우저 표준 Web Crypto API(SubtleCrypto)를 사용하며,
-이는 브라우저 내장 기능으로 별도 라이선스 고지가 필요한 외부 코드가 아닙니다.
+라이브러리·CDN·빌드 도구·웹폰트에 의존하지 않습니다. 무대 화면의 레이스
+렌더링은 브라우저 표준 Canvas 2D, 배경음악·효과음은 WebAudio(오실레이터
+합성), AI MC 음성은 Web Speech API를 사용합니다. 모두 브라우저 내장
+기능으로 별도 라이선스 고지가 필요한 외부 코드가 아닙니다.
