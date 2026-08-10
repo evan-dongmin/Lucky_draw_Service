@@ -173,6 +173,54 @@ def test_obstacle_layout_is_deterministic_and_well_formed():
         assert hazard["drift_speed"] > 0
 
 
+def test_every_obstacle_type_has_a_distinct_look_and_motion_profile():
+    """사용자 요청: "장애물이 각각 특색이 있도록. 움직임과 패턴도 다
+    제각각이고, 크기도 카트보다 큰 것 등도 있게끔."
+
+    예전에는 8종이 전부 같은 사인파에 진폭만 난수로 달라 화면에서는 이모지만
+    다른 같은 물체로 보였다. 카탈로그의 모든 종류가 프로필을 갖는지, 그리고
+    그 프로필이 실제로 서로 구별되는지(움직임 패턴이 한 종류로 쏠리지 않고,
+    크기 차이가 눈에 띄는 폭인지)를 고정한다."""
+    catalog_types = {t for t, _ in race.OBSTACLE_CATALOG}
+    # 카탈로그에 있는데 프로필이 없으면 KeyError로 레이스가 죽는다
+    assert catalog_types == set(race.OBSTACLE_PROFILES)
+
+    motions = {p["motion"] for p in race.OBSTACLE_PROFILES.values()}
+    assert len(motions) >= 5, "움직임 패턴이 몇 종류로 쏠려 있습니다"
+
+    sizes = [p["size"] for p in race.OBSTACLE_PROFILES.values()]
+    # 기준 크기가 이미 카트 높이의 1.05배라, 1.5를 넘으면 확실히 카트보다 크다
+    assert max(sizes) >= 1.5, "카트보다 확실히 큰 장애물이 없습니다"
+    assert min(sizes) <= 0.85, "작고 앙증맞은 장애물이 없습니다"
+
+    # **무거운 것일수록 덜 움직인다** -- 큰 장애물이 옆 레인까지 흔들려 나가면
+    # "저건 내 레인이 아닌데 왜 안 맞았지"로 보인다(판정은 레인 일치로만 한다).
+    biggest = max(race.OBSTACLE_PROFILES.values(), key=lambda p: p["size"])
+    smallest = min(race.OBSTACLE_PROFILES.values(), key=lambda p: p["size"])
+    assert biggest["drift"] < smallest["drift"]
+
+
+def test_obstacle_render_params_follow_their_type_profile():
+    """개체별 편차가 있어도 **종류의 성격은 유지**돼야 한다 -- 같은 종류의
+    콘 두 개가 완전히 똑같이 흔들려도 안 되지만, 바위가 콘만 해져도 안 된다."""
+    by_type: dict[str, list[dict]] = {}
+    for round_index in (1, 2, 3):
+        for hazard in obstacle_layout("profile-seed", round_index, 0.7):
+            by_type.setdefault(hazard["type"], []).append(hazard)
+
+    for obstacle_type, hazards in by_type.items():
+        profile = race.OBSTACLE_PROFILES[obstacle_type]
+        for hazard in hazards:
+            assert hazard["motion"] == profile["motion"]
+            assert hazard["squash"] == profile["squash"]
+            # 크기 편차는 프로필 기준 ±12% 안
+            assert profile["size"] * 0.87 <= hazard["size_scale"] <= profile["size"] * 1.13
+            lo, hi = profile["speed"]
+            assert lo <= hazard["drift_speed"] <= hi
+            spin_lo, spin_hi = profile["spin"]
+            assert spin_lo <= hazard["spin_speed"] <= spin_hi
+
+
 def test_obstacles_are_placed_before_the_finish_line_with_even_spacing():
     """사용자 요청: 장애물은 결승선 **이후**가 아니라 결승선까지 가는
     도중에 적절한 간격으로 놓여야 한다."""

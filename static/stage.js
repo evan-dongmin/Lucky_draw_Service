@@ -1840,14 +1840,17 @@ function drawKart(ctx, x, y, h, angle, color, glow, isLeader, atRisk, pulse, eff
 const obstacleSpriteCache = new Map();
 
 function buildObstacleSprite(type) {
+  // 종류별 크기 차이를 준 뒤로는 바위가 카트의 2배까지 커지고, R3 클로즈업
+  // 줌에서는 그보다 더 커진다. 56px로 굽던 예전 해상도로는 확대 시 뭉개지므로
+  // 넉넉히 굽는다(종류당 한 번만 만들어 캐시하므로 비용은 무시할 수준).
   const c = document.createElement("canvas");
-  c.width = 56;
-  c.height = 56;
+  c.width = 112;
+  c.height = 112;
   const g = c.getContext("2d");
-  g.font = "40px serif";
+  g.font = "80px serif";
   g.textAlign = "center";
   g.textBaseline = "middle";
-  g.fillText((OBSTACLE_VISUAL[type] || OBSTACLE_VISUAL.cone).emoji, 28, 30);
+  g.fillText((OBSTACLE_VISUAL[type] || OBSTACLE_VISUAL.cone).emoji, 56, 60);
   return c;
 }
 
@@ -1866,10 +1869,73 @@ function drawObstacle(ctx, o, size) {
   ctx.shadowColor = "rgba(0,0,0,0.5)";
   ctx.shadowBlur = 4;
   ctx.translate(o.x, o.y);
-  ctx.rotate(o.spinPhase);
-  const s = size * o.sizeScale;
-  ctx.drawImage(obstacleSpriteFor(o.type), -s / 2, -s / 2, s, s);
+  // **트랙 방향으로 먼저 정렬한 뒤** 자체 회전을 얹는다. 이 순서라야
+  // squash(레인 방향으로 납작하게)가 의미를 갖는다 -- 정렬 후 로컬 +x가
+  // 진행 방향, +y가 레인을 가로지르는 방향이다.
+  ctx.rotate(o.angle + o.spinPhase);
+  const s = size * o.sizeScale * (o.pulse || 1);
+  const squash = o.squash !== undefined ? o.squash : 1;
+  // 진행 방향으로는 s만큼 길게, 레인을 가로지르는 방향으로는 s*squash만큼만.
+  // 기름·웅덩이처럼 큰 장애물이 옆 레인까지 번져 보이지 않게 하는 장치다
+  // (충돌 판정은 레인 일치로만 하므로 시각적 침범이 곧 오해가 된다).
+  ctx.drawImage(obstacleSpriteFor(o.type), -s / 2, -(s * squash) / 2, s, s * squash);
   ctx.restore();
+}
+
+// 장애물 종류별 움직임 패턴(사용자 요청: "움직임과 패턴도 다 제각각").
+// 서버가 내려준 motion 값에 따라 **수식 자체가 다르다** -- 예전처럼 같은
+// 사인파에 진폭만 다른 게 아니다. 반환값:
+//   lateral : 레인 너비 대비 좌우 오프셋
+//   bob     : 진행률(at_ratio) 오프셋 -- 앞뒤로 살짝 떠다니는 느낌
+//   pulse   : 크기 배수(1이면 그대로)
+//   roll    : true면 회전을 좌우 이동에 연동(구르는 물체)
+function obstacleMotionAt(o, t) {
+  const speed = o.drift_speed !== undefined ? o.drift_speed : 0.6;
+  const phase = (o.drift_phase !== undefined ? o.drift_phase : hashToUnit(o.id + ":p")) * Math.PI * 2;
+  const amp = o.drift_amp !== undefined ? o.drift_amp : 0.3;
+  const w = t * speed * Math.PI * 2 + phase;
+
+  switch (o.motion) {
+    // 바위: 사실상 고정. 아주 미세하게만 흔들려 "살아 있는 화면"만 유지한다.
+    case "static":
+      return { lateral: Math.sin(w) * amp * 0.4, bob: 0, pulse: 1 };
+    // 콘: 두 주파수를 겹쳐 불규칙하게 떠는 느낌(가볍고 자꾸 건드려지는 물체)
+    case "jitter":
+      return {
+        lateral: (Math.sin(w) * 0.6 + Math.sin(w * 2.7 + 1.1) * 0.4) * amp,
+        bob: Math.sin(w * 3.1) * 0.0015,
+        pulse: 1,
+      };
+    // 타이어: 삼각파로 좌우를 왕복하고, 회전을 이동에 연동해 **실제로 구르게** 한다
+    case "roll":
+      return {
+        lateral: (Math.asin(Math.sin(w)) / (Math.PI / 2)) * amp,
+        bob: 0,
+        pulse: 1,
+        roll: true,
+      };
+    // 바나나: 빠르게 뒹굴며 좌우로도 불규칙하게 튄다
+    case "tumble":
+      return {
+        lateral: (Math.sin(w) * 0.7 + Math.cos(w * 1.6) * 0.3) * amp,
+        bob: Math.cos(w * 0.9) * 0.003,
+        pulse: 1,
+      };
+    // 폭탄: 자리는 거의 안 옮기고 **부풀었다 꺼진다**(터지기 직전 같은 맥동)
+    case "pulse":
+      return {
+        lateral: Math.sin(w * 0.5) * amp,
+        bob: 0,
+        pulse: 1 + Math.max(0, Math.sin(w)) * 0.24,
+      };
+    // 얼음: 느리고 넓게 활강한다
+    case "glide":
+      return { lateral: Math.sin(w) * amp, bob: Math.cos(w * 0.7) * 0.004, pulse: 1 };
+    // 기름·웅덩이: 제자리에서 천천히 번졌다 줄어든다(좌우 이동은 거의 없음)
+    case "seep":
+    default:
+      return { lateral: Math.sin(w) * amp, bob: 0, pulse: 1 + Math.sin(w) * 0.07 };
+  }
 }
 
 // 서버가 보낸 배치(id/at_ratio/lane/type + 움직임 파라미터)를 화면 좌표로
@@ -1889,24 +1955,26 @@ function obstacleScreenPoints(obstacles, passLine, round, halfWidth) {
   return obstacles.map((o) => {
     // 서버가 파라미터를 안 준 경우(구버전 세션)에도 id 해시로 폴백해
     // 최소한의 움직임은 유지한다.
-    const amp = o.drift_amp !== undefined ? o.drift_amp : 0.3;
-    const speed = o.drift_speed !== undefined ? o.drift_speed : 0.6;
     const phase = (o.drift_phase !== undefined ? o.drift_phase : hashToUnit(o.id + ":p")) * Math.PI * 2;
     const spinSpeed = o.spin_speed !== undefined ? o.spin_speed : 0;
     const sizeScale = o.size_scale !== undefined ? o.size_scale : 1;
 
-    const wobble = Math.sin(t * speed * Math.PI * 2 + phase);
-    const laneOffset = (o.lane - (LANE_COUNT - 1) / 2) * laneWidth + wobble * amp * laneWidth;
-    // 진행 방향으로도 아주 살짝 떠다니게 한다(폭이 작아 충돌 시점 인식에는
-    // 영향을 주지 않으면서 "떠 있는 물체" 느낌을 만든다).
-    const bob = Math.cos(t * speed * Math.PI * 2 * 0.7 + phase) * 0.004;
-    const center = trackPointAt(warpProgress(Math.max(0, o.at_ratio + bob), passLine), round);
+    const m = obstacleMotionAt(o, t);
+    const laneOffset = (o.lane - (LANE_COUNT - 1) / 2) * laneWidth + m.lateral * laneWidth;
+    const center = trackPointAt(warpProgress(Math.max(0, o.at_ratio + m.bob), passLine), round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);
+    // 구르는 물체(타이어)는 회전이 좌우 이동에 연동돼야 진짜 구르는 것처럼
+    // 보인다 -- 등속 회전이면 제자리에서 헛도는 바퀴가 된다.
+    const spinPhase = m.roll
+      ? m.lateral * spinSpeed * 9
+      : phase + t * spinSpeed;
     return {
       ...o,
       sizeScale,
-      spinPhase: phase + t * spinSpeed,
+      pulse: m.pulse,
+      angle: center.angle,
+      spinPhase,
       x: center.x + nx * laneOffset,
       y: center.y + ny * laneOffset,
     };

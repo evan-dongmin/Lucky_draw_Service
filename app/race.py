@@ -124,6 +124,58 @@ HAZARD_JITTER = 0.7
 # 유지되는 선에서만 움직이게 한다(충돌 판정은 레인 일치로만 정해진다).
 HAZARD_DRIFT_LANES = 0.38
 
+# 장애물 종류별 "성격"(사용자 요청: "장애물이 각각 특색이 있도록. 움직임과
+# 패턴도 다 제각각이고, 크기도 카트보다 큰 것 등도 있게끔").
+#
+# 예전에는 8종이 **전부 같은 사인파 좌우 흔들림**에 진폭·주기만 난수로
+# 달랐고 크기도 0.85~1.35배 안에서만 흔들려서, 화면에서는 사실상 이모지만
+# 다른 같은 물체로 보였다. 이제 종류마다 움직임 패턴 자체가 다르다.
+#
+# **설계 규칙: 무겁고 큰 것일수록 덜 움직이고, 가볍고 작은 것일수록 많이
+# 돌아다닌다.** 물리적으로 납득되기도 하지만, 실용적인 이유가 더 크다 --
+# 충돌 판정은 서버가 **레인 일치로만** 하므로, 큰 장애물이 옆 레인까지
+# 흔들려 나가면 "저건 내 레인이 아닌데 왜 안 맞았지"로 보인다. 그래서 큰
+# 것에는 거의 0에 가까운 drift를 준다.
+#
+# 값 의미:
+#   motion  : 클라이언트가 고를 움직임 패턴(static/jitter/roll/tumble/
+#             pulse/glide/seep -- static.js의 obstacleScreenPoints 참고)
+#   size    : 기본 장애물 크기 배수. 기준 크기 자체가 카트 높이의 1.05배라
+#             1.0을 넘으면 이미 카트보다 크고, rock(1.95)은 약 2배다.
+#   drift   : 좌우 흔들림 폭(레인 너비 대비, HAZARD_DRIFT_LANES 이하)
+#   speed   : 흔들림 주기(Hz) 범위
+#   spin    : 회전 속도(회/초) 범위. 타이어는 빠르게 구르고 바위는 거의 안 돈다
+#   squash  : 가로(레인 방향) 대 세로(진행 방향) 비. 1보다 작으면 레인
+#             방향으로 납작해져 **옆 레인을 안 건드리면서도** 커 보인다 --
+#             기름/웅덩이처럼 바닥에 퍼진 것에 쓴다
+OBSTACLE_PROFILES: dict[str, dict[str, Any]] = {
+    # 작고 가벼운 것 -- 자주, 넓게 돌아다닌다
+    "cone": {"motion": "jitter", "size": 0.80, "drift": 0.30,
+             "speed": (0.9, 1.7), "spin": (-0.35, 0.35), "squash": 1.0},
+    "banana": {"motion": "tumble", "size": 0.75, "drift": 0.26,
+               "speed": (0.9, 1.5), "spin": (-2.8, 2.8), "squash": 1.0},
+    # 구르는 것 -- 좌우로 왕복하면서 진행 방향으로 빠르게 회전
+    "tire": {"motion": "roll", "size": 1.10, "drift": 0.34,
+             "speed": (0.45, 0.8), "spin": (2.2, 3.4), "squash": 1.0},
+    # 터질 듯 맥동하는 것 -- 자리는 거의 안 옮기고 크기가 뛴다
+    "bomb": {"motion": "pulse", "size": 1.30, "drift": 0.12,
+             "speed": (1.4, 2.2), "spin": (-0.9, 0.9), "squash": 1.0},
+    # 미끄러지는 것 -- 느리고 넓게 활강한다
+    "ice": {"motion": "glide", "size": 1.55, "drift": 0.20,
+            "speed": (0.18, 0.36), "spin": (-0.3, 0.3), "squash": 0.95},
+    # 바닥에 퍼진 것 -- 거의 안 움직이고, 레인 방향으로 살짝 납작하다.
+    # squash를 0.6까지 내려봤더니 이모지 자체가 찌그러져 무슨 물건인지
+    # 알아볼 수 없었다(기름통이 파란 마름모로 보였다). 레인 침범을 막는
+    # 효과는 유지하면서 형태는 알아볼 수 있는 선인 0.75~0.85로 잡는다.
+    "oil": {"motion": "seep", "size": 1.65, "drift": 0.05,
+            "speed": (0.14, 0.30), "spin": (-0.05, 0.05), "squash": 0.85},
+    "puddle": {"motion": "seep", "size": 1.75, "drift": 0.04,
+               "speed": (0.12, 0.26), "spin": (-0.04, 0.04), "squash": 0.75},
+    # 가장 크고 무거운 것 -- 사실상 고정. 카트 2배 크기의 위압감이 목적이다
+    "rock": {"motion": "static", "size": 1.95, "drift": 0.02,
+             "speed": (0.08, 0.18), "spin": (-0.1, 0.1), "squash": 1.0},
+}
+
 
 @lru_cache(maxsize=64)
 def _hazard_specs(seed: str, round_index: int) -> tuple[dict[str, Any], ...]:
@@ -158,6 +210,15 @@ def _hazard_specs(seed: str, round_index: int) -> tuple[dict[str, Any], ...]:
         lane = int(_pseudo_noise(f"{base}:lane") * LANE_COUNT)
         type_idx = int(_pseudo_noise(f"{base}:type") * len(OBSTACLE_CATALOG))
         obstacle_type, penalty = OBSTACLE_CATALOG[type_idx]
+        profile = OBSTACLE_PROFILES[obstacle_type]
+
+        def pick(key: str, lo_hi: tuple[float, float]) -> float:
+            """종류별 범위 안에서 시드로 하나 고른다. 같은 종류라도 개체마다
+            조금씩 다르게(같은 콘 두 개가 똑같이 흔들리지 않게) 만들되,
+            범위 자체가 종류마다 달라 성격은 유지된다."""
+            low, high = lo_hi
+            return low + _pseudo_noise(f"{base}:{key}") * (high - low)
+
         hazards.append(
             {
                 "id": f"r{round_index}-{i}",
@@ -167,11 +228,21 @@ def _hazard_specs(seed: str, round_index: int) -> tuple[dict[str, Any], ...]:
                 "penalty": penalty,
                 # 화면에서 살아 움직이게 하는 파라미터(연출 전용, 전부 시드
                 # 파생이라 관전자 화면 여러 대가 똑같이 움직인다).
-                "drift_amp": (0.35 + _pseudo_noise(f"{base}:amp") * 0.65) * HAZARD_DRIFT_LANES,
-                "drift_speed": 0.35 + _pseudo_noise(f"{base}:speed") * 0.75,  # Hz
+                # 종류별 성격(OBSTACLE_PROFILES)에 개체별 편차를 얹는다.
+                "motion": profile["motion"],
+                "squash": profile["squash"],
+                # 개체 편차를 **곱한 뒤에** 상한을 건다 -- 먼저 자르면 편차가
+                # 상한을 다시 넘겨버린다(레인 이탈 회귀 테스트가 잡아준 실수).
+                "drift_amp": min(
+                    HAZARD_DRIFT_LANES,
+                    profile["drift"] * (0.75 + _pseudo_noise(f"{base}:amp") * 0.5),
+                ),
+                "drift_speed": pick("speed", profile["speed"]),  # Hz
                 "drift_phase": _pseudo_noise(f"{base}:phase"),  # 0..1 (x2pi)
-                "spin_speed": (_pseudo_noise(f"{base}:spin") - 0.5) * 1.6,  # 회전/초
-                "size_scale": 0.85 + _pseudo_noise(f"{base}:size") * 0.5,
+                "spin_speed": pick("spin", profile["spin"]),  # 회전/초
+                # 개체별 크기 편차는 ±12%만 -- 이보다 크게 흔들면 "바위인데
+                # 콘만 하다" 같은 게 나와 종류별 크기 차이가 흐려진다.
+                "size_scale": profile["size"] * (0.88 + _pseudo_noise(f"{base}:size") * 0.24),
             }
         )
     return tuple(hazards)
