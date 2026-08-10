@@ -158,7 +158,14 @@ const FX = (() => {
   // -- 루프 -----------------------------------------------------------------
 
   function step(ts) {
-    const dt = Math.min(0.05, (ts - lastTs) / 1000);
+    // **음수 방지가 핵심이다.** ensureLoop가 lastTs를 performance.now()로
+    // 잡아두는데, requestAnimationFrame이 넘겨주는 ts는 "그 프레임의 시작
+    // 시각"이라 방금 읽은 performance.now()보다 **이전일 수 있다**. 그러면
+    // dt가 음수가 되고 age가 음수로 내려가, 링 반지름이
+    // `6 + (maxR-6) * (age/life)` 로 음수가 되어 ctx.arc가 예외를 던진다 --
+    // 그 순간 draw()가 통째로 중단돼 컨페티·불꽃까지 한 프레임 통으로
+    // 사라진다(실측: dt -28ms에서 반지름 -0.85로 예외 발생).
+    const dt = Math.max(0, Math.min(0.05, (ts - lastTs) / 1000));
     lastTs = ts;
     update(dt);
     draw();
@@ -270,7 +277,9 @@ const FX = (() => {
       ctx.strokeStyle = r.color;
       ctx.lineWidth = 3 * (1 - t) + 1;
       ctx.beginPath();
-      ctx.arc(r.x, r.y, r.r, 0, Math.PI * 2);
+      // 반지름은 위 dt 보정으로 음수가 될 수 없지만, 한 번 음수가 나오면
+      // 예외가 draw() 전체를 중단시켜 다른 연출까지 죽는다. 값싼 보험을 둔다.
+      ctx.arc(r.x, r.y, Math.max(0, r.r), 0, Math.PI * 2);
       ctx.stroke();
     }
     ctx.globalAlpha = 1;
@@ -290,7 +299,7 @@ const FX = (() => {
       } else {
         ctx.fillStyle = p.color;
         ctx.beginPath();
-        ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+        ctx.arc(p.x, p.y, Math.max(0, p.r), 0, Math.PI * 2);
         ctx.fill();
       }
     }

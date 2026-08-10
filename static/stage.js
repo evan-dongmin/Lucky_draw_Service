@@ -585,7 +585,41 @@ let lastRoundRevealed = null;
 // 계속 전체 화면이면 우측 실시간 선택 통계가 가려져서 참가자가 다음 라운드를
 // 고를 근거를 못 본다.
 const ROUND_RESULT_FULLSCREEN_MS = 7000;
+// 그 다음 이어서 띄우는 "어느 팀을 골랐으면 몇 점?" 화면의 노출 시간.
+const TARGET_POINTS_FULLSCREEN_MS = 7000;
+// 결선 최종 등수 화면. 서버가 당첨자 발표까지 주는 텀
+// (FINAL_RESULT_HOLD_SECONDS = 9초)보다 조금 길게 잡아, 시상대가 뜨기
+// 전까지 화면이 비지 않게 한다(실제 종료는 시상대 쪽에서 걷어낸다).
+const FINAL_RACE_RESULT_MS = 11000;
 let roundResultFullscreenTimer = null;
+let targetPointsTimer = null;
+let finalRaceResultShown = false;
+
+/** 라운드 결과 전체 화면이 끝나는 시점에 맞춰 "팀별 획득 포인트" 화면으로
+ *  갈아끼운다. 채점 메시지(prediction_result)는 라운드 결과보다 먼저 도착할
+ *  수도, 나중에 도착할 수도 있어서 **남은 시간을 계산해** 예약한다. */
+function queueTargetPointsPanel(data) {
+  // **결선(R3)은 건너뛴다.** R3의 "라운드 결과 화면"은 결선 최종 등수이고,
+  // 그 뒤로는 곧바로 최종 당첨자 발표가 와야 한다(사용자 요청: "3라운드
+  // 결과 화면 보여주고, 텀을 준 다음에 최종 당첨자 화면"). 여기에 카트별
+  // 포인트까지 끼워 넣으면 발표까지의 텀(FINAL_RESULT_HOLD_SECONDS) 안에
+  // 화면 셋이 스쳐 지나가고, 실제로 결선 등수 화면이 이 패널에 곧바로
+  // 덮여 사라졌다. 결선 점수는 어차피 시상대와 우측 리더보드가 보여준다.
+  if (data.round === 3) return;
+  if (targetPointsTimer) clearTimeout(targetPointsTimer);
+  const wait = roundResultFullscreenTimer ? ROUND_RESULT_FULLSCREEN_MS * 0.5 : 0;
+  targetPointsTimer = setTimeout(() => {
+    targetPointsTimer = null;
+    if (!renderTargetPointsPanel(data)) return;
+    roundTransitionEl.classList.remove("hidden");
+    enterRoundResultFullscreen(TARGET_POINTS_FULLSCREEN_MS);
+    // 전체 화면이 끝나면 원래의 라운드 요약 카드로 되돌린다 -- 남은 선택 창
+    // 동안에는 "지금 몇 대 남았나"가 더 쓸모 있는 정보다.
+    setTimeout(() => {
+      if (lastRoundRevealed) showRoundTransition("survivors");
+    }, TARGET_POINTS_FULLSCREEN_MS + 60);
+  }, wait);
+}
 
 function hideRoundTransition() {
   roundTransitionEl.classList.add("hidden");
@@ -597,14 +631,18 @@ function exitRoundResultFullscreen() {
     clearTimeout(roundResultFullscreenTimer);
     roundResultFullscreenTimer = null;
   }
+  if (targetPointsTimer) {
+    clearTimeout(targetPointsTimer);
+    targetPointsTimer = null;
+  }
   roundTransitionEl.classList.remove("fullscreen");
   // 화면 한가운데 뜨는 배너를 원위치로 돌려놓는다(아래 설명 참고).
   document.body.classList.remove("round-result-open");
 }
 
-/** 라운드 결과를 전체 화면으로 띄운다. ROUND_RESULT_FULLSCREEN_MS 뒤에
- *  자동으로 작은 카드로 돌아간다(내용은 그대로 남는다). */
-function enterRoundResultFullscreen() {
+/** 라운드 결과를 전체 화면으로 띄운다. 주어진 시간 뒤에 자동으로 작은
+ *  카드로 돌아간다(내용은 그대로 남는다). */
+function enterRoundResultFullscreen(durationMs = ROUND_RESULT_FULLSCREEN_MS) {
   if (roundResultFullscreenTimer) clearTimeout(roundResultFullscreenTimer);
   roundTransitionEl.classList.add("fullscreen");
   // 배너(.overlay-banner)는 inset:0 + 가운데 정렬이라 전체 화면 결과의
@@ -612,7 +650,11 @@ function enterRoundResultFullscreen() {
   // 두 줄을 가려 양쪽 다 못 읽는 상태가 나왔다. 전체 화면 동안에는 배너를
   // 아래쪽으로 내리고 작게 줄인다(내용은 유지).
   document.body.classList.add("round-result-open");
-  roundResultFullscreenTimer = setTimeout(exitRoundResultFullscreen, ROUND_RESULT_FULLSCREEN_MS);
+  roundResultFullscreenTimer = setTimeout(() => {
+    roundResultFullscreenTimer = null;
+    roundTransitionEl.classList.remove("fullscreen");
+    document.body.classList.remove("round-result-open");
+  }, durationMs);
 }
 
 function renderSurvivorPanel(data) {
@@ -678,6 +720,66 @@ function renderEntryPanel() {
         </div>`
     )
     .join("");
+  return true;
+}
+
+/** "어느 팀을 골랐으면 몇 점?" 화면(사용자 요청). 라운드 결과 다음에
+ *  이어서 전체 화면으로 띄운다. 서버가 채점 직후 내려준 targets를 그대로
+ *  등수 순으로 그린다. */
+function renderTargetPointsPanel(data) {
+  const targets = (data && data.targets) || [];
+  if (!targets.length) return false;
+  const roundLabel = data.round === 3 ? "결선" : `ROUND ${data.round}`;
+  // 조사가 다르다 -- "팀을" / "카트를". 한 문자열로 뭉치면 "카트을"이 된다.
+  const what = data.round === 3 ? "카트를" : "팀을";
+  const max = Math.max(...targets.map((t) => t.points), 1);
+  roundTransitionTitleEl.textContent = `${roundLabel} 예측 결과 — 어느 ${what} 골랐으면?`;
+  roundTransitionSummaryEl.textContent =
+    "고른 대상의 등수에 따라 받은 점수입니다 (직접 고른 경우 표시된 점수)";
+  roundTransitionBodyEl.innerHTML = targets
+    .map((t) => {
+      const color = data.round === 3 ? "#ffd166" : colorForDepartment(t.name);
+      const medal = t.rank === 1 ? "🥇" : t.rank === 2 ? "🥈" : t.rank === 3 ? "🥉" : "";
+      const minority =
+        t.minority > 1.05 ? ` <span class="rt-rate">💎×${t.minority}</span>` : "";
+      return `
+        <div class="rt-row">
+          <span class="rt-name"><span class="rt-swatch" style="background:${color}"></span>${medal}${t.name}</span>
+          <div class="rt-track"><div class="rt-fill" style="width:${(t.points / max) * 100}%; background:${color}"></div></div>
+          <span class="rt-count">+${t.manual_points}점${minority}<br /><span class="rt-sub">${t.chosen}명 선택</span></span>
+        </div>`;
+    })
+    .join("");
+  return true;
+}
+
+/** 결선 최종 등수 화면. 당첨자 발표 **전에** 먼저 띄워서, 레이스 결과 자체를
+ *  볼 시간을 준다(사용자 요청: "3라운드 결과 화면 보여주고, 텀을 준 다음에
+ *  최종 당첨자 화면"). */
+function renderFinalRaceResultPanel(draw) {
+  const order = (draw && draw.ranking) || [];
+  const finalists = (draw && draw.round_pass_ids && draw.round_pass_ids["2"]) ||
+    (draw && draw.round_pass_ids && draw.round_pass_ids[2]) || [];
+  const finalistSet = new Set(finalists);
+  const ranked = order.filter((pid) => finalistSet.has(pid));
+  if (!ranked.length) return false;
+  // 사번(P0171)이 아니라 이름으로 보여준다 -- 시상대와 같은 표기라야
+  // 관객이 "방금 그 사람"으로 이어서 읽는다.
+  const nameById = {};
+  const participants = (draw.snapshot && draw.snapshot.participants) || [];
+  for (const p of participants) nameById[p.id] = participantLabel(p);
+  roundTransitionTitleEl.textContent = "🏁 결선 결과 — 최종 등수";
+  roundTransitionSummaryEl.textContent =
+    "레이스는 여기서 끝. 실제 경품 당첨자는 예측 리더보드로 곧 발표됩니다";
+  roundTransitionBodyEl.innerHTML = `<ol class="rt-finalists">${ranked
+    .map((pid, i) => {
+      const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : "";
+      return `<li class="rt-finalist${i < 3 ? " rt-top" : ""}">
+        <span class="rt-rank">${medal || i + 1}</span>
+        <span class="rt-name">${nameById[pid] || pid}</span>
+      </li>`;
+    })
+    .join("")}</ol>`;
   return true;
 }
 
@@ -2586,8 +2688,20 @@ function render(session) {
         // 끝났다 -- 실제 당첨자가 확정될 때까지는 시상대를 띄우지 않는다
         // (막판까지 리더보드가 뒤집힐 수 있다는 게 이 설계의 핵심이라,
         // 레이스 리빌 순간과 최종 당첨자 발표 순간을 일부러 분리했다).
+        //
+        // 그 사이(서버가 FINAL_RESULT_HOLD_SECONDS만큼 텀을 준다)에는
+        // **결선 최종 등수**를 전체 화면으로 보여준다(사용자 요청: "3라운드
+        // 결과 화면 보여주고, 텀을 준 다음에 최종 당첨자 화면"). 예전에는
+        // 이 구간이 그냥 빈 화면이라 결선 결과를 볼 새가 없었다.
+        if (!finalRaceResultShown && renderFinalRaceResultPanel(latest)) {
+          finalRaceResultShown = true;
+          roundTransitionEl.classList.remove("hidden");
+          enterRoundResultFullscreen(FINAL_RACE_RESULT_MS);
+        }
         return;
       }
+      // 당첨자가 확정되면 결선 등수 화면을 걷고 시상대로 넘어간다.
+      hideRoundTransition();
       if (lastFinalShownFor !== "racing-final") {
         lastFinalShownFor = "racing-final";
         const nameById = Object.fromEntries(
@@ -2698,6 +2812,7 @@ const ws = connectWS((data) => {
     cutoffFirstCrossAt = null;
     cutoffFrozenCount = null;
     finalFlagShown = false;
+    finalRaceResultShown = false;
     if (cutoffPanelEl) cutoffPanelEl.classList.add("hidden");
     cancelPendingMcLines({ clearCaption: true });
     liveMcSuppressed = false;
@@ -2736,6 +2851,10 @@ const ws = connectWS((data) => {
     SFX.pass();
     FX.ring(window.innerWidth / 2, window.innerHeight * 0.5, "#ff9f45", 220);
     showMcLine("prediction_result", { round: data.round });
+    // 라운드 결과 전체 화면이 끝나면 이어서 "어느 팀을 골랐으면 몇 점?"을
+    // 같은 자리에 띄운다(사용자 요청). R1·R2는 라운드 결과 다음 순서로,
+    // 결선(R3)은 최종 등수 화면 다음 순서로 들어온다.
+    queueTargetPointsPanel(data);
   }
   if (data.type === "prediction_leaderboard") {
     renderPredictionLeaderboard(data.top);

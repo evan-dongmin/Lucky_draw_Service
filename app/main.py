@@ -134,6 +134,9 @@ active_race_tasks: dict[str, asyncio.Task] = {}
 prediction_engine = PredictionEngine()
 predict_tokens: dict[str, str] = {}  # 기기 토큰 -> participant_id (예측 게임/캐릭터 선택 공용 온보딩)
 fast_forward_requests: set[str] = set()  # 조기 종료가 요청된 session_id 집합 (레이스 구간 전용)
+# 지금 진행 중인 레이스 구간의 라운드 번호(레이스 구간이 아니면 None).
+# 조기 종료 요청을 "레이스가 실제로 돌고 있을 때"로 제한하는 데 쓴다.
+active_race_round: int | None = None
 character_choices: dict[str, str] = {}  # participant_id -> character_id (선택 안 하면 부서 기반 폴백)
 prediction_snapshot_path = PREDICTION_SNAPSHOT_PATH
 character_snapshot_path = CHARACTER_SNAPSHOT_PATH
@@ -193,6 +196,14 @@ RACE_TICK_INTERVAL_SECONDS = 0.3
 # duration_seconds * 0.25 상한이 함께 걸려 있어 짧은 구간에서는 자동으로
 # 줄어든다.
 RACE_COUNTDOWN_SECONDS = 5.2
+
+# 결선 결과(최종 등수)를 보여주고 나서 경품 당첨자 발표로 넘어가기까지의 텀
+# (사용자 요청: "3라운드 결과 화면 보여주고, 텀을 준 다음에 최종 당첨자
+# 화면"). 예전에는 revealed 직후 곧바로 prize_winners가 나가서 결선 등수를
+# 볼 새도 없이 시상대가 덮어버렸다. final_announce 구간 **안에서** 빼 쓰므로
+# 런북 총 시간에는 영향이 없고, 구간이 짧은 세션에서는 발표 자체가 사라지지
+# 않도록 구간의 40%로 제한한다.
+FINAL_RESULT_HOLD_SECONDS = 9.0
 
 
 # ---------------------------------------------------------------------------
@@ -605,7 +616,7 @@ async def _run_race_phase(
     # 좁힌다고 해서 당첨자가 바뀔 수는 없다 -- 경품 수는 항상 채워져야 하고,
     # 늦게 들어온 카트를 떨어뜨려도 그 자리를 채울 사람은 더 뒤에 있는
     # 카트뿐이기 때문이다. 즉 R3의 창은 "언제 끝낼지"를 정하는 연출 규칙이다.
-    r3_finish_deadline: float | None = None
+    # (실제 마감 시각은 아래 _tick_race_loop이 들고 있다.)
 
     # **이 라운드에 의미 있는 결승선이 있는가.** 전원 통과(pass_line=-0.01)면
     # 출발하자마자 모든 카트가 "통과"로 잡히므로 컷오프·카운트다운·화면
@@ -622,6 +633,24 @@ async def _run_race_phase(
 
     loop = asyncio.get_running_loop()
     start = loop.time()
+    global active_race_round
+    active_race_round = round_index
+    try:
+        await _tick_race_loop(
+            draw, round_index, population, line, pass_count, denom_sets,
+            countdown, race_seconds, cutoff_window_seconds, round_has_finish_line,
+            obstacles, session_id, loop, start,
+        )
+    finally:
+        active_race_round = None
+
+
+async def _tick_race_loop(
+    draw, round_index, population, line, pass_count, denom_sets,
+    countdown, race_seconds, cutoff_window_seconds, round_has_finish_line,
+    obstacles, session_id, loop, start,
+) -> None:
+    r3_finish_deadline: float | None = None
     while True:
         elapsed = loop.time() - start
         ratio = min(max((elapsed - countdown) / race_seconds, 0.0), 1.0)
@@ -859,7 +888,16 @@ async def _score_and_open_next(
     if next_candidates is not None:
         prediction_engine.open_round(next_round, next_candidates)
     save_prediction_snapshot()
-    await hub.broadcast({"type": "prediction_result", "round": scored_round})
+    await hub.broadcast(
+        {
+            "type": "prediction_result",
+            "round": scored_round,
+            # 대상별 "고르면 몇 점이었나" 요약. 무대가 라운드 결과 다음에
+            # 전체 화면으로 띄운다(사용자 요청: "선택한 팀별 얻은 포인트
+            # 화면도 보여 줘"). 순수 조회값이라 채점에는 관여하지 않는다.
+            "targets": prediction_engine.round_target_summary(scored_round, ranked_targets),
+        }
+    )
     await hub.broadcast(await _leaderboard_payload())
 
     if next_round is not None:
@@ -942,6 +980,12 @@ async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: f
                     # 시점엔 아직 순위가 안 정해져 있다(막판까지 리더보드가
                     # 계속 뒤집힐 수 있다는 게 이 설계의 핵심 재미 포인트).
                     await _score_and_open_next(session, draw, 3, None)
+                # 결선 결과(등수)를 충분히 보여준 뒤에 당첨자 발표로 넘어간다
+                # (사용자 요청: "3라운드 결과 화면 보여주고, 텀을 준 다음에
+                # 최종 당첨자 화면"). 이 시간은 구간 전체 길이 안에서 빼 쓰므로
+                # 런북 총 시간에는 영향이 없다.
+                hold = min(FINAL_RESULT_HOLD_SECONDS, seg.duration_seconds * 0.4)
+                await asyncio.sleep(hold)
                 prize_ids, prize_basis, prize_scores = _compute_prize_winners(session, draw)
                 async with state_lock:
                     draw.prize_winners = prize_ids
@@ -956,7 +1000,8 @@ async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: f
                         "scores": prize_scores,
                     }
                 )
-                await asyncio.sleep(seg.duration_seconds)
+                # 결과 발표 앞에서 쓴 hold만큼 빼서 구간 전체 길이를 지킨다.
+                await asyncio.sleep(max(0.0, seg.duration_seconds - hold))
             else:
                 await asyncio.sleep(seg.duration_seconds)
 
@@ -1020,6 +1065,16 @@ async def racing_fast_forward() -> dict[str, Any]:
         raise HTTPException(status_code=400, detail="레이싱 모드 세션이 아닙니다.")
     if session.session_id not in active_race_tasks or active_race_tasks[session.session_id].done():
         raise HTTPException(status_code=400, detail="진행 중인 레이스가 없습니다.")
+    # **지금 실제로 레이스 구간인지**까지 확인한다. 런북이 살아 있다는 것만
+    # 보고 받아주면, 결과 발표·선택 창처럼 레이스가 아닌 구간에서 누른 요청이
+    # 그대로 남아 있다가 **다음 라운드 레이스를 시작하자마자 끝내버린다**
+    # (진행자는 "이번 구간만 건너뛴다"고 생각하는데 다음 라운드가 통째로
+    # 사라진다). 요청은 눌린 그 순간의 레이스에만 적용돼야 한다.
+    if active_race_round is None:
+        raise HTTPException(
+            status_code=400,
+            detail="지금은 레이스 구간이 아닙니다. 레이스가 진행 중일 때만 사용할 수 있습니다.",
+        )
     fast_forward_requests.add(session.session_id)
     return {"requested": True}
 

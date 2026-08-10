@@ -553,6 +553,17 @@ html, body {
   font-size: 1.45rem;
 }
 
+/* "N명 선택" 같은 부가 정보 -- 점수 아래 작게 붙는다. */
+.rt-sub {
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: #8b95a5;
+}
+
+.round-transition.fullscreen .rt-sub {
+  font-size: 0.95rem;
+}
+
 .round-transition.fullscreen .rt-track {
   height: 1.5rem;
 }
@@ -570,6 +581,13 @@ html, body {
 .round-transition.fullscreen .rt-rank {
   font-size: 1.7rem;
   min-width: 2.4rem;
+}
+
+/* 전체 화면에서는 글자가 1.45rem으로 커지므로, 기본 15rem 칸에는
+   "정도윤 (마케팅팀)" 같은 이름이 잘린다(실제로 잘렸다). 칸을 넓힌다. */
+.round-transition.fullscreen .rt-finalists {
+  grid-template-columns: repeat(auto-fill, minmax(21rem, 1fr));
+  gap: 0.5rem 1rem;
 }
 
 .round-transition-title {

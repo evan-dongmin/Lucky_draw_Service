@@ -731,3 +731,52 @@ def test_no_minority_flag_before_anyone_chooses():
     stats = engine.live_stats(1, candidates=["A", "B"])
     assert stats["chosen"] == 0
     assert not any(stats["is_minority"].values())
+
+
+def test_round_target_summary_reports_points_and_pick_counts():
+    """무대의 "어느 팀을 골랐으면 몇 점?" 화면에 쓰는 요약(사용자 요청).
+
+    등수 순으로, 대상별 획득 점수와 직접 고른 인원을 낸다. 순수 조회
+    함수라 채점 결과를 바꾸지 않아야 한다."""
+    engine = PredictionEngine()
+    engine.enroll_all({f"P{i}": "A팀" for i in range(6)})
+    engine.open_round(1, ["A팀", "B팀", "C팀"])
+    engine.set_target("P0", 1, "A팀")
+    engine.set_target("P1", 1, "A팀")
+    engine.set_target("P2", 1, "B팀")
+    # P3~P5는 미선택 -> 자동 배정(집계에서 빠진다)
+    engine.lock_round(1, "seed")
+    engine.score_round(1, ["B팀", "A팀", "C팀"])  # B팀이 통과율 1위
+
+    before = {pid: card.score for pid, card in engine.cards.items()}
+    rows = engine.round_target_summary(1, ["B팀", "A팀", "C팀"])
+    assert {pid: card.score for pid, card in engine.cards.items()} == before, "조회가 점수를 바꿨습니다"
+
+    assert [r["name"] for r in rows] == ["B팀", "A팀", "C팀"]
+    assert [r["rank"] for r in rows] == [1, 2, 3]
+    # 직접 고른 인원만 센다(자동 배정 3명은 제외)
+    assert {r["name"]: r["chosen"] for r in rows} == {"B팀": 1, "A팀": 2, "C팀": 0}
+    # 등수가 낮을수록 점수도 낮다
+    assert rows[0]["points"] > rows[1]["points"] > rows[2]["points"]
+    # 1위만 소수파 배수가 붙는다(B팀은 3명 중 1명만 골라 소수파)
+    assert rows[0]["minority"] > 1.0
+    assert rows[1]["minority"] == 1.0
+    # 직접 선택 보너스가 반영된 값도 함께 낸다
+    for row in rows:
+        assert row["manual_points"] == int(row["points"] * MANUAL_PREDICT_MULTIPLIER)
+
+
+def test_round_target_summary_matches_what_a_manual_picker_actually_earned():
+    """화면에 띄운 숫자와 실제 지급액이 어긋나면 안 된다 -- 참가자가 그
+    숫자를 보고 "내가 저만큼 받았구나"라고 읽기 때문이다."""
+    engine = PredictionEngine()
+    engine.enroll_all({"solo": "A팀", "other": "B팀"})
+    engine.open_round(1, ["A팀", "B팀"])
+    engine.set_target("solo", 1, "A팀")
+    engine.set_target("other", 1, "A팀")
+    engine.lock_round(1, "seed")
+    engine.score_round(1, ["A팀", "B팀"])  # A팀 1위 -- 둘 다 적중
+
+    rows = {r["name"]: r for r in engine.round_target_summary(1, ["A팀", "B팀"])}
+    # 카트 능력을 안 고른 참가자라면 표시값과 실제 지급액이 정확히 같아야 한다
+    assert engine.cards["solo"].rewards[1]["predict"] == rows["A팀"]["manual_points"]

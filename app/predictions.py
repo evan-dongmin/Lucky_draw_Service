@@ -440,6 +440,48 @@ class PredictionEngine:
 
     # -- 조회 ---------------------------------------------------------------
 
+    def round_target_summary(
+        self, round_index: int, ranked_targets: list[str]
+    ) -> list[dict[str, Any]]:
+        """채점이 끝난 라운드를 **대상별로** 요약한다(무대 발표 화면 전용).
+
+        "어느 팀을 골랐으면 몇 점을 받았나"를 등수 순으로 보여주기 위한 값이라
+        추첨·채점에는 전혀 관여하지 않는 순수 조회 함수다. `score_round`가
+        끝난 뒤에 호출해야 소수파 배수(`round_share`)가 채워져 있다.
+
+        `points`는 §5-1 점수표와 같은 기준값(카트 능력·직접 선택 보너스를
+        빼고, 소수파 배수만 반영)이고, `manual_points`는 여기에 직접 선택
+        보너스까지 붙은 값이다. 개인별 실제 획득액은 고른 카트 능력에 따라
+        더 달라지므로 화면에는 "기준"임을 함께 밝혀야 한다.
+        """
+        share = self.round_share.get(round_index, {})
+        weight = ROUND_WEIGHTS[round_index]
+        counts: dict[str, int] = {}
+        for card in self.cards.values():
+            target = card.target[round_index]
+            if target is None or card.is_auto[round_index]:
+                continue
+            counts[target] = counts.get(target, 0) + 1
+
+        rows: list[dict[str, Any]] = []
+        for index, name in enumerate(ranked_targets):
+            rank = index + 1
+            minority = 1.0
+            if rank == 1 and share:
+                minority = 1 + (1 - share.get(name, 0.0))
+            points = int(ROUND_BASE_POINTS * weight * rank_ratio(rank) * minority)
+            rows.append(
+                {
+                    "name": name,
+                    "rank": rank,
+                    "chosen": counts.get(name, 0),
+                    "points": points,
+                    "manual_points": int(points * MANUAL_PREDICT_MULTIPLIER),
+                    "minority": round(minority, 2),
+                }
+            )
+        return rows
+
     def leaderboard(self, top_n: int = 10) -> list[PredictionCard]:
         ordered = sorted(self.cards.values(), key=lambda c: (-c.score, c.participant_id))
         return ordered[:top_n]
