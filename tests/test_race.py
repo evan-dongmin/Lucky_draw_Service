@@ -296,6 +296,71 @@ def test_position_at_without_seed_is_unaffected_by_obstacles():
     assert pos == pos_explicit_none
 
 
+def _ratio_when_kart_reaches(
+    seed, participant_id, round_index, rank_index, total, pass_line_value=None
+):
+    """이 카트가 **자기가 맞는 첫 장애물 자리에 실제로 도달하는**
+    progress_ratio를 스캔으로 찾는다.
+
+    장애물이 놓인 곳은 트랙 '위치'인데 감속 구간은 '진행률'로 표현되므로,
+    카트마다 pace가 달라 둘이 일치하지 않는다. 테스트가 at_fraction을 그대로
+    진행률로 쓰면 엉뚱한 시점을 보게 된다(실제로 그렇게 깨졌다)."""
+    hits = kart_hits(seed, participant_id, round_index)
+    if not hits:
+        return None
+    line = race.hazard_line(pass_line_value)
+    at_position = min(h["at_fraction"] for h in hits) * line
+    if at_position >= race.target_position(rank_index, total):
+        return None  # 이 카트는 저 자리까지 도달하지 못한다
+    for step in range(1, 4001):
+        ratio = step / 4000
+        position = position_at(
+            rank_index,
+            total,
+            ratio,
+            participant_id,
+            round_index,
+            seed=seed,
+            pass_line_value=pass_line_value,
+        )
+        if position >= at_position:
+            return ratio
+    return None
+
+
+def test_obstacle_slowdown_starts_exactly_when_the_kart_reaches_the_obstacle():
+    """감속은 **카트가 장애물에 닿는 순간** 시작돼야 한다.
+
+    장애물은 트랙 '위치'에 놓이는데 감속 구간을 '진행률'로 잡으면, 카트마다
+    pace가 달라 둘이 어긋난다. 실측된 사례: 목표 0.807 / pace 1.26인 카트는
+    위치 0.608의 장애물에 progress_ratio 0.804에서 닿는데 감속은 0.608부터
+    걸렸다 -- 95초 라운드에서 약 19초 어긋난 셈이라, 화면에서는 장애물을 그냥
+    지나치거나 엉뚱한 곳에서 느려지는 것으로 보였다(사용자 피드백: "장애물
+    부딪힌 후 효과가 좀 늦게 나타나네").
+    """
+    seed, line, total = "diag", 0.68, 250
+    checked = 0
+    for rank_index in range(0, total, 7):
+        pid = f"P{rank_index:04d}"
+        reach = _ratio_when_kart_reaches(seed, pid, 1, rank_index, total, line)
+        if reach is None:
+            continue
+        target = target_position(rank_index, total)
+        # 효과가 처음 켜지는 순간을 같은 해상도로 찾는다
+        fire = None
+        for step in range(1, 4001):
+            ratio = step / 4000
+            if race.active_effect_at(seed, pid, 1, ratio, line, target=target):
+                fire = ratio
+                break
+        assert fire is not None, f"{pid}: 도달하는데도 효과가 전혀 안 걸린다"
+        assert abs(fire - reach) <= 0.001, (
+            f"{pid}: 장애물 도달 {reach:.4f} vs 감속 시작 {fire:.4f} -- 어긋납니다"
+        )
+        checked += 1
+    assert checked >= 5, "표본이 너무 적어 검증이 무의미합니다"
+
+
 def test_position_at_slows_the_kart_down_while_an_obstacle_is_in_effect():
     """장애물에 맞으면 **진행 속도가 실제로 떨어져야** 한다(사용자 요청:
     "맞으면 실질적 패널티가 없어 보여. 속도가 느려진다던가, 잠시 멈춘다던가").
@@ -311,18 +376,17 @@ def test_position_at_slows_the_kart_down_while_an_obstacle_is_in_effect():
     assert hits, "이 테스트는 실제로 장애물에 맞는 조합을 전제로 한다"
 
     total, rank_index = 250, 10
-    hit = min(hits, key=lambda h: h["at_fraction"])
-    at_ratio = hit["at_fraction"]  # pass_line_value 미지정 = 트랙 전체 기준
-    duration = race.OBSTACLE_IMPACT[hit["type"]]["duration"]
+    hit_ratio = _ratio_when_kart_reaches(seed, pid, round_index, rank_index, total)
+    assert hit_ratio is not None, "이 카트는 장애물 자리에 도달해야 한다"
 
     def speed_around(ratio: float) -> float:
-        step = 0.004
+        step = 0.002
         lo = position_at(rank_index, total, ratio, pid, round_index, seed=seed)
         hi = position_at(rank_index, total, ratio + step, pid, round_index, seed=seed)
         return (hi - lo) / step
 
-    before = speed_around(max(0.0, at_ratio - 0.02))
-    during = speed_around(at_ratio + duration * 0.3)
+    before = speed_around(max(0.0, hit_ratio - 0.03))
+    during = speed_around(hit_ratio + 0.002)
 
     assert during < before * 0.75, (
         f"장애물에 맞았는데 속도가 거의 안 줄었습니다: {before:.3f} -> {during:.3f}"
@@ -378,10 +442,11 @@ def test_position_at_with_seed_never_goes_negative():
 def test_compute_effects_only_lists_karts_currently_hit():
     seed = "test-seed-1"
     ranking = [f"P{i:03d}" for i in range(30)]
-    at_ratio = kart_hits(seed, "P000", 1)[0]["at_fraction"]
+    hit_ratio = _ratio_when_kart_reaches(seed, "P000", 1, 0, len(ranking))
+    assert hit_ratio is not None
 
-    before = compute_effects(ranking, max(0.0, at_ratio - 0.05), round_index=1, seed=seed)
-    after = compute_effects(ranking, min(1.0, at_ratio + 0.01), round_index=1, seed=seed)
+    before = compute_effects(ranking, max(0.0, hit_ratio - 0.05), round_index=1, seed=seed)
+    after = compute_effects(ranking, min(1.0, hit_ratio + 0.005), round_index=1, seed=seed)
 
     assert "P000" not in before
     assert "P000" in after

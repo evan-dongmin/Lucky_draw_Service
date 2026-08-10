@@ -653,6 +653,10 @@ async def _run_race_phase(
             # 이 구간에는 속도선·엔진음을 올리지 않고 그리드 정지 상태로
             # 보여주는 데 쓴다.
             "countdown": elapsed < countdown,
+            # 무대 카메라 전용 기준점. 실제 선두를 따라가면 선두가 장애물에
+            # 맞아 멈출 때 카메라도 멈춰 화면 전체가 얼어붙는다(맞지도 않은
+            # 카트까지 느려 보인다). 감속을 뺀 곡선이라 항상 매끄럽게 흐른다.
+            "camera_anchor": race.camera_anchor(population, ratio, round_index),
             # 결승선 컷오프(§12-8): 순위 기준 후보군 크기와 창 길이(초).
             # 클라이언트가 "1등 결승 통과" 순간을 스스로 감지해
             # (positions[pid] >= pass_line) 카운트다운을 띄우고, 그 사이

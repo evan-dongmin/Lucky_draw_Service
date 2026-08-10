@@ -2097,12 +2097,14 @@ function drawFrame(positions, tick) {
   // 일치해서, 화면이 확대된 R2/R3에서도 리더가 프레임 밖으로 사라지는
   // 일이 없다.
   const { lut, length: trackLength, halfWidth } = getTrackLUT(tick.round);
-  // 카메라는 **장애물 충돌·잔물결 같은 연출 오프셋을 뺀 "실제" 선두 위치**를
-  // 따라간다(사용자 피드백: "장애물에 걸릴 때 카메라 줌이 어색하다").
-  // 예전에는 리더가 장애물에 맞아 뒤로 밀리면 카메라도 같이 홱 끌려가
-  // 화면 전체가 덜컥거렸다. 여기에 지수 평활(computeCamera의 camState)까지
-  // 걸어서, 충돌이 나든 말든 카메라는 선두 집단을 일정하게 따라간다.
-  const leaderPoint = trackPointAt(warpProgress(leaderPos, tick.pass_line), tick.round);
+  // 카메라는 **장애물 감속을 뺀** 기준점(camera_anchor)을 따라간다.
+  // 실제 선두 위치를 따라가면 선두가 폭탄에 맞아 멈추는 순간 카메라도 같이
+  // 멈춰 **화면 전체가 얼어붙고**, 맞지도 않은 나머지 카트까지 함께 느려진
+  // 것처럼 보인다(사용자 피드백). 장애물이 순수 연출이던 시절에는 서버
+  // 위치에 감속이 없어 문제가 없었지만, 감속을 실제 위치에 반영하면서
+  // 드러났다. 서버가 안 내려주는 구버전 세션에서는 예전처럼 선두를 따른다.
+  const anchorPos = tick.camera_anchor !== undefined ? tick.camera_anchor : leaderPos;
+  const leaderPoint = trackPointAt(warpProgress(anchorPos, tick.pass_line), tick.round);
   const camera = computeCamera(leaderPoint, tick.round, W, H, tick.progress_ratio);
 
   raceCtx.save();
