@@ -118,40 +118,96 @@ def _apply_cutoff_window(
     - `race_seconds`가 없으면(런북 밖에서 순위만 보고 싶은 호출 -- 대부분의
       기존 테스트) 컷오프를 건너뛰고 candidates를 그대로 돌려준다(예전
       "순위만으로 통과" 동작과 100% 동일).
-    - 컷오프를 적용한 결과가 `min_survivors`보다 적으면, 순위 순으로
-      모자란 만큼 추가로 채운다 -- 다음 라운드/최종 당첨자가 텅 비는
-      사고를 방지하는 안전장치다(시간 컷오프가 "추가 탈락"은 만들 수
-      있어도 "정원 미달"은 절대 만들지 않는다).
+    - **창은 "최소 window_seconds, 단 정원(min_survivors)이 찰 때까지"다.**
+      아래 `cutoff_close_ratio` 참고 -- 통과자는 예외 없이 "마감 전에 실제로
+      결승선을 넘은 카트"뿐이다.
     - 반환 순서는 항상 `candidates`의 원래 순위 순서를 유지한다.
     """
     if race_seconds is None or not candidates:
         return list(candidates)
 
-    total = len(population)
-    rank_index_of = {pid: i for i, pid in enumerate(population)}
-    crossing: dict[str, float] = {}
-    for pid in candidates:
-        ratio = race.crossing_ratio(rank_index_of[pid], total, pass_line_value, pid, round_index, seed)
-        crossing[pid] = ratio if ratio is not None else float("inf")
-
-    first_ratio = min(crossing.values())
-    if first_ratio == float("inf"):
-        # 극단적인 경우(후보 전원이 결승선에 못 미침) -- 컷오프를 적용할
-        # 기준점 자체가 없으므로 순위 그대로 반환한다.
+    crossing = crossing_ratios(candidates, population, seed, round_index, pass_line_value)
+    close_ratio = cutoff_close_ratio(
+        crossing, race_seconds, window_seconds, min_survivors
+    )
+    if close_ratio is None:
+        # 후보 전원이 결승선에 못 미침 -- 컷오프 기준점 자체가 없다.
         return list(candidates)
 
-    cutoff_ratio = first_ratio + window_seconds / race_seconds
-    within_window = {pid for pid in candidates if crossing[pid] <= cutoff_ratio}
+    within_window = [pid for pid in candidates if crossing[pid] <= close_ratio]
+    if len(within_window) >= min_survivors:
+        return within_window
 
-    if len(within_window) < min_survivors:
-        # 컷오프 창이 너무 좁아 정원을 못 채운다 -- 순위 순으로 모자란
-        # 만큼 채운다(시간 조건을 못 맞춰도 순위가 높으면 구제된다).
-        for pid in candidates:
-            if len(within_window) >= min_survivors:
-                break
-            within_window.add(pid)
+    # 여기까지 왔다는 건 "결승선에 아예 못 닿는 카트"(crossing=inf)가 섞여
+    # 정원을 못 채운다는 뜻이다. 다음 라운드가 텅 비는 사고만은 막는다.
+    rescued = set(within_window)
+    for pid in candidates:
+        if len(rescued) >= min_survivors:
+            break
+        rescued.add(pid)
+    return [pid for pid in candidates if pid in rescued]
 
-    return [pid for pid in candidates if pid in within_window]
+
+def crossing_ratios(
+    candidates: list[str],
+    population: list[str],
+    seed: str,
+    round_index: int,
+    pass_line_value: float,
+) -> dict[str, float]:
+    """후보별 "결승선을 넘는 진행률". 끝까지 못 넘으면 inf."""
+    total = len(population)
+    rank_index_of = {pid: i for i, pid in enumerate(population)}
+    out: dict[str, float] = {}
+    for pid in candidates:
+        ratio = race.crossing_ratio(
+            rank_index_of[pid], total, pass_line_value, pid, round_index, seed
+        )
+        out[pid] = ratio if ratio is not None else float("inf")
+    return out
+
+
+def cutoff_close_ratio(
+    crossing: dict[str, float],
+    race_seconds: float,
+    window_seconds: float,
+    min_survivors: int,
+) -> float | None:
+    """컷오프 창이 닫히는 진행률(0..1). 후보 전원이 결승선에 못 닿으면 None.
+
+    **"1등 통과 + window_seconds"로 끝내지 않고, 정원(min_survivors)째 카트가
+    통과하는 시점까지 늘린다**(2026-08-11, 사용자 버그 제보).
+
+    예전에는 창을 5초로 딱 끊고, 모자란 인원을 순위 순으로 조용히 채워
+    넣었다. 그래서 화면은 "4대 통과"인데 다음 라운드에는 5대가 올라가는
+    모순이 그대로 보였다. 게다가 이건 예외가 아니라 **기본 동작**이었다 --
+    250명·360초 실측에서 당첨 10명 설정이면 R2 후보 10대 중 실제 통과는
+    약 5대뿐이고 나머지 절반이 전부 구제됐다.
+
+    원인은 결승선 위치다. 결승선은 "F등 카트가 ratio=1.0에 정확히 닿는
+    지점"에 놓이므로, **꼴찌 후보는 레이스가 끝나는 순간에야 선을 넘는다.**
+    1등이 넘고 5초 안에 F대가 다 들어오는 상황은 애초에 성립할 수 없다.
+
+    창을 늘리면 "통과한 카트만 진출한다"는 규칙이 화면과 결과 양쪽에서
+    동시에 참이 된다. 정원이 후보 수와 같은 설정(당첨 10명 = 후보 10대)에서는
+    창이 레이스 끝까지 늘어나 아무도 탈락하지 않는데, 이는 숨겨야 할 결함이
+    아니라 **사실 그대로**다(그 설정에선 원래 아무도 떨어질 수 없다).
+    """
+    if not crossing:
+        return None
+    finite = sorted(r for r in crossing.values() if r != float("inf"))
+    if not finite:
+        return None
+
+    close = finite[0] + window_seconds / race_seconds
+    need = min(min_survivors, len(finite))
+    if need > 0:
+        # 정원째 카트가 들어올 때까지 기다린다(이미 그 전에 찼으면 그대로).
+        close = max(close, finite[need - 1])
+    # 진행률은 1.0을 넘지 않는다. 안 자르면 무대 카운트다운이 영영 0에
+    # 닿지 않아 "🔒 통과 마감" 상태가 나오지 않는다(레이스가 먼저 끝난다).
+    # 마지막 순간에 선을 넘는 카트는 `<=` 비교라 그대로 통과로 잡힌다.
+    return min(close, 1.0)
 
 
 def resolve_finalist_count(draw_count: int) -> int:

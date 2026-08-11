@@ -35,7 +35,13 @@ SITUATION_TAGS = (
     "round_pass_announce",
     "elimination",
     "prediction_open",
-    "ability_trigger",
+    # 경기 상황 실황(2026-08-11, 사용자 요청). 예전에는 추월이 나면 그 팀의
+    # **카트 특수능력 이름**을 불렀는데("{team}의 로켓 대시가 발동합니다!"),
+    # 능력은 예측 점수 배수일 뿐 레이스에 영향을 주지 않아 관객이 보는 화면과
+    # 아무 관계가 없었다. 지금은 "누가 1등인가 / 누가 제쳤나 / 1등이 결승선에
+    # 얼마나 가까운가"처럼 **눈에 보이는 것**만 말한다.
+    "overtake",
+    "leader_change",
     "prediction_result",
     "prediction_champion",
     "final_announce",
@@ -82,12 +88,12 @@ STATIC_TEMPLATES: dict[str, list[str]] = {
         "여기서 한 대만 더 제치면 살아남습니다!",
     ],
     "final_lap": [
+        "선두 {name}, 결승선이 코앞입니다!",
+        "1위 {name}이(가) 마지막 코너를 빠져나옵니다!",
+        "파이널 랩! 맨 앞은 {name}입니다!",
+        "{name}, 이대로 들어오면 1등입니다!",
         "마지막 구간입니다! 전력 질주 들어갑니다!",
-        "결승선이 눈앞입니다. 지금부터가 진짜입니다!",
-        "파이널 랩! 여기서 순위가 결정됩니다!",
-        "모두 마지막 힘을 쏟아붓고 있습니다!",
         "이제 되돌릴 수 없습니다. 끝까지 밀어붙입니다!",
-        "{team}, 지금이 마지막 기회입니다!",
     ],
     "photo_finish": [
         "포토 피니시! 눈으로는 판별이 안 됩니다!",
@@ -109,11 +115,20 @@ STATIC_TEMPLATES: dict[str, list[str]] = {
         "치열했던 라운드가 끝났습니다. 통과선을 넘은 카트들, 축하합니다!",
         "여기까지 오신 {pass_count}분, 정말 대단합니다!",
     ],
-    "ability_trigger": [
-        "{team}의 {ability}가(이) 발동합니다!",
-        "{team} 카트에서 {ability} 이펙트가 터져 나옵니다!",
-        "지금 {team}이(가) {ability}로 분위기를 바꿉니다!",
-        "{ability}! {team}이(가) 순간적으로 치고 나갑니다!",
+    "overtake": [
+        "{name} 카트가 순식간에 {count}대를 제쳤습니다!",
+        "{name}, 안쪽을 파고들며 앞차를 넘어섭니다!",
+        "지금 {name}이(가) 무섭게 치고 올라옵니다!",
+        "{name} 카트, 한 번에 {count}계단 점프했습니다!",
+        "{team}의 {name}, 여기서 승부를 겁니다!",
+        "{name}이(가) 앞차를 따라잡았습니다 -- 넘어섰습니다!",
+    ],
+    "leader_change": [
+        "선두가 바뀌었습니다! 지금 1위는 {name}입니다!",
+        "{name}이(가) 마침내 선두로 나섰습니다!",
+        "1위 자리를 {name}이(가) 빼앗았습니다!",
+        "{team}의 {name}, 드디어 맨 앞입니다!",
+        "선두 교체! {name}이(가) 앞장섭니다!",
     ],
     "prediction_result": [
         "{round}라운드 예측 점수가 반영됐습니다! 폰에서 확인해보세요!",
@@ -159,9 +174,15 @@ STATIC_TEMPLATES: dict[str, list[str]] = {
     ],
 }
 
-# LLM에게 허용하는 치환 슬롯(익명 토큰만) -- 실명/사번은 여기 포함되지 않는다.
+# LLM에게 허용하는 치환 슬롯.
+#
+# **여기 있는 건 슬롯 이름일 뿐, 실제 값은 LLM에 전송되지 않는다** --
+# _build_prompt이 보내는 것은 상황 태그와 이 슬롯 이름 목록뿐이고, 치환은
+# 전부 서버/화면에서 일어난다. 그래서 `name`을 허용해도 실명이 외부로
+# 나가지 않는다(무대 리더보드가 이미 이름을 띄우고 있기도 하다).
 ALLOWED_PLACEHOLDERS = {
     "team",
+    "name",
     "participant_count",
     "department_count",
     "pass_count",
@@ -169,7 +190,6 @@ ALLOWED_PLACEHOLDERS = {
     "rank",
     "round",
     "count",
-    "ability",
 }
 
 

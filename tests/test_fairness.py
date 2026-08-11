@@ -1,5 +1,6 @@
 import pytest
 
+from app import fairness
 from app.fairness import (
     FairnessError,
     compute_commit,
@@ -244,6 +245,71 @@ def test_cutoff_is_deterministic_same_seed_same_result():
     )
     assert draw1.round_pass_ids == draw2.round_pass_ids
     assert draw1.round_candidate_count == draw2.round_candidate_count
+
+
+def _crossed_before_close(draw, round_index, race_seconds, window, min_survivors):
+    """그 라운드에서 마감 전에 실제로 결승선을 넘은 카트 집합."""
+    import app.fairness as fairness_module
+    from app import race as race_module
+
+    population = draw.ranking if round_index == 1 else draw.round_pass_ids[round_index - 1]
+    candidate_count = draw.round_candidate_count[round_index]
+    candidates = population[:candidate_count]
+    line = race_module.pass_line(candidate_count, len(population))
+    crossing = fairness_module.crossing_ratios(
+        candidates, population, draw.seed, round_index, line
+    )
+    close = fairness_module.cutoff_close_ratio(crossing, race_seconds, window, min_survivors)
+    assert close is not None
+    return {pid for pid in candidates if crossing[pid] <= close}
+
+
+def test_every_advancing_kart_actually_crossed_the_finish_line():
+    """**화면에 뜬 통과 수와 다음 라운드 진출 수는 반드시 같아야 한다**
+    (2026-08-11, 사용자 버그 제보: "2라운드에서 4대만 결승선 통과했다고
+    나왔는데 총 5대가 3라운드 진출").
+
+    예전에는 창을 5초로 딱 끊고 모자란 인원을 순위 순으로 조용히 채웠다.
+    당첨 인원 10명 설정에서는 R2 후보 10대 중 실제 통과가 약 5대뿐이고
+    나머지 절반이 전부 '구제'였다 -- 예외가 아니라 기본 동작이었다.
+    """
+    participants = _participants(250)
+    for draw_count in (1, 3, 5, 8, 10):
+        draw = compute_draw(
+            "s1", participants, draw_count=draw_count, seed=f"no-rescue-{draw_count}",
+            race_r1_seconds=52.1, race_r2_seconds=52.1,
+        )
+        r1_crossed = _crossed_before_close(
+            draw, 1, 52.1, fairness.R1_CUTOFF_WINDOW_SECONDS, draw.finalist_count
+        )
+        assert set(draw.round_pass_ids[1]) == r1_crossed, (
+            f"당첨 {draw_count}명: R1 진출자에 결승선을 안 넘은 카트가 섞였다"
+        )
+
+        r2_population = draw.round_pass_ids[1]
+        r2_crossed = _crossed_before_close(
+            draw, 2, 52.1, fairness.R2_CUTOFF_WINDOW_SECONDS,
+            min(draw_count, len(r2_population)),
+        )
+        assert set(draw.round_pass_ids[2]) == r2_crossed, (
+            f"당첨 {draw_count}명: R3 진출자에 결승선을 안 넘은 카트가 섞였다"
+        )
+
+
+def test_cutoff_close_extends_until_the_quota_is_filled():
+    """마감은 '최소 window초, 단 정원이 찰 때까지'다. 정원째 카트가 5초
+    안에 못 들어오면 창이 그만큼 늘어나야 한다."""
+    crossing = {"a": 0.50, "b": 0.52, "c": 0.80}
+    # 창 5초 / 레이스 50초 = 0.1 -> 기본 마감 0.60. 정원 3명이면 0.80까지 늘어난다.
+    assert fairness.cutoff_close_ratio(crossing, 50.0, 5.0, 2) == pytest.approx(0.60)
+    assert fairness.cutoff_close_ratio(crossing, 50.0, 5.0, 3) == pytest.approx(0.80)
+
+
+def test_cutoff_close_ignores_karts_that_never_reach_the_line():
+    """끝까지 결승선에 못 닿는 카트(inf) 때문에 마감이 무한대가 되면 안 된다."""
+    crossing = {"a": 0.4, "b": float("inf")}
+    close = fairness.cutoff_close_ratio(crossing, 50.0, 5.0, 2)
+    assert close == pytest.approx(0.5)
 
 
 def test_recompute_from_reveal_reproduces_cutoff_via_snapshot():

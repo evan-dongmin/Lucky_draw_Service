@@ -112,6 +112,88 @@ def rank_targets_by_rate(rates: dict[str, float]) -> list[str]:
     return [name for name, _ in sorted(rates.items(), key=lambda kv: (-kv[1], kv[0]))]
 
 
+# ---------------------------------------------------------------------------
+# 동점 처리 (2026-08-11, 사용자 요청)
+#
+# 250명이 고르는 선택지는 R1·R2가 부서 5~8개, R3가 결선 진출자 5~10명뿐이라
+# **동점은 우연이 아니라 매 게임 반드시 생긴다**(실제 게임에서 상위 5명 중
+# 4명이 같은 점수였다). 그런데 예전에는 `participant_id` 오름차순으로 갈랐다 --
+# 사번이 빠른 사람이 경품을 받는다는 뜻이고, 무대에서 설명할 수 없는 기준이다.
+#
+# 이제 "예측을 얼마나 잘 했는가"로 가른다. 배점이 가장 큰 3라운드부터 본다.
+# **획득 점수가 아니라 적중 등수를 쓴다** -- 획득 점수에는 소수파 보너스·카트
+# 능력·직접 선택 배수가 이미 곱해져 있어서 "예측을 잘했나"가 아니라 "부가
+# 요소가 좋았나"를 비교하게 된다.
+# ---------------------------------------------------------------------------
+
+TIEBREAK_ROUNDS = (3, 2, 1)
+_NO_HIT_RANK = 9_999  # 순위 밖(적중 실패)은 항상 뒤로
+
+
+def hit_rank_of(card: "PredictionCard", round_index: int) -> int:
+    """그 라운드에 고른 대상이 실제 몇 등이었나(낮을수록 잘 맞힌 것).
+
+    채점 내역의 `hit_rank`는 순위 밖을 0으로 적어두므로 뒤로 보낸다."""
+    detail = card.rewards.get(round_index) or {}
+    rank = int(detail.get("hit_rank") or 0)
+    return rank if rank > 0 else _NO_HIT_RANK
+
+
+def manual_round_count(card: "PredictionCard") -> int:
+    """직접 고른 라운드 수(자동 배정 제외). 폰을 든 사람을 우대한다."""
+    return sum(1 for r in (1, 2, 3) if card.is_auto.get(r) is False and card.target.get(r))
+
+
+def ranking_key(card: "PredictionCard") -> tuple[Any, ...]:
+    """리더보드 정렬 키. 총점 -> R3 -> R2 -> R1 적중 -> 직접 선택 수 -> 사번.
+
+    마지막 사번은 **완전 동점일 때 순서를 재현 가능하게 만드는 용도**일 뿐이다
+    (같은 입력이면 서버를 재시작해도 같은 순서). 여기까지 왔다는 건 세 라운드
+    예측이 전부 같고 직접 선택 수까지 같다는 뜻이라, 표시상으로는 공동 등수로
+    묶인다(ranked_leaderboard 참고)."""
+    return (
+        -card.score,
+        *(hit_rank_of(card, r) for r in TIEBREAK_ROUNDS),
+        -manual_round_count(card),
+        card.participant_id,
+    )
+
+
+def _tiebreak_notes(ordered: list["PredictionCard"]) -> dict[str, str]:
+    """같은 점수 그룹 안에서 순서를 가른 근거를 사람별 한 줄로 만든다.
+
+    그룹 안에서 **가장 먼저 값이 갈린 기준 하나**만 보여준다. 여러 줄을 띄우면
+    무대에서 읽히지 않는다."""
+    notes: dict[str, str] = {}
+    group: list[PredictionCard] = []
+
+    def flush(members: list[PredictionCard]) -> None:
+        if len(members) < 2:
+            return
+        for round_index in TIEBREAK_ROUNDS:
+            values = [hit_rank_of(c, round_index) for c in members]
+            if len(set(values)) > 1:
+                for card, value in zip(members, values):
+                    hit = "적중 실패" if value == _NO_HIT_RANK else f"적중 {value}등"
+                    notes[card.participant_id] = f"{round_index}R {hit}"
+                return
+        counts = [manual_round_count(c) for c in members]
+        if len(set(counts)) > 1:
+            for card, value in zip(members, counts):
+                notes[card.participant_id] = f"직접 선택 {value}개 라운드"
+            return
+        for card in members:
+            notes[card.participant_id] = "완전 동점"
+
+    for card in ordered:
+        if group and group[0].score != card.score:
+            flush(group)
+            group = []
+        group.append(card)
+    flush(group)
+    return notes
+
+
 def rank_ratio(rank: int | None) -> float:
     """1-based 순위 -> 배점 비율. 순위 밖(None)이면 0."""
     if rank is None or rank < 1:
@@ -483,21 +565,51 @@ class PredictionEngine:
         return rows
 
     def leaderboard(self, top_n: int = 10) -> list[PredictionCard]:
-        ordered = sorted(self.cards.values(), key=lambda c: (-c.score, c.participant_id))
+        ordered = sorted(self.cards.values(), key=ranking_key)
         return ordered[:top_n]
 
     def rank_of(self, participant_id: str) -> int | None:
         """participant_id의 현재 포인트(점수) 순위(1-based). leaderboard()와
-        동일한 정렬 규칙(점수 내림차순, 동점은 id 오름차순)을 써서 상위 N에
-        안 걸린 사람도 정확한 순위를 알 수 있다(사용자 요청: 모바일에서
-        "내 포인트 순위" 표시). 카드가 없으면 None."""
+        동일한 정렬 규칙을 써서 상위 N에 안 걸린 사람도 정확한 순위를 알 수
+        있다(사용자 요청: 모바일에서 "내 포인트 순위" 표시). 카드가 없으면 None."""
         if participant_id not in self.cards:
             return None
-        ordered = sorted(self.cards.values(), key=lambda c: (-c.score, c.participant_id))
+        ordered = sorted(self.cards.values(), key=ranking_key)
         for idx, card in enumerate(ordered, start=1):
             if card.participant_id == participant_id:
                 return idx
         return None
+
+    def ranked_leaderboard(self, top_n: int = 10) -> list[dict[str, Any]]:
+        """시상대·리더보드 표시용. 등수(공동 등수 포함)와 "무엇으로 갈렸는지"를
+        함께 돌려준다(2026-08-11, 사용자 요청).
+
+        - `rank`: 공동 등수를 반영한 1-based 등수. 완전 동점이면 같은 값을
+          갖고, 그다음 사람은 그만큼 건너뛴다(공동 2등이 둘이면 다음은 4등).
+        - `tiebreak_note`: 같은 점수인데 순서가 갈린 경우 그 근거 한 줄.
+          **이걸 안 보여주면 관객이 반드시 의심한다** -- 같은 점수인데 누구는
+          받고 누구는 못 받는 상황이 눈앞에서 벌어지기 때문이다.
+        """
+        ordered = sorted(self.cards.values(), key=ranking_key)[:top_n]
+        notes = _tiebreak_notes(ordered)
+
+        rows: list[dict[str, Any]] = []
+        prev_key: tuple[Any, ...] | None = None
+        rank = 0
+        for idx, card in enumerate(ordered, start=1):
+            key = ranking_key(card)[:-1]  # 사번은 등수 판정에서 뺀다
+            if prev_key is None or key != prev_key:
+                rank = idx  # 표준 경쟁 등수: 동점 다음은 인원수만큼 건너뛴다
+                prev_key = key
+            rows.append(
+                {
+                    "participant_id": card.participant_id,
+                    "score": card.score,
+                    "rank": rank,
+                    "tiebreak_note": notes.get(card.participant_id, ""),
+                }
+            )
+        return rows
 
     # -- 영속화(장애 복구용) ---------------------------------------------
 

@@ -156,7 +156,8 @@ const MC_ENERGY = {
   round_pass_announce: { rate: 1.06, pitch: 1.04 },
   elimination: { rate: 0.94, pitch: 0.96 },
   prediction_open: { rate: 1.06, pitch: 1.04 },
-  ability_trigger: { rate: 1.16, pitch: 1.1 },
+  overtake: { rate: 1.18, pitch: 1.12 },
+  leader_change: { rate: 1.16, pitch: 1.1 },
   prediction_result: { rate: 1.12, pitch: 1.08 },
   prediction_champion: { rate: 1.1, pitch: 1.08 },
   final_announce: { rate: 1.08, pitch: 1.06 },
@@ -847,6 +848,7 @@ function showRoundTransition(kind) {
 }
 
 let currentLeaderDept = null;
+let currentLeaderPid = null; // 지금 1위 카트(선두 교체 멘트용)
 
 function renderDepartmentBars(rates) {
   latestDepartmentRates = rates;
@@ -939,6 +941,7 @@ function abilityForParticipant(pid) {
 const departmentColorCache = new Map();
 const departmentAbilityCache = new Map();
 let currentPidToGroup = {};
+let currentPidToName = {}; // 사번 -> 이름(포지션 타워·MC 멘트용)
 let currentGroupSizes = {}; // 부서명 -> 참가 카트 수(커밋 스냅샷 기준)
 let currentDrawKeyForGroups = null;
 let previousTickPositions = {};
@@ -965,13 +968,12 @@ let crossedRound = null;
 let crossedSoundCount = 0;
 const CROSS_SOUND_BUDGET = 24; // 라운드당 통과음 최대 횟수(그 뒤는 조용히 지나간다)
 
-// 결승선 컷오프(작업계획서 §12-8) -- "1등이 결승선을 통과한 시점"은
-// 서버가 아니라 클라이언트가 스스로 감지한다(crossedPassLine이 이미 그
-// 감지 로직이라 그대로 재사용). 감지된 시점부터 cutoff_window_seconds가
-// 지나면 카운트다운을 마감 표시로 바꾸고, 그 순간의 통과 인원을 얼려
-// 보여준다(마감 후에도 karts는 계속 결승선을 넘지만, 그건 "이미 늦은"
-// 카트들이라 살아있는 숫자에 넣으면 실제 통과 인원보다 부풀려 보인다).
-let cutoffFirstCrossAt = null; // performance.now() 기준, 이번 라운드에서 첫 통과자가 나온 시각
+// 결승선 컷오프(작업계획서 §12-8) -- 통과 수와 마감까지 남은 시간은 **서버가
+// 계산해 내려준다**(tick.crossed_count / cutoff_remaining_seconds). 화면이
+// 직접 세던 시절에는 두 가지가 틀렸다: 렌더 루프가 카메라 밖 카트를 건너뛰어
+// 과소 집계했고, R1/R2의 마감이 정원까지 늘어나는 것도 몰랐다.
+// 여기서 들고 있는 건 "마감 순간의 수를 얼려 두는" 표시용 상태뿐이다
+// (마감 후에도 뒤처진 카트는 계속 선을 넘지만 그건 통과자가 아니다).
 let cutoffFrozenCount = null; // 창이 닫힌 순간 얼린 통과 인원(닫히기 전엔 null)
 
 // ---------------------------------------------------------------------------
@@ -1075,6 +1077,13 @@ function ensureGroupLookup(latest, drawKey) {
   }
   currentPidToGroup = map;
   currentGroupSizes = sizes; // R1 예측 구간의 "팀별 참가 카트 수" 패널용
+
+  // 실시간 포지션 타워에 사번 대신 이름을 띄우기 위한 조회표. 스냅샷은
+  // 커밋 시점부터 공개되므로 레이스 중에도 항상 채워져 있다.
+  currentPidToName = {};
+  for (const p of (latest.snapshot && latest.snapshot.participants) || []) {
+    currentPidToName[p.id] = p.name;
+  }
 
   departmentColorCache.clear();
   departmentAbilityCache.clear();
@@ -1488,15 +1497,21 @@ function detectOvertakes(sortedIds, round) {
       const prevIdx = prevRank.get(pid);
       if (prevIdx === undefined) continue;
       if (prevIdx - i >= 3) {
-        const ability = spawnOvertakeBadge(pid);
+        spawnOvertakeBadge(pid);
         SFX.whoosh();
         badges += 1;
         if (!mcFired) {
           // 쿨다운이 걸려 있으면 tryShowLiveMcLine이 조용히 무시한다.
-          // 팀이 확인되면 그 팀의 특수능력 이름으로, 아니면 일반 문구로.
-          const group = currentPidToGroup[pid];
-          if (group) {
-            tryShowLiveMcLine("ability_trigger", { team: group, ability: ability.label });
+          // **화면에서 실제로 벌어진 일만 말한다**(2026-08-11, 사용자 요청):
+          // 예전에는 카트 특수능력 이름을 불렀는데, 능력은 예측 점수 배수일
+          // 뿐 레이스에 영향을 주지 않아 멘트와 그림이 따로 놀았다.
+          const name = currentPidToName[pid];
+          if (name) {
+            tryShowLiveMcLine("overtake", {
+              name,
+              team: currentPidToGroup[pid],
+              count: prevIdx - i,
+            });
           } else {
             tryShowLiveMcLine("race_progress");
           }
@@ -1530,7 +1545,11 @@ function renderPositionTower(sortedIds, positions, passLine) {
       const isLeader = i === 0;
       const atRisk = !isLeader && positions[pid] < passLine && passLine - positions[pid] < 0.06;
       const rowClass = isLeader ? "pos-leader" : atRisk ? "pos-risk" : "";
-      const label = pid.length > 14 ? pid.slice(0, 14) + "…" : pid;
+      // 사번(P0157)이 아니라 이름으로 부른다(2026-08-11, 사용자 요청).
+      // 팀은 바로 뒤에 따로 붙으므로 여기서는 이름만 쓴다 -- 이름표 전체
+      // ("정지우 (재무팀)")를 넣으면 "정지우 (재무팀) · 재무팀"이 된다.
+      const raw = currentPidToName[pid] || pid;
+      const label = raw.length > 14 ? raw.slice(0, 14) + "…" : raw;
       const abilityBadge = isLeader ? `${abilityForParticipant(pid).emoji} ` : "";
       return `<li class="pos-row ${rowClass}">
         <span class="pos-rank">${i + 1}</span>
@@ -2177,6 +2196,11 @@ function obstacleScreenPoints(obstacles, passLine, round, halfWidth) {
 // R1/R2와 R3는 같은 UI를 쓰지만 의미가 다르다 -- R1/R2에서는 "이 안에 못
 // 들어오면 탈락", R3에서는 "이 시간이 지나면 레이스를 끝내고 결과 발표"다.
 // 문구를 라운드별로 다르게 해서 관객이 헷갈리지 않게 한다.
+// **집계·마감은 전부 서버 값이다**(2026-08-11). 예전에는 화면이 스스로
+// "1등 통과"를 감지해 5초를 재고 통과 수도 직접 셌는데, 둘 다 틀릴 수 있었다.
+//   - 통과 수: 렌더 루프가 카메라 밖 카트를 건너뛰어(tailProgress 컬링) 과소 집계
+//   - 마감: R1/R2의 창은 정원이 찰 때까지 늘어나는데 화면은 그걸 모른다
+// 그래서 "4대 통과"라고 띄운 라운드에서 5대가 다음 라운드에 올라갔다.
 function updateCutoffPanel(tick, now) {
   if (!cutoffPanelEl || !tick.candidate_count) {
     if (cutoffPanelEl) cutoffPanelEl.classList.add("hidden");
@@ -2185,32 +2209,34 @@ function updateCutoffPanel(tick, now) {
   cutoffPanelEl.classList.remove("hidden");
 
   const isFinal = tick.round === 3;
-  const windowSeconds = tick.cutoff_window_seconds || 0;
-  const liveCount = crossedPassLine.size;
+  const count = tick.crossed_count || 0;
+  const remain = tick.cutoff_remaining_seconds;
 
-  if (cutoffFirstCrossAt === null) {
+  if (remain === null || remain === undefined) {
     cutoffLabelEl.textContent = isFinal ? "결선 — 1위 통과 대기 중" : "결승선 통과 대기 중";
-    cutoffCountEl.textContent = `0/${tick.candidate_count}`;
+    cutoffCountEl.textContent = `${count}/${tick.candidate_count}`;
     cutoffTimerEl.classList.add("hidden");
     cutoffPanelEl.classList.remove("closed");
     return;
   }
 
-  const elapsedSeconds = (now - cutoffFirstCrossAt) / 1000;
-  const remain = windowSeconds - elapsedSeconds;
   cutoffTimerEl.classList.remove("hidden");
+  cutoffCountEl.textContent = `${count}/${tick.candidate_count}`;
 
-  if (remain > 0) {
+  if (!tick.cutoff_closed) {
     cutoffLabelEl.textContent = isFinal ? "🏁 1위 결승 통과! 결과 발표까지" : "🏁 1위 결승 통과! 마감까지";
-    cutoffCountEl.textContent = `${liveCount}/${tick.candidate_count}`;
     cutoffTimerEl.textContent = `${remain.toFixed(1)}s`;
     cutoffTimerEl.classList.toggle("urgent", remain <= 3);
     cutoffTimerEl.classList.remove("closed");
     cutoffPanelEl.classList.remove("closed");
   } else {
-    // 창이 닫혔다 -- 그 순간의 통과 인원을 얼려서 보여준다(이후에도 karts는
-    // 계속 결승선을 넘지만, 그건 컷오프에 못 든 카트들이다).
-    if (cutoffFrozenCount === null) cutoffFrozenCount = liveCount;
+    // 마감된 뒤에도 뒤처진 카트는 계속 결승선을 넘지만, 그건 통과자가
+    // 아니다 -- 마감 인원을 고정해서 보여준다. 서버가 확정값을 주면 그걸
+    // 쓴다(틱은 이산적이라 "마감을 처음 관측한 틱"은 이미 한두 대 더 넘긴
+    // 뒤다 -- 실제 47대 통과인데 화면이 49대로 얼어붙은 적이 있다).
+    if (cutoffFrozenCount === null) {
+      cutoffFrozenCount = tick.cutoff_pass_count != null ? tick.cutoff_pass_count : count;
+    }
     cutoffLabelEl.textContent = isFinal ? "🏁 결선 종료" : "🔒 통과 마감";
     cutoffCountEl.textContent = `${cutoffFrozenCount}/${tick.candidate_count}`;
     cutoffTimerEl.textContent = "0.0s";
@@ -2302,14 +2328,13 @@ function drawFrame(positions, tick) {
     drawObstacle(raceCtx, o, obstacleSize);
   }
 
-  if (tick.round === 3 && tick.candidate_count) r3CrossCount = tick.candidate_count;
+  // 결선 등수 화면(A-2)의 🏁 배지 기준. 마감 전까지 실제로 선을 넘은 수를
+  // 서버 집계로 따라가고, 마감되면 그 값에서 멈춘다.
+  if (tick.round === 3 && !tick.cutoff_closed) r3CrossCount = tick.crossed_count || 0;
   if (crossedRound !== tick.round) {
     crossedRound = tick.round;
     crossedPassLine = new Set(sorted.filter((pid) => positions[pid] >= tick.pass_line));
     crossedSoundCount = 0;
-    // 접속/복구 시점에 이미 결승선을 넘은 카트가 있으면 컷오프 타이머도
-    // 그 시점부터 흐르고 있었다고 보고 즉시 시작한다.
-    cutoffFirstCrossAt = crossedPassLine.size > 0 ? now : null;
     cutoffFrozenCount = null;
   }
 
@@ -2385,7 +2410,6 @@ function drawFrame(positions, tick) {
     // 카트는 짧은 블립만 낸다. 판정 자체는 서버가 하므로 여기서는 연출만.
     if (p >= tick.pass_line && !crossedPassLine.has(pid)) {
       crossedPassLine.add(pid);
-      if (cutoffFirstCrossAt === null) cutoffFirstCrossAt = now;
       if (crossedSoundCount < CROSS_SOUND_BUDGET) {
         crossedSoundCount += 1;
         SFX.finishCross(i);
@@ -2442,11 +2466,25 @@ function drawFrame(positions, tick) {
     tryShowLiveMcLine("close_call");
   }
 
+  // 선두 교체 -- "지금 1위는 누구"를 관객이 놓치지 않게 한다(사용자 요청).
+  // 출발 직후에는 순위가 계속 요동치므로 어느 정도 달린 뒤부터만 본다.
+  const leaderPid = sorted[0];
+  if (leaderPid && tick.progress_ratio > 0.12) {
+    if (currentLeaderPid !== null && leaderPid !== currentLeaderPid) {
+      const name = currentPidToName[leaderPid];
+      if (name) {
+        tryShowLiveMcLine("leader_change", { name, team: currentPidToGroup[leaderPid] });
+      }
+    }
+    currentLeaderPid = leaderPid;
+  }
+
   // 파이널 랩: 라운드당 한 번, 진행률 85% 지점에서
   if (tick.progress_ratio >= 0.85 && finalLapShownForRound !== tick.round) {
     finalLapShownForRound = tick.round;
     showBanner("FINAL LAP", "마지막 스퍼트!", 1500);
-    showMcLine("final_lap");
+    // 멘트에 선두 이름을 실어 "1등인 누가 결승선이 코앞이다"가 되게 한다.
+    showMcLine("final_lap", { name: currentPidToName[leaderPid] });
     SFX.bell(); // 마지막 랩 종
     SFX.heartbeat();
     SFX.crowd(0.5, 1.4);
@@ -2578,11 +2616,19 @@ function handleRacingEvent(data) {
     cancelPendingMcLines();
     if (["race_r1", "race_r2", "race_r3"].includes(data.phase)) {
       currentLeaderDept = null;
+      currentLeaderPid = null;
       liveMcSuppressed = false; // 새 레이스가 시작됐으니 실황 멘트를 다시 허용
       const roundIndex = RACE_ROUND_INDEX_LOCAL[data.phase];
       finalLapShownForRound = null;
       finalFlagShown = false;
       if (roundIndex === 3) photoFinishShownForRound = null;
+      // 새 라운드가 시작되면 컷오프 패널을 일단 감춘다. 안 그러면 첫 틱이
+      // 올 때까지 **직전 라운드의 통과 수**가 그대로 남아 잘못된 숫자가
+      // 잠깐 보인다. 얼린 값(cutoffFrozenCount)은 여기서 건드리지 않는다 --
+      // 레이스가 끝난 뒤에도 마지막 틱으로 렌더 루프가 한 번 더 돌 수 있어,
+      // 여기서 null로 되돌리면 **그때의 통과 수(전원 통과)로 다시 얼어붙는다**.
+      // 실제로 R1 마감이 38대인데 "100/100"으로 다시 얼어붙었다.
+      if (cutoffPanelEl) cutoffPanelEl.classList.add("hidden");
       runStartLights(roundIndex);
       SFX.startEngine();
       SFX.playScene(RACE_BGM_SCENE[roundIndex] || "race1", { round: roundIndex });
@@ -2688,47 +2734,64 @@ function formatPrizeScore(score) {
   return `${Number(score).toLocaleString("ko-KR")}점`;
 }
 
-function buildPodium(winnerIds, nameById, basis, scores) {
+const PODIUM_MEDAL = { 1: "🥇", 2: "🥈", 3: "🥉" };
+
+/** 시상대. 상위 3명은 금·은·동 단상으로, **당첨자 N명 전원**은 그 아래 한
+ *  줄짜리 리스트로 보여준다(2026-08-11, 사용자 요청).
+ *
+ *  예전에는 4위 이하만 `list-style: decimal`인 별도 목록에 넣어서 번호가
+ *  1부터 다시 매겨졌다("4위, 5위"가 아니라 "1. 2."). 2단 컬럼이라 줄바꿈도
+ *  없어 "1,830점2." 처럼 붙어 보였다.
+ *
+ *  등수는 서버가 준 표시 등수(ranks)를 그대로 쓴다 -- 공동 등수가 반영돼
+ *  있고(공동 2등이 둘이면 다음은 4등), 같은 점수인데 순서가 갈린 경우에는
+ *  근거(notes)가 함께 온다.
+ */
+function buildPodium(winnerIds, nameById, basis, scores, ranks, notes) {
   if (podiumBasisHintEl) podiumBasisHintEl.textContent = PRIZE_BASIS_LABEL[basis] || "";
   const scoreList = scores || [];
-  const scoreOf = (id) => {
-    const i = winnerIds.indexOf(id);
-    return i >= 0 ? scoreList[i] : undefined;
-  };
+  const rankList = ranks || [];
+  const noteList = notes || [];
+  // 서버가 등수를 안 준 경우(레이스 기준 당첨 등)에는 나열 순서를 그대로 등수로.
+  const rankAt = (i) => rankList[i] || i + 1;
+
   const top3 = winnerIds.slice(0, 3);
-  const rest = winnerIds.slice(3);
   // 시각적 배치: 2위-1위-3위 순서(가운데가 1위)
-  const order = [top3[1], top3[0], top3[2]].filter((x) => x !== undefined);
-  const rankOf = (id) => top3.indexOf(id) + 1;
-  podiumStageEl.innerHTML = order
-    .map((id, i) => {
-      const rank = rankOf(id);
-      const label = nameById[id] || id;
-      const medal = rank === 1 ? "🥇" : rank === 2 ? "🥈" : "🥉";
-      const scoreText = formatPrizeScore(scoreOf(id));
-      return `<div class="podium-slot" data-rank="${rank}" style="animation-delay:${i * 0.15}s">
-        <div class="podium-name">${label}</div>
+  const slots = [1, 0, 2].filter((i) => top3[i] !== undefined);
+  podiumStageEl.innerHTML = slots
+    .map((i, order) => {
+      const id = winnerIds[i];
+      const rank = rankAt(i);
+      const scoreText = formatPrizeScore(scoreList[i]);
+      return `<div class="podium-slot" data-rank="${i + 1}" style="animation-delay:${order * 0.15}s">
+        <div class="podium-name">${nameById[id] || id}</div>
         ${scoreText ? `<div class="podium-score">${scoreText}</div>` : ""}
-        <div class="podium-block">${medal}</div>
+        <div class="podium-block">${PODIUM_MEDAL[rank] || rank}</div>
       </div>`;
     })
     .join("");
-  podiumRestEl.innerHTML = rest
-    .map((id) => {
-      const scoreText = formatPrizeScore(scoreOf(id));
-      return `<li>${nameById[id] || id}${
-        scoreText ? ` <span class="podium-rest-score">${scoreText}</span>` : ""
-      }</li>`;
+
+  podiumRestEl.innerHTML = winnerIds
+    .map((id, i) => {
+      const rank = rankAt(i);
+      const scoreText = formatPrizeScore(scoreList[i]);
+      const note = noteList[i];
+      return `<li class="podium-row">
+        <span class="podium-row-rank">${PODIUM_MEDAL[rank] || rank}</span>
+        <span class="podium-row-name">${nameById[id] || id}</span>
+        ${scoreText ? `<span class="podium-row-score">${scoreText}</span>` : ""}
+        ${note ? `<span class="podium-row-note">${note}</span>` : ""}
+      </li>`;
     })
     .join("");
 }
 
-async function playFinalReveal(winnerIds, nameById, basis, scores) {
+async function playFinalReveal(winnerIds, nameById, basis, scores, ranks, notes) {
   showBanner("🏆 최종 당첨자 발표!", "", 1500);
   SFX.drumroll(1.4);
   SFX.riser(1.4); // 드럼롤 위에 상승음을 겹쳐 발표 직전 긴장을 끌어올린다
   await delay(1500);
-  buildPodium(winnerIds, nameById, basis, scores);
+  buildPodium(winnerIds, nameById, basis, scores, ranks, notes);
   showOverlay("podium");
   SFX.fanfare();
   SFX.crowd(0.8, 1.8);
@@ -2791,7 +2854,14 @@ function render(session) {
           latest.snapshot.participants.map((p) => [p.id, participantLabel(p)])
         );
         const hasPrediction = latest.prize_basis === "prediction";
-        playFinalReveal(latest.prize_winners, nameById, latest.prize_basis, latest.prize_scores)
+        playFinalReveal(
+          latest.prize_winners,
+          nameById,
+          latest.prize_basis,
+          latest.prize_scores,
+          latest.prize_ranks,
+          latest.prize_notes
+        )
           .then(() => delay(2500))
           .then(() => (hasPrediction ? showMcLine("prediction_champion") : Promise.resolve()))
           .then(() => delay(hasPrediction ? 2500 : 0))
@@ -2801,7 +2871,14 @@ function render(session) {
         const nameById = Object.fromEntries(
           latest.snapshot.participants.map((p) => [p.id, participantLabel(p)])
         );
-        buildPodium(latest.prize_winners, nameById, latest.prize_basis, latest.prize_scores);
+        buildPodium(
+          latest.prize_winners,
+          nameById,
+          latest.prize_basis,
+          latest.prize_scores,
+          latest.prize_ranks,
+          latest.prize_notes
+        );
         showOverlay("podium");
       }
       return;
@@ -2881,11 +2958,13 @@ const ws = connectWS((data) => {
     lastFinalShownFor = null;
     currentDrawKeyForGroups = null;
     currentPidToGroup = {};
+    currentPidToName = {};
     characterChoiceByPid = {};
     previousTickPositions = {};
     previousTickOrder = [];
     previousTickRound = null;
     currentLeaderDept = null;
+    currentLeaderPid = null;
     lastMcLiveCallAt = 0;
     finalLapShownForRound = null;
     photoFinishShownForRound = null;
@@ -2893,7 +2972,6 @@ const ws = connectWS((data) => {
     crossedPassLine = new Set();
     r3CrossCount = 0;
     crossedRound = null;
-    cutoffFirstCrossAt = null;
     cutoffFrozenCount = null;
     finalFlagShown = false;
     finalRaceResultShown = false;

@@ -45,7 +45,7 @@ def _make_session(predictions_enabled: bool, draw_count: int = 3, count: int = 4
 
 def test_predictions_disabled_falls_back_to_race_winners():
     session, draw = _make_session(predictions_enabled=False)
-    ids, basis, scores = main_module._compute_prize_winners(session, draw)
+    ids, basis, scores, ranks, notes = main_module._compute_prize_winners(session, draw)
     assert basis == "race"
     assert ids == list(draw.winners)
 
@@ -61,7 +61,7 @@ def test_prediction_leaderboard_can_diverge_from_race_winners():
         card = main_module.prediction_engine.get_or_create_card(pid)
         card.score = i + 1  # 레이스 순위가 뒤일수록 예측 점수가 높음
 
-    ids, basis, scores = main_module._compute_prize_winners(session, draw)
+    ids, basis, scores, ranks, notes = main_module._compute_prize_winners(session, draw)
     assert basis == "prediction"
     expected = list(reversed(draw.ranking))[: len(draw.winners)]
     assert ids == expected
@@ -78,7 +78,7 @@ def test_prize_winner_count_shrinks_when_fewer_participants_engaged():
     for pid in only_two:
         main_module.prediction_engine.get_or_create_card(pid)
 
-    ids, basis, scores = main_module._compute_prize_winners(session, draw)
+    ids, basis, scores, ranks, notes = main_module._compute_prize_winners(session, draw)
     assert basis == "prediction"
     assert len(ids) == 2
     assert set(ids) == set(only_two)
@@ -225,13 +225,13 @@ def test_prize_basis_values_are_limited_to_the_two_known_labels():
     session.draws.append(draw)
     fairness.reveal(draw)
 
-    _, basis, _ = main_module._compute_prize_winners(session, draw)
+    _, basis, *_ = main_module._compute_prize_winners(session, draw)
     assert basis in allowed
 
     session.predictions_enabled = True
     main_module.prediction_engine.reset()
     main_module.prediction_engine.enroll_all(main_module._department_by_pid(draw))
-    _, basis_pred, _ = main_module._compute_prize_winners(session, draw)
+    _, basis_pred, *_ = main_module._compute_prize_winners(session, draw)
     assert basis_pred in allowed
 
     # 프런트 양쪽이 같은 키를 알고 있어야 한다

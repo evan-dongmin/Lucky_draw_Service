@@ -67,6 +67,11 @@ class DrawResult:
     # 같은 순서로 채워진다. 레이스 기준(prize_basis="race")이면 성적 개념이
     # 없으므로 빈 리스트.
     prize_scores: list[int] = field(default_factory=list)
+    # 당첨자별 **표시 등수**(공동 등수 반영)와 동점을 가른 근거 한 줄.
+    # prize_winners와 같은 순서. 같은 점수인데 순서가 갈린 이유가 화면에
+    # 안 보이면 관객이 반드시 의심하기 때문에 함께 내려보낸다(2026-08-11).
+    prize_ranks: list[int] = field(default_factory=list)
+    prize_notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -88,6 +93,8 @@ class DrawResult:
             "prize_winners": None if self.prize_winners is None else list(self.prize_winners),
             "prize_basis": self.prize_basis,
             "prize_scores": list(self.prize_scores),
+            "prize_ranks": list(self.prize_ranks),
+            "prize_notes": list(self.prize_notes),
         }
 
     @classmethod
@@ -113,6 +120,8 @@ class DrawResult:
             prize_winners=data.get("prize_winners"),
             prize_basis=data.get("prize_basis"),
             prize_scores=list(data.get("prize_scores", [])),
+            prize_ranks=list(data.get("prize_ranks", [])),
+            prize_notes=list(data.get("prize_notes", [])),
         )
 
 

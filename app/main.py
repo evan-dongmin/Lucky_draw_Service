@@ -232,6 +232,8 @@ def public_draw_dict(draw: DrawResult) -> dict[str, Any]:
         data["prize_winners"] = None
         data["prize_basis"] = None
         data["prize_scores"] = []
+        data["prize_ranks"] = []
+        data["prize_notes"] = []
         data["round_pass_ids"] = {
             str(r): ids for r, ids in draw.round_pass_ids.items() if r in draw.revealed_rounds
         }
@@ -664,6 +666,24 @@ async def _run_race_phase(
     # 파생된 레인 번호만 보낸다. 라운드 안에서 불변이라 한 번만 계산한다.
     lanes = {pid: race.lane_for(draw.seed, pid, round_index) for pid in population}
 
+    # **컷오프 마감 시각을 서버가 계산해 내려준다**(2026-08-11, 사용자 버그
+    # 제보: "2라운드에서 4대만 결승선 통과했다고 나왔는데 총 5대가 3라운드
+    # 진출"). 예전에는 화면이 스스로 "1등 통과"를 감지해 5초를 쟀는데, 두 가지가
+    # 어긋났다.
+    #   1. 마감이 정원(min_survivors)까지 늘어날 수 있다는 걸 화면이 모른다.
+    #   2. 화면의 통과 집계는 카메라 밖 카트를 건너뛰는 렌더 루프 안에서
+    #      이뤄져(drawFrame의 tailProgress 컬링) 과소 계산될 수 있다.
+    # 이제 마감·통과 수 모두 서버 값이라 화면과 결과가 어긋날 수 없다.
+    cutoff_close = _cutoff_close_ratio_for_round(
+        draw, round_index, population, line, pass_count,
+        cutoff_window_seconds, round_has_finish_line,
+    )
+    # 마감 시점에 화면이 띄울 확정 통과 인원. R1/R2는 이 값이 곧 다음 라운드
+    # 진출자 수와 같아야 한다(그게 이번 수정의 핵심이다).
+    cutoff_pass_count = (
+        len(draw.round_pass_ids.get(round_index, [])) if cutoff_close is not None else None
+    )
+
     loop = asyncio.get_running_loop()
     start = loop.time()
     global active_race_round
@@ -672,16 +692,56 @@ async def _run_race_phase(
         await _tick_race_loop(
             draw, round_index, population, line, pass_count, denom_sets,
             countdown, race_seconds, cutoff_window_seconds, round_has_finish_line,
-            obstacles, lanes, session_id, loop, start,
+            obstacles, lanes, session_id, loop, start, cutoff_close, cutoff_pass_count,
         )
     finally:
         active_race_round = None
 
 
+def _cutoff_close_ratio_for_round(
+    draw: DrawResult,
+    round_index: int,
+    population: list[str],
+    line: float,
+    pass_count: int,
+    cutoff_window_seconds: float | None,
+    round_has_finish_line: bool,
+) -> float | None:
+    """이 라운드의 컷오프가 닫히는 진행률(0..1). 해당 없으면 None.
+
+    **반드시 fairness.compute_draw가 통과자를 가릴 때 쓴 것과 같은 입력**
+    (스냅샷에 봉인된 레이스 시간, 같은 min_survivors)으로 계산한다 -- 하나라도
+    어긋나면 화면의 카운트다운과 실제 통과 판정이 다시 갈라진다.
+
+    R3는 컷오프로 아무도 떨어뜨리지 않으므로(창은 "언제 끝낼지"만 정한다)
+    여기서 다루지 않고 _tick_race_loop이 1등 통과 시점부터 직접 잰다.
+    """
+    if round_index not in (1, 2) or not round_has_finish_line:
+        return None
+    if not cutoff_window_seconds:
+        return None
+    key = "race_r1_seconds" if round_index == 1 else "race_r2_seconds"
+    snapshot_seconds = draw.snapshot.get(key)
+    if not snapshot_seconds:
+        return None  # 컷오프 없이 커밋된 세션(룰렛 모드 등)
+
+    draw_count = int(draw.snapshot.get("draw_count", 0) or 0)
+    if round_index == 1:
+        min_survivors = fairness.resolve_finalist_count(draw_count)
+    else:
+        min_survivors = min(draw_count, len(population))
+    crossing = fairness.crossing_ratios(
+        population[:pass_count], population, draw.seed, round_index, line
+    )
+    return fairness.cutoff_close_ratio(
+        crossing, snapshot_seconds, cutoff_window_seconds, min_survivors
+    )
+
+
 async def _tick_race_loop(
     draw, round_index, population, line, pass_count, denom_sets,
     countdown, race_seconds, cutoff_window_seconds, round_has_finish_line,
-    obstacles, lanes, session_id, loop, start,
+    obstacles, lanes, session_id, loop, start, cutoff_close=None, cutoff_pass_count=None,
 ) -> None:
     r3_finish_deadline: float | None = None
     while True:
@@ -723,12 +783,17 @@ async def _tick_race_loop(
             # 카트까지 느려 보인다). 감속을 뺀 곡선이라 항상 매끄럽게 흐른다.
             "camera_anchor": race.camera_anchor(population, ratio, round_index),
             # 결승선 컷오프(§12-8): 순위 기준 후보군 크기와 창 길이(초).
-            # 클라이언트가 "1등 결승 통과" 순간을 스스로 감지해
-            # (positions[pid] >= pass_line) 카운트다운을 띄우고, 그 사이
-            # 결승선을 넘는 카트 수를 "N/후보수"로 실시간 표시한다.
             # R3도 같은 UI를 쓰되, 창이 닫히면 레이스가 실제로 끝난다.
             "candidate_count": pass_count if round_has_finish_line else None,
             "cutoff_window_seconds": cutoff_window_seconds if round_has_finish_line else None,
+            # **통과 수는 서버가 센다.** 화면이 세면 카메라 밖 카트를 건너뛰어
+            # 과소 계산된다(drawFrame의 tailProgress 컬링). 실제 통과자 수와
+            # 다음 라운드 진출자 수가 어긋나 보이던 원인 중 하나였다.
+            "crossed_count": (
+                sum(1 for p in positions.values() if p >= line)
+                if round_has_finish_line
+                else None
+            ),
             # 화면이 진행률을 결승선 기준으로 워프할지 판단하는 값.
             # 결승선이 없으면 워프 없이 트랙 전체에 고르게 펼쳐야 한다.
             "has_finish_line": round_has_finish_line,
@@ -748,6 +813,26 @@ async def _tick_race_loop(
                 r3_finish_deadline = elapsed + cutoff_window_seconds
             if r3_finish_deadline is not None and elapsed >= r3_finish_deadline:
                 payload["race_over"] = True
+
+        # **마감까지 남은 시간도 서버가 준다.** 화면이 직접 재면 R1/R2에서
+        # 마감이 정원까지 늘어난 걸 모른 채 5초만 세고 닫아버린다.
+        # 아직 아무도 안 넘었으면 None -- 화면은 "통과 대기 중"을 띄운다.
+        remaining: float | None = None
+        if round_has_finish_line:
+            if round_index == 3:
+                if r3_finish_deadline is not None:
+                    remaining = max(0.0, r3_finish_deadline - elapsed)
+            elif cutoff_close is not None and payload["crossed_count"]:
+                remaining = max(0.0, (cutoff_close - ratio) * race_seconds)
+        payload["cutoff_remaining_seconds"] = remaining
+        closed = remaining is not None and remaining <= 0.0
+        payload["cutoff_closed"] = closed
+        # **마감 인원은 틱 표본이 아니라 확정값으로 준다.** 틱은 이산적이라
+        # "마감된 것을 처음 관측한 틱"은 이미 마감 시점을 조금 지나 있고,
+        # 그 사이 한두 대가 더 선을 넘는다(실측 47대 통과인데 화면 49대).
+        # 마감 뒤에만 보내므로 결과가 앞당겨 노출되지도 않는다.
+        payload["cutoff_pass_count"] = cutoff_pass_count if closed else None
+
         if denom_sets is not None:
             payload["department_live_rate"] = race.department_live_rates(positions, denom_sets, line)
         # race_tick은 위치 데이터 용량이 크므로 Stage 화면에만 전송한다
@@ -975,7 +1060,9 @@ async def _score_and_open_next(
         )
 
 
-def _compute_prize_winners(session: Session, draw: DrawResult) -> tuple[list[str], str, list[int]]:
+def _compute_prize_winners(
+    session: Session, draw: DrawResult
+) -> tuple[list[str], str, list[int], list[int], list[str]]:
     """실제 경품 당첨자를 정한다. 예측 게임이 켜져 있으면 그 최종 리더보드
     상위 N명(N = 원래 레이스로 정해졌던 당첨 인원수, len(draw.winners))이 곧
     당첨자다 -- 레이스 자체는 여전히(장애물까지 포함해) 시드만으로 100%
@@ -985,17 +1072,28 @@ def _compute_prize_winners(session: Session, draw: DrawResult) -> tuple[list[str
     갱신되는 반전 있는 진행을 위함). 예측 게임이 꺼져 있으면 리더보드 자체가
     없으므로 레이스 결과를 그대로 쓴다(기존 동작과 동일, 회귀 없음).
 
-    leaderboard()는 이미 (-score, participant_id) 순으로 결정론적으로 정렬돼
-    있어 동점 처리를 따로 할 필요가 없다. 참여 인원이 N명보다 적으면(모바일
-    온보딩을 안 한 사람이 많은 경우) 그만큼 당첨자 수가 줄어든다 -- 예측
-    게임에 참여해야 당첨 대상이 된다는 뜻이라 문서에 명확히 안내해야 한다.
+    동점은 예측을 얼마나 잘 했는지로 가른다(predictions.ranking_key: 총점 ->
+    R3 -> R2 -> R1 적중 등수 -> 직접 선택 라운드 수). **경품은 N개라 동점이
+    N번째 자리를 걸치면 어떻게든 갈라야 하는데**, 예전 기준이던 사번 순서는
+    무대에서 설명할 수 없었다. 표시 등수(prize_ranks)는 공동 등수를 반영하고,
+    갈린 근거(prize_notes)를 함께 내려 관객이 납득할 수 있게 한다.
+
+    참여 인원이 N명보다 적으면(모바일 온보딩을 안 한 사람이 많은 경우) 그만큼
+    당첨자 수가 줄어든다 -- 예측 게임에 참여해야 당첨 대상이 된다는 뜻이라
+    문서에 명확히 안내해야 한다.
     """
     n = len(draw.winners)
     if not session.predictions_enabled:
         # 레이스 결과 그대로 -- "성적" 개념이 없으므로 점수는 비운다.
-        return list(draw.winners), "race", []
-    ranked = prediction_engine.leaderboard(n)
-    return [c.participant_id for c in ranked], "prediction", [c.score for c in ranked]
+        return list(draw.winners), "race", [], [], []
+    rows = prediction_engine.ranked_leaderboard(n)
+    return (
+        [r["participant_id"] for r in rows],
+        "prediction",
+        [r["score"] for r in rows],
+        [r["rank"] for r in rows],
+        [r["tiebreak_note"] for r in rows],
+    )
 
 
 async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: float) -> None:
@@ -1050,11 +1148,19 @@ async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: f
                 # 런북 총 시간에는 영향이 없다.
                 hold = min(FINAL_RESULT_HOLD_SECONDS, seg.duration_seconds * 0.4)
                 await asyncio.sleep(hold)
-                prize_ids, prize_basis, prize_scores = _compute_prize_winners(session, draw)
+                (
+                    prize_ids,
+                    prize_basis,
+                    prize_scores,
+                    prize_ranks,
+                    prize_notes,
+                ) = _compute_prize_winners(session, draw)
                 async with state_lock:
                     draw.prize_winners = prize_ids
                     draw.prize_basis = prize_basis
                     draw.prize_scores = prize_scores
+                    draw.prize_ranks = prize_ranks
+                    draw.prize_notes = prize_notes
                     store.set_session(session)
                 await hub.broadcast(
                     {
@@ -1062,6 +1168,8 @@ async def run_racing_sequence(session_id: str, draw_index: int, total_seconds: f
                         "winners": prize_ids,
                         "basis": prize_basis,
                         "scores": prize_scores,
+                        "ranks": prize_ranks,
+                        "notes": prize_notes,
                     }
                 )
                 # 결과 발표 앞에서 쓴 hold만큼 빼서 구간 전체 길이를 지킨다.
@@ -1540,14 +1648,19 @@ async def mc_pregenerate() -> dict[str, Any]:
 async def mc_line(
     tag: str,
     team: str | None = None,
+    name: str | None = None,
     pass_count: int | None = None,
     rank: int | None = None,
     round: int | None = None,
-    ability: str | None = None,
+    count: int | None = None,
 ) -> dict[str, Any]:
-    """상황별 멘트 조회. team/pass_count/rank/round/ability는 호출측(Stage)이
-    실시간 이벤트(선두 교체·추월·라운드 통과 발표·팀 특수능력 발동)에서 이미
-    들고 있는 값을 그대로 넘겨 자막에 채워 넣기 위한 선택적 오버라이드다."""
+    """상황별 멘트 조회. team/name/pass_count/rank/round/count는 호출측(Stage)이
+    실시간 이벤트(선두 교체·추월·라운드 통과 발표)에서 이미 들고 있는 값을
+    그대로 넘겨 자막에 채워 넣기 위한 선택적 오버라이드다.
+
+    `ability`(카트 특수능력 이름)는 2026-08-11에 제거했다 -- 능력은 예측 점수
+    배수일 뿐 레이스에 영향을 주지 않아, 화면에서 벌어지는 일과 멘트가 따로
+    놀았다(사용자 요청). 대신 `name`으로 "누가 1등인가 / 누가 제쳤나"를 말한다."""
     session = store.get_session()
     params: dict[str, Any] = {}
     if session:
@@ -1559,14 +1672,16 @@ async def mc_line(
                 params["winner_count"] = len(latest.winners)
     if team is not None:
         params["team"] = team
+    if name is not None:
+        params["name"] = name
     if pass_count is not None:
         params["pass_count"] = pass_count
     if rank is not None:
         params["rank"] = rank
     if round is not None:
         params["round"] = round
-    if ability is not None:
-        params["ability"] = ability
+    if count is not None:
+        params["count"] = count
     text = mc_agent.pick_line(tag, **params)
     return {"tag": tag, "text": text}
 

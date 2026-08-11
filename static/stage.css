@@ -1351,14 +1351,54 @@ body.round-result-open #banner-sub {
   100% { opacity: 1; transform: translateY(0); }
 }
 
+/* 당첨자 전원 명단. 예전에는 4위 이하만 담는 `list-style: decimal` 목록이라
+   번호가 1부터 다시 매겨졌고(4·5위가 "1. 2."로 보였다), 2단 컬럼 탓에
+   줄바꿈도 없어 "1,830점2." 처럼 붙어 보였다. 이제 등수를 직접 그린다. */
 .podium-rest {
-  list-style: decimal;
-  font-size: 1.3rem;
-  color: #7cf29c;
-  max-width: 640px;
-  margin: 0.5rem auto 0;
+  list-style: none;
+  font-size: 1.15rem;
+  max-width: 720px;
+  margin: 0.9rem auto 0;
+  padding: 0;
   text-align: left;
-  columns: 2;
+  display: flex;
+  flex-direction: column;
+  gap: 0.32rem;
+}
+
+.podium-row {
+  display: grid;
+  grid-template-columns: 2.4rem 1fr auto auto;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.28rem 0.7rem;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.podium-row-rank {
+  text-align: center;
+  font-weight: 800;
+  color: #cfd8e6;
+  font-variant-numeric: tabular-nums;
+}
+
+.podium-row-name {
+  color: #7cf29c;
+  font-weight: 700;
+}
+
+.podium-row-score {
+  color: #ffd166;
+  font-variant-numeric: tabular-nums;
+  font-weight: 800;
+}
+
+/* 같은 점수인데 순서가 갈린 근거. 안 보여주면 관객이 반드시 의심한다. */
+.podium-row-note {
+  color: #8b95a5;
+  font-size: 0.82em;
+  white-space: nowrap;
 }
 
 /* 시상대: 당첨 근거가 된 최종 성적(예측 점수)을 이름과 함께 보여준다 */
