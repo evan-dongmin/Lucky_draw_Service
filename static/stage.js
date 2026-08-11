@@ -934,11 +934,13 @@ let cutoffFrozenCount = null; // 창이 닫힌 순간 얼린 통과 인원(닫�
 // 무관한 "보이는 위치"만 흔드는 순수 연출이었다).
 // ---------------------------------------------------------------------------
 
-// app/race.py의 LANE_COUNT와 반드시 같아야 한다 -- 장애물 배치(obstacles[].lane)를
-// 해석하는 기준이다. 카트 자체의 화면 표시 차선(laneFor, 화면 크기에 따라
-// 5~28차선)과는 다른 별개 축이라 혼동하면 안 된다: 저건 "몇 명이 나란히
-// 그려지는지"를 정하는 순수 연출용 값이고, 이건 "이 장애물이 트랙 폭의 어느
-// 지점에 있는지"를 정하는 값이다.
+// app/race.py의 LANE_COUNT와 반드시 같아야 한다. **장애물과 카트가 공유하는
+// 유일한 가로 축**이다 -- 장애물 배치(obstacles[].lane)와 카트 배치
+// (tick.lanes[pid]) 둘 다 이 축 위에서 해석되고, 서버의 충돌 판정도 같은
+// 축이라 "화면에서 겹쳐 보이는 것"과 "판정된 충돌"이 일치한다.
+//
+// laneFor(5~28차선)는 서버가 lanes를 안 내려주는 구버전 세션용 폴백으로만
+// 남아 있다 -- 그 값은 서버 레인과 무관하므로 정렬을 보장하지 못한다.
 const LANE_COUNT = 8;
 
 // 종류별 스프라이트/충돌 연출(스핀·좌우 흔들림·사운드 종류). 실제로 얼마나
@@ -2267,11 +2269,33 @@ function drawFrame(positions, tick) {
 
     // 잔물결(jockey wiggle)만 "보이는 위치"에 더한다 -- p(서버가 계산한
     // 실제 위치, 장애물 감속이 이미 반영돼 있음)는 불변.
-    const shownP = Math.max(0, p + visualDeltaFor(pid, now, fade));
-    const lane = laneFor(pid, laneCount);
-    const lateral = effect ? effect.lateral * laneWidth : 0;
-    const laneOffset =
-      (lane - (laneCount - 1) / 2) * laneWidth + jitterFor(pid) * laneWidth * 0.5 + lateral;
+    //
+    // **맞는 중에는 잔물결을 끈다.** 잔물결 폭(0.016)이 장애물 지속 구간
+    // (0.035~0.085)의 절반에 가까워서, 켜둔 채로는 카트가 장애물을 이미
+    // 지나친 위치에 그려진 상태에서 감속이 시작되는 것처럼 보인다.
+    const wiggle = effect ? 0 : visualDeltaFor(pid, now, fade);
+    const shownP = Math.max(0, p + wiggle);
+
+    // **카트는 서버가 충돌 판정에 쓰는 그 레인 안에 그린다.**
+    // 예전에는 화면 표시용 해시(laneFor, 5~28차선)로 그렸는데, 이건 서버
+    // 레인과 아무 관계가 없어서 "3번 레인에서 맞았다"고 판정된 카트가
+    // 화면에서는 7번 레인에 있었다 -- 장애물을 스쳐 지나가는데 갑자기
+    // 느려지고(=즉시 효과가 안 나타나는 것처럼 보이고), 정작 장애물을
+    // 통과한 옆 카트는 멀쩡해 "주변 카트가 같이 영향받는" 것처럼 보였다.
+    // 장애물과 **같은 기준**(0.88 폭 / LANE_COUNT)을 써야 가로로 정렬된다.
+    const bandWidth = (halfWidth * 2 * 0.88) / LANE_COUNT;
+    const serverLane = tick.lanes ? tick.lanes[pid] : undefined;
+    const bandCenter =
+      serverLane === undefined
+        ? (laneFor(pid, laneCount) - (laneCount - 1) / 2) * laneWidth // 구버전 폴백
+        : (serverLane - (LANE_COUNT - 1) / 2) * bandWidth;
+    // 같은 레인에 몰린 카트들이 겹쳐 보이지 않게 **밴드 안에서만** 흩뿌린다.
+    // 밖으로 나가면 다시 "남의 레인에 있는데 맞았다"가 되므로 폭을 넘기지 않는다.
+    const spread = serverLane === undefined ? jitterFor(pid) * laneWidth * 0.5 : jitterFor(pid) * bandWidth * 0.72;
+    // 충돌 시 옆으로 밀리는 연출도 자기 레인 폭 안으로 제한한다(예전에는
+    // 얼음 1.9레인폭까지 밀려 옆 레인 카트와 뒤엉켜 보였다).
+    const lateral = effect ? Math.max(-0.42, Math.min(0.42, effect.lateral)) * bandWidth : 0;
+    const laneOffset = bandCenter + spread + lateral;
     const center = trackPointAt(warpProgress(shownP, tick.pass_line), tick.round);
     const nx = -Math.sin(center.angle);
     const ny = Math.cos(center.angle);

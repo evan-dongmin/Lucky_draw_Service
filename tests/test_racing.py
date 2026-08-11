@@ -487,3 +487,59 @@ async def test_new_session_during_a_race_stops_the_old_one_immediately(monkeypat
     # 폰 "내 카트 현황"이 옛 레이스의 마지막 틱에 얼어붙어 있으면 안 된다
     assert main_module.latest_race_tick is None
     main_module.store.clear()
+
+
+@pytest.mark.asyncio
+async def test_race_tick_sends_each_kart_collision_lane(monkeypatch):
+    """**무대가 카트를 자기 충돌 레인에 그리려면 서버가 레인을 내려줘야 한다.**
+
+    이걸 안 보내면 화면은 자체 해시(laneFor, 5~28차선)로 카트를 그리는데,
+    그건 서버가 판정에 쓰는 레인(0~7)과 아무 관계가 없다. 그 상태에서는
+    "3번 레인에서 맞았다"고 판정된 카트가 화면에서는 7번 레인에 있어서,
+    장애물을 스쳐 지나가는데 갑자기 느려지고(사용자 피드백: "부딪힌 즉시
+    효과가 나타나지 않아") 정작 장애물 위를 지나간 옆 카트는 멀쩡해
+    "주변 카트가 같이 영향받는" 것처럼 보였다. 실측으로 충돌한 카트가
+    화면에서 장애물과 겹쳐 보이는 비율이 약 12%에 불과했다.
+
+    또한 **지금 감속 중인 카트의 효과는 반드시 그 카트 레인에 놓인
+    장애물 종류**여야 한다 -- 어긋나면 화면과 판정이 다시 갈라진다.
+    """
+    session, draw = _racing_session("sess-lane", "seed-lane")
+    main_module.store.set_session(session)
+
+    monkeypatch.setattr(main_module.director, "build_runbook", lambda **kw: list(TINY_SEGMENTS))
+    monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.01)
+
+    messages: list[dict] = []
+
+    async def fake_broadcast(message, sender=None, roles=None):
+        messages.append(message)
+
+    monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
+    await main_module.run_racing_sequence("sess-lane", 0, 300.0)
+
+    ticks = [m for m in messages if m["type"] == "race_tick"]
+    assert ticks, "레이스 틱이 하나도 없습니다"
+
+    from app import race as race_module
+
+    checked = 0
+    for tick in ticks:
+        lanes = tick.get("lanes")
+        assert lanes, "race_tick에 카트별 레인(lanes)이 없습니다"
+        # 서버가 판정에 쓰는 값과 정확히 같아야 한다
+        for pid, lane in lanes.items():
+            assert lane == race_module.lane_for(draw.seed, pid, tick["round"])
+            assert 0 <= lane < race_module.LANE_COUNT
+
+        lanes_with_obstacle: dict[int, set[str]] = {}
+        for obstacle in tick.get("obstacles") or []:
+            lanes_with_obstacle.setdefault(obstacle["lane"], set()).add(obstacle["type"])
+        for pid, effect in (tick.get("effects") or {}).items():
+            assert effect["type"] in lanes_with_obstacle.get(lanes[pid], set()), (
+                f"{pid}가 자기 레인({lanes[pid]})에 없는 장애물({effect['type']})에 맞고 있습니다"
+            )
+            checked += 1
+
+    assert checked > 0, "감속 중인 카트가 한 번도 없어 검증이 무의미합니다"
+    main_module.store.clear()

@@ -631,6 +631,15 @@ async def _run_race_phase(
     # 결승선을 함께 넘겨야 장애물이 **결승선 앞쪽 구간에만** 고르게 깔린다.
     obstacles = race.obstacle_layout(draw.seed, round_index, line)
 
+    # **카트별 충돌 레인.** 무대가 카트를 "자기 레인 안에" 그리려면 반드시
+    # 필요하다 -- 이걸 안 내려주면 화면은 자체 해시로 아무 레인에나 그리게
+    # 되고, 그러면 서버가 "3번 레인에서 맞았다"고 판정한 카트가 화면에서는
+    # 7번 레인에 있어 **장애물을 스쳐 지나가는데 갑자기 느려지는** 것처럼
+    # 보인다(사용자 피드백: "부딪힌 즉시 효과가 나타나지 않아",
+    # "주변 카트들이 영향을 같이 받아"). 시드는 절대 보내지 않고 이미
+    # 파생된 레인 번호만 보낸다. 라운드 안에서 불변이라 한 번만 계산한다.
+    lanes = {pid: race.lane_for(draw.seed, pid, round_index) for pid in population}
+
     loop = asyncio.get_running_loop()
     start = loop.time()
     global active_race_round
@@ -639,7 +648,7 @@ async def _run_race_phase(
         await _tick_race_loop(
             draw, round_index, population, line, pass_count, denom_sets,
             countdown, race_seconds, cutoff_window_seconds, round_has_finish_line,
-            obstacles, session_id, loop, start,
+            obstacles, lanes, session_id, loop, start,
         )
     finally:
         active_race_round = None
@@ -648,7 +657,7 @@ async def _run_race_phase(
 async def _tick_race_loop(
     draw, round_index, population, line, pass_count, denom_sets,
     countdown, race_seconds, cutoff_window_seconds, round_has_finish_line,
-    obstacles, session_id, loop, start,
+    obstacles, lanes, session_id, loop, start,
 ) -> None:
     r3_finish_deadline: float | None = None
     while True:
@@ -675,6 +684,9 @@ async def _tick_race_loop(
             # 반영돼 있으므로, 클라이언트는 이 값으로 스핀/사운드 연출만
             # 트리거하면 되고 충돌 판정을 직접 재현할 필요가 없다(§12-4).
             "obstacles": obstacles,
+            # 카트별 충돌 레인(라운드 내 불변). 무대가 카트를 자기 레인
+            # 안에 그려야 "보이는 충돌"과 "판정된 충돌"이 일치한다.
+            "lanes": lanes,
             "effects": race.compute_effects(
                 population, ratio, round_index, draw.seed, pass_line_value=line
             ),
