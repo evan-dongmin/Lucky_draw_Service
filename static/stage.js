@@ -61,6 +61,8 @@ let racingStarted = false;
 let countdownTimer = null;
 let latestDepartmentRates = {};
 let currentPhase = null;
+// 지금 구간의 길이(초). 전체화면 결과 노출 시간을 여기서 비례 계산한다.
+let currentPhaseSeconds = null;
 
 // -- 오버레이 스위칭 --------------------------------------------------------
 
@@ -580,24 +582,49 @@ function stopLiveDistributionPolling() {
 // 상태로 들고 있는다).
 let lastRoundRevealed = null;
 
-// 라운드 결과를 전체 화면으로 보여주는 시간(사용자 요청). 이 시간이 지나면
-// 같은 패널이 작은 카드로 줄어들어 남은 선택 창 동안 계속 떠 있는다 --
-// 계속 전체 화면이면 우측 실시간 선택 통계가 가려져서 참가자가 다음 라운드를
-// 고를 근거를 못 본다.
-const ROUND_RESULT_FULLSCREEN_MS = 7000;
-// 그 다음 이어서 띄우는 "어느 팀을 골랐으면 몇 점?" 화면의 노출 시간.
-const TARGET_POINTS_FULLSCREEN_MS = 7000;
+// 라운드 결과 / 팀별 포인트를 전체 화면으로 보여주는 시간. 이 시간이 지나면
+// 같은 패널이 작은 카드로 줄어들어 남은 선택 창 동안 계속 떠 있는다.
+//
+// **구간 길이에 비례시킨다.** 예전에는 7초 고정이라 진행 시간을 길게 잡을수록
+// 결과만 스쳐 지나갔다(600초 설정에서 선택창 68초 중 전체화면은 21%뿐).
+// 레이스는 14 -> 48 -> 96초로 늘어나는데 결과 화면만 그대로라, 여유 있게
+// 설정한 사람이 원한 것과 정반대였다.
+//
+//  - 하한 9초: 8행짜리 표를 대형 스크린에서 다 같이 읽으려면 이 정도는
+//    필요하다(사용자 판단). 300초 설정에서 비율만 쓰면 7.5초라 개선이
+//    사실상 없어서 하한이 실질적으로 결정한다.
+//  - 상한 14초: 이보다 길면 우측 실시간 선택 통계가 너무 오래 가려진다.
+//    다만 **같은 통계가 참가자 폰에도 그대로 뜨므로**(후보 버튼의 "N명 ·
+//    적중 시 xN") 무대에서 잠깐 가리는 비용은 크지 않다.
+const ROUND_RESULT_FULLSCREEN_RATIO = 0.22;
+const ROUND_RESULT_FULLSCREEN_MIN_MS = 9000;
+const ROUND_RESULT_FULLSCREEN_MAX_MS = 14000;
+
+/** 이번 선택 창 길이에 맞는 전체화면 노출 시간(ms). 구간 길이를 모르면
+ *  하한값을 쓴다(구버전 세션·재접속 직후). */
+function fullscreenMsFor(phaseSeconds) {
+  if (!phaseSeconds) return ROUND_RESULT_FULLSCREEN_MIN_MS;
+  return Math.max(
+    ROUND_RESULT_FULLSCREEN_MIN_MS,
+    Math.min(ROUND_RESULT_FULLSCREEN_MAX_MS, phaseSeconds * 1000 * ROUND_RESULT_FULLSCREEN_RATIO)
+  );
+}
 // 결선 최종 등수 화면. 서버가 당첨자 발표까지 주는 텀
 // (FINAL_RESULT_HOLD_SECONDS = 9초)보다 조금 길게 잡아, 시상대가 뜨기
 // 전까지 화면이 비지 않게 한다(실제 종료는 시상대 쪽에서 걷어낸다).
 const FINAL_RACE_RESULT_MS = 11000;
 let roundResultFullscreenTimer = null;
+let roundResultFullscreenEndsAt = 0; // 지금 떠 있는 전체화면이 끝나는 시각(ms)
 let targetPointsTimer = null;
 let finalRaceResultShown = false;
 
-/** 라운드 결과 전체 화면이 끝나는 시점에 맞춰 "팀별 획득 포인트" 화면으로
+/** 라운드 결과 전체 화면이 **끝나는 시점에 맞춰** "팀별 획득 포인트" 화면으로
  *  갈아끼운다. 채점 메시지(prediction_result)는 라운드 결과보다 먼저 도착할
- *  수도, 나중에 도착할 수도 있어서 **남은 시간을 계산해** 예약한다. */
+ *  수도, 나중에 도착할 수도 있어서 **남은 시간을 계산해** 예약한다.
+ *
+ *  예전에는 남은 시간을 `노출시간 × 0.5`로 어림잡았는데, 그러면 포인트 화면이
+ *  결과 화면을 **절반 만에 덮어버린다**(실측: 9초를 의도했는데 결과는 4.5초만
+ *  노출). 정작 오래 보여주려던 라운드 결과가 가장 짧게 스쳐 지나갔다. */
 function queueTargetPointsPanel(data) {
   // **결선(R3)은 건너뛴다.** R3의 "라운드 결과 화면"은 결선 최종 등수이고,
   // 그 뒤로는 곧바로 최종 당첨자 발표가 와야 한다(사용자 요청: "3라운드
@@ -607,17 +634,23 @@ function queueTargetPointsPanel(data) {
   // 덮여 사라졌다. 결선 점수는 어차피 시상대와 우측 리더보드가 보여준다.
   if (data.round === 3) return;
   if (targetPointsTimer) clearTimeout(targetPointsTimer);
-  const wait = roundResultFullscreenTimer ? ROUND_RESULT_FULLSCREEN_MS * 0.5 : 0;
+  const fsMs = fullscreenMsFor(currentPhaseSeconds);
+  // 결과 화면이 떠 있으면 그게 **끝날 때까지** 기다린다(남은 시간 실측).
+  // 정확히 끝나는 순간에 맞추면 "꺼졌다 다시 켜지는" 한 프레임 깜빡임이
+  // 생길 수 있어 아주 살짝 앞당겨 이어붙인다.
+  const wait = roundResultFullscreenTimer
+    ? Math.max(0, roundResultFullscreenEndsAt - Date.now() - 150)
+    : 0;
   targetPointsTimer = setTimeout(() => {
     targetPointsTimer = null;
     if (!renderTargetPointsPanel(data)) return;
     roundTransitionEl.classList.remove("hidden");
-    enterRoundResultFullscreen(TARGET_POINTS_FULLSCREEN_MS);
+    enterRoundResultFullscreen(fsMs);
     // 전체 화면이 끝나면 원래의 라운드 요약 카드로 되돌린다 -- 남은 선택 창
     // 동안에는 "지금 몇 대 남았나"가 더 쓸모 있는 정보다.
     setTimeout(() => {
       if (lastRoundRevealed) showRoundTransition("survivors");
-    }, TARGET_POINTS_FULLSCREEN_MS + 60);
+    }, fsMs + 60);
   }, wait);
 }
 
@@ -635,6 +668,7 @@ function exitRoundResultFullscreen() {
     clearTimeout(targetPointsTimer);
     targetPointsTimer = null;
   }
+  roundResultFullscreenEndsAt = 0;
   roundTransitionEl.classList.remove("fullscreen");
   // 화면 한가운데 뜨는 배너를 원위치로 돌려놓는다(아래 설명 참고).
   document.body.classList.remove("round-result-open");
@@ -642,7 +676,7 @@ function exitRoundResultFullscreen() {
 
 /** 라운드 결과를 전체 화면으로 띄운다. 주어진 시간 뒤에 자동으로 작은
  *  카드로 돌아간다(내용은 그대로 남는다). */
-function enterRoundResultFullscreen(durationMs = ROUND_RESULT_FULLSCREEN_MS) {
+function enterRoundResultFullscreen(durationMs = fullscreenMsFor(currentPhaseSeconds)) {
   if (roundResultFullscreenTimer) clearTimeout(roundResultFullscreenTimer);
   roundTransitionEl.classList.add("fullscreen");
   // 배너(.overlay-banner)는 inset:0 + 가운데 정렬이라 전체 화면 결과의
@@ -650,6 +684,9 @@ function enterRoundResultFullscreen(durationMs = ROUND_RESULT_FULLSCREEN_MS) {
   // 두 줄을 가려 양쪽 다 못 읽는 상태가 나왔다. 전체 화면 동안에는 배너를
   // 아래쪽으로 내리고 작게 줄인다(내용은 유지).
   document.body.classList.add("round-result-open");
+  // 이어질 화면(팀별 포인트)이 "언제까지 기다려야 하는지" 알 수 있도록
+  // 끝나는 시각을 남긴다.
+  roundResultFullscreenEndsAt = Date.now() + durationMs;
   roundResultFullscreenTimer = setTimeout(() => {
     roundResultFullscreenTimer = null;
     roundTransitionEl.classList.remove("fullscreen");
@@ -2508,6 +2545,9 @@ function handleRacingEvent(data) {
       hideAllOverlays();
     }
     currentPhase = data.phase;
+    // 전체화면 결과 노출 시간을 이 구간 길이에서 계산하려고 들고 있는다
+    // (아래 fullscreenMsFor 참고).
+    currentPhaseSeconds = data.duration_seconds;
     startCountdown(
       data.duration_seconds,
       data.started_at,
