@@ -296,12 +296,16 @@ async def test_race_tick_cache_is_cleared_when_sequence_completes(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_final_round_does_not_end_instantly_when_everyone_qualifies(monkeypatch):
-    """당첨자 수와 결선 진출자 수가 같으면 결선 통과선이 -0.01(전원 통과)이
-    된다. 이때 "1위가 결승선을 넘었는가" 판정이 **출발 전부터 참**이라,
-    결선 카운트다운이 곧바로 걸려 레이스가 5초 만에 끝나 버렸다.
+    """당첨자 수 == 결선 진출자 수여도 결선이 출발하자마자 끝나면 안 된다.
 
-    resolve_finalist_count(10) == 10처럼 당첨자가 10명 이상이면 항상 이
-    상태가 되므로 드문 경우가 아니다."""
+    예전에는 결선 통과선을 **당첨 인원수**로 잡아서, 둘이 같으면 통과선이
+    -0.01(전원 통과)로 축퇴됐다. 그러면 "1위가 결승선을 넘었는가"가 출발
+    전부터 참이라 카운트다운이 곧바로 걸려 레이스가 5초 만에 끝났다.
+
+    이제 결선 통과선은 **당첨 인원수와 분리된 연출값**
+    (main.R3_FINISH_CROSS_COUNT = 1)으로 정해지므로 이 축퇴 자체가 구조적으로
+    사라졌다 -- 당첨자를 몇 명으로 잡든 결선에는 항상 "1등 한 대만 넘는"
+    진짜 결승선이 생긴다."""
     assert fairness.resolve_finalist_count(10) == 10, "전제: 당첨 10명이면 결선도 10명"
 
     participants = generate_sample_participants(40, seed=41)
@@ -335,13 +339,19 @@ async def test_final_round_does_not_end_instantly_when_everyone_qualifies(monkey
 
     r3 = [m for m in messages if m["type"] == "race_tick"]
     last = r3[-1]
-    assert last["pass_line"] <= 0, "전제: 전원 통과라 통과선이 축퇴값"
-    # 결승선이 없으므로 조기 종료도, 컷오프 UI도 없어야 한다
-    assert last["race_over"] is False
-    assert last["progress_ratio"] == pytest.approx(1.0), "구간을 끝까지 달려야 한다"
-    assert last["has_finish_line"] is False
-    assert last["candidate_count"] is None
-    assert last["cutoff_window_seconds"] is None
+    # 당첨자 10명 == 결선 10명인데도 **진짜 결승선이 생긴다**(축퇴 없음)
+    assert last["pass_line"] > 0, "결선에 실제 결승선이 있어야 한다"
+    assert last["has_finish_line"] is True
+    assert last["candidate_count"] == main_module.R3_FINISH_CROSS_COUNT == 1
+
+    # 핵심: 출발하자마자 끝나면 안 된다. 아무도 안 넘은 상태에서 시작하므로
+    # 카운트다운은 1등이 실제로 결승선을 넘은 뒤에야 걸린다.
+    assert r3[0]["race_over"] is False
+    first_over = next((i for i, m in enumerate(r3) if m["race_over"]), None)
+    assert first_over is not None, "1등이 통과했으면 결국 종료돼야 한다"
+    assert r3[first_over]["progress_ratio"] > 0.5, (
+        f"결선이 너무 일찍 끝났습니다: ratio={r3[first_over]['progress_ratio']:.2f}"
+    )
 
 
 def test_obstacles_spread_over_whole_track_when_everyone_passes():

@@ -197,6 +197,13 @@ RACE_TICK_INTERVAL_SECONDS = 0.3
 # 줄어든다.
 RACE_COUNTDOWN_SECONDS = 5.2
 
+# 결선(R3)에서 결승선을 넘도록 놓는 카트 수. **당첨 인원수와 분리된 연출값**
+# 이다(2026-08-11, 사용자 요청) -- 자세한 이유는 _run_race_phase의 주석 참고.
+# 1로 두면 "폰에서 고르는 1등"과 "결승선을 넘는 카트"가 정확히 일치한다.
+# 2 이상으로 올리려면 R3_CUTOFF_WINDOW_SECONDS(5초)도 함께 늘려야 한다 --
+# 1위와 2위의 통과 간격이 5.9~9.8초라 지금 창으로는 2등이 못 들어온다.
+R3_FINISH_CROSS_COUNT = 1
+
 # 결선 결과(최종 등수)를 보여주고 나서 경품 당첨자 발표로 넘어가기까지의 텀
 # (사용자 요청: "3라운드 결과 화면 보여주고, 텀을 준 다음에 최종 당첨자
 # 화면"). 예전에는 revealed 직후 곧바로 prize_winners가 나가서 결선 등수를
@@ -580,7 +587,24 @@ async def _run_race_phase(
     # 후보였던) 카트가 화면에서 아예 결승선에 못 미치는 것처럼 보여
     # "1등 통과 후 카운트다운"이라는 연출의 전제 자체가 깨진다. R3는
     # round_candidate_count가 없다(컷오프 대상이 아니라 순위 그대로).
-    pass_count = draw.round_candidate_count.get(round_index, len(draw.round_pass_ids[round_index]))
+    if round_index == 3:
+        # **결선 결승선은 "1등 한 대만 넘는 선"이다**(2026-08-11, 사용자 요청).
+        #
+        # 예전에는 당첨 인원수(draw_count)만큼 넘도록 놓았는데, 이 둘은 묶일
+        # 이유가 없다 -- 당첨 인원수는 **상품 예산**의 문제이고 결승선은
+        # **연출**이다. 묶여 있으면 경품을 넉넉히 줄수록 결선이 심심해진다
+        # (경품 8개면 결선 10대 중 8대가 우르르 통과해 결승선이 있으나 마나).
+        # 게다가 폰은 "결선에 오른 카트 중 **1등**은 누구일까요?"라고 묻는데
+        # 화면에서는 8대가 통과해 질문과 그림이 어긋났다.
+        #
+        # 이제 1대만 넘으므로 "폰에서 고른 1등"과 "결승선을 넘는 카트"가
+        # 정확히 대응한다. 순위·당첨자·예측 점수는 커밋 시점에 이미 확정돼
+        # 있어 이 값과 무관하다 -- 순수하게 화면에만 영향을 준다.
+        pass_count = R3_FINISH_CROSS_COUNT
+    else:
+        pass_count = draw.round_candidate_count.get(
+            round_index, len(draw.round_pass_ids[round_index])
+        )
     line = race.pass_line(pass_count, total)
     departments = draw.snapshot.get("departments", {})
     denom_sets = _department_denom_sets(departments, round_index, draw)
@@ -762,8 +786,13 @@ def _finalists_in_order(draw: DrawResult) -> list[dict[str, Any]]:
     """
     finalists = set(draw.round_pass_ids.get(2, []))
     dept_of = _department_by_pid(draw)
+    labels = participant_labels(store.get_session())
     return [
-        {"participant_id": pid, "department": dept_of.get(pid, "")}
+        {
+            "participant_id": pid,
+            "label": labels.get(pid, pid),
+            "department": dept_of.get(pid, ""),
+        }
         for pid in draw.ranking
         if pid in finalists
     ]
@@ -791,12 +820,35 @@ async def _announce_round(session: Session, draw: DrawResult, round_index: int) 
 
 
 async def _leaderboard_payload() -> dict[str, Any]:
+    # 무대 리더보드는 사번만 띄우면 관객이 누군지 알 수 없어 이름표를 함께
+    # 보낸다(participant_id는 그대로 둔다 -- 화면 매칭·디버깅에 쓰인다).
+    labels = participant_labels(store.get_session())
     return {
         "type": "prediction_leaderboard",
         "top": [
-            {"participant_id": c.participant_id, "score": c.score}
+            {
+                "participant_id": c.participant_id,
+                "label": labels.get(c.participant_id, c.participant_id),
+                "score": c.score,
+            }
             for c in prediction_engine.leaderboard(10)
         ],
+    }
+
+
+def participant_labels(session: Session | None) -> dict[str, str]:
+    """participant_id -> 화면에 띄울 이름표 `"이름 (팀)"`.
+
+    사번(P0157)만 띄우면 관객·진행자 누구도 그게 누군지 알 수 없다. 그렇다고
+    이름만 쓰면 동명이인이 구분되지 않는다 -- 250명 샘플 명단에서 **91%가
+    같은 이름을 가진 사람과 겹쳤다**(최채원 7명, 정지우 7명 등). 상품을
+    나눠줄 때 리더보드에 "박도윤"이 두 줄 뜨면 곤란하므로 팀을 함께 붙인다.
+    시상대·결선 등수 화면이 이미 쓰던 표기와도 같아 화면 간 표기가 통일된다.
+    """
+    if session is None:
+        return {}
+    return {
+        p.id: (f"{p.name} ({p.team})" if p.team else p.name) for p in session.participants
     }
 
 
@@ -1185,10 +1237,17 @@ async def predict_join(payload: PredictJoinRequest) -> dict[str, Any]:
 
 def _live_stats_full(round_index: int) -> dict[str, Any]:
     """무대·폰의 실시간 선택 통계용. 아직 아무도 안 고른 후보도 0명으로
-    함께 내려 "진짜 소수파"가 목록에서 사라지지 않게 한다."""
-    return prediction_engine.live_stats(
-        round_index, candidates=prediction_engine.round_candidates.get(round_index, [])
-    )
+    함께 내려 "진짜 소수파"가 목록에서 사라지지 않게 한다.
+
+    R3는 후보가 **결선 진출자 사번**이라 그대로 띄우면 누군지 알 수 없다.
+    화면에 쓸 이름표를 함께 내려보낸다(R1·R2는 후보가 부서명이라 그대로 쓴다).
+    """
+    candidates = prediction_engine.round_candidates.get(round_index, [])
+    stats = prediction_engine.live_stats(round_index, candidates=candidates)
+    if round_index == 3:
+        labels = participant_labels(store.get_session())
+        stats["labels"] = {c: labels.get(c, c) for c in candidates}
+    return stats
 
 
 def _my_race_status(pid: str) -> dict[str, Any] | None:
@@ -1270,7 +1329,11 @@ def _candidate_stats(session: Session, round_index: int) -> dict[str, dict[str, 
     # R3 -- 후보가 결선 진출자 개인이다. _finalists_in_order와 같은 순서를
     # 써서 무대 화면의 등수표와 폰의 표시가 어긋나지 않게 한다.
     return {
-        f["participant_id"]: {"prev_rank": i + 1, "department": f["department"]}
+        f["participant_id"]: {
+            "prev_rank": i + 1,
+            "department": f["department"],
+            "label": f["label"],
+        }
         for i, f in enumerate(_finalists_in_order(draw))
     }
 

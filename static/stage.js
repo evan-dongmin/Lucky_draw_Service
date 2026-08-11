@@ -463,8 +463,10 @@ function renderPredictionLeaderboard(top) {
   predictionLeaderboardEl.classList.remove("hidden");
   const titleEl = predictionLeaderboardEl.querySelector("h3");
   if (titleEl) titleEl.textContent = "예측 리더보드";
+  // 사번(P0157)만 띄우면 관객이 누군지 알 수 없다. 서버가 함께 내려주는
+  // 이름표("이름 (팀)")를 쓰고, 없으면 사번으로 폴백한다.
   predictionLeaderboardListEl.innerHTML = top
-    .map((entry) => `<li>${entry.participant_id} - ${entry.score}점</li>`)
+    .map((entry) => `<li>${entry.label || entry.participant_id} - ${entry.score}점</li>`)
     .join("");
 }
 
@@ -492,6 +494,10 @@ function renderDistributionBlock(roundKey, stats) {
   const minority = (stats && stats.is_minority) || {};
   const chosen = (stats && stats.chosen) || 0;
   const eligible = (stats && stats.eligible) || 0;
+  // R3는 후보가 결선 진출자 **사번**이라 그대로 띄우면 누군지 알 수 없다.
+  // 서버가 그 라운드에 한해 이름표를 함께 내려준다(R1·R2는 후보가 부서명
+  // 이라 labels가 비어 있고, 그때는 후보값을 그대로 쓴다).
+  const labels = (stats && stats.labels) || {};
 
   const entries = Object.keys(counts).sort(
     (a, b) => (counts[b] || 0) - (counts[a] || 0) || a.localeCompare(b)
@@ -515,7 +521,7 @@ function renderDistributionBlock(roundKey, stats) {
       const cls = isTop ? " dist-top" : isMinority ? " dist-minority" : "";
       const multLabel = mult !== undefined ? `×${mult.toFixed(1)}` : "";
       return `<div class="dist-row${cls}">
-        <span class="dist-name">${isMinority ? "💎 " : ""}${target}</span>
+        <span class="dist-name">${isMinority ? "💎 " : ""}${labels[target] || target}</span>
         <span class="dist-bar"><i style="width:${pct}%"></i></span>
         <span class="dist-count">${n}명</span>
         <span class="dist-pct">${pct}%</span>
@@ -729,7 +735,7 @@ function renderFinalistPanel(data) {
         : "";
       return `<li class="rt-finalist${i < 3 ? " rt-top" : ""}">
         <span class="rt-rank">${i + 1}</span>
-        <span class="rt-name">${swatch}${f.participant_id}</span>
+        <span class="rt-name">${swatch}${f.label || f.participant_id}</span>
         <span class="rt-dept">${dept}</span>
       </li>`;
     })
@@ -808,12 +814,18 @@ function renderFinalRaceResultPanel(draw) {
   roundTransitionTitleEl.textContent = "🏁 결선 결과 — 최종 등수";
   roundTransitionSummaryEl.textContent =
     "레이스는 여기서 끝. 실제 경품 당첨자는 예측 리더보드로 곧 발표됩니다";
+  // **결승선을 넘은 카트에만 🏁를 붙인다**(사용자 요청). 결선 결승선은 이제
+  // "1등 한 대만 넘는 선"이라(main.py: R3_FINISH_CROSS_COUNT) 통과 표시가
+  // 곧 우승자다. 등수는 전원 표시한다 -- 예측 점수는 결선 진출자 **전원의
+  // 등수**로 매겨지므로, 4등을 고른 사람도 "내가 고른 사람이 몇 등이었는지"를
+  // 확인할 수 있어야 한다.
   roundTransitionBodyEl.innerHTML = `<ol class="rt-finalists">${ranked
     .map((pid, i) => {
-      const medal = i === 0 ? "🥇" : i === 1 ? "🥈" : i === 2 ? "🥉" : "";
-      return `<li class="rt-finalist${i < 3 ? " rt-top" : ""}">
-        <span class="rt-rank">${medal || i + 1}</span>
+      const crossed = i < r3CrossCount;
+      return `<li class="rt-finalist${crossed ? " rt-top" : ""}">
+        <span class="rt-rank">${crossed ? "🏁" : i + 1}</span>
         <span class="rt-name">${nameById[pid] || pid}</span>
+        ${crossed ? '<span class="rt-dept">결승선 통과</span>' : ""}
       </li>`;
     })
     .join("")}</ol>`;
@@ -943,6 +955,12 @@ let photoFinishShownForRound = null;
 // 라운드가 바뀌면 그 시점에 이미 선을 넘어 있는 카트를 "소리 없이" 채워
 // 넣는다(중간 접속·복구 직후 수십 대의 통과음이 한꺼번에 터지는 것 방지).
 let crossedPassLine = new Set();
+// 결선에서 결승선을 넘도록 놓인 카트 수(서버 R3_FINISH_CROSS_COUNT).
+// 결선 등수 화면이 "누가 통과했는지" 표시할 때 쓴다 -- crossedPassLine을
+// 쓰면 안 된다. 그건 카메라 밖 카트를 컬링(p < tailProgress -> continue)하고
+// 렌더 루프 타이밍에도 좌우돼서, 레이스가 끝난 뒤 조회하면 비어 있을 수 있다.
+// 결승선은 "순위 상위 N대만 넘도록" 놓이므로 등수 N번째까지가 곧 통과자다.
+let r3CrossCount = 0;
 let crossedRound = null;
 let crossedSoundCount = 0;
 const CROSS_SOUND_BUDGET = 24; // 라운드당 통과음 최대 횟수(그 뒤는 조용히 지나간다)
@@ -2284,6 +2302,7 @@ function drawFrame(positions, tick) {
     drawObstacle(raceCtx, o, obstacleSize);
   }
 
+  if (tick.round === 3 && tick.candidate_count) r3CrossCount = tick.candidate_count;
   if (crossedRound !== tick.round) {
     crossedRound = tick.round;
     crossedPassLine = new Set(sorted.filter((pid) => positions[pid] >= tick.pass_line));
@@ -2872,6 +2891,7 @@ const ws = connectWS((data) => {
     photoFinishShownForRound = null;
     lastEffectType.clear();
     crossedPassLine = new Set();
+    r3CrossCount = 0;
     crossedRound = null;
     cutoffFirstCrossAt = null;
     cutoffFrozenCount = null;

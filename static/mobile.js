@@ -415,7 +415,7 @@ function renderCandidateStat(stat) {
   if (stat.prev_rate !== undefined && stat.prev_rate !== null) {
     bits.push(`통과율 ${Math.round(stat.prev_rate * 100)}%`);
   }
-  if (stat.department) bits.push(stat.department);
+  // 부서는 이름표("이름 (팀)")에 이미 들어가 있어 다시 붙이면 중복이다.
   if (!bits.length) return "";
   return `<span class="target-stat">${bits.join(" · ")}</span>`;
 }
@@ -433,6 +433,16 @@ function renderPredictionCard(me, round) {
   const target = me.card.target[round];
   const isAuto = me.card.is_auto[round];
 
+  // **표시값과 전송값을 분리한다.** 서버로 보내는 값(data-target)은 반드시
+  // 후보 원본값(R3는 사번)이어야 한다 -- 채점·자동배정·소수파 분포가 전부
+  // participant_id 기준이라 이름을 보내면 채점이 통째로 깨진다. 화면에만
+  // 이름표("이름 (팀)")를 쓴다. R1·R2는 후보가 부서명이라 이름표가 없고,
+  // 그때는 후보값이 곧 표시값이다.
+  const cardStats = (me.candidate_stats && me.candidate_stats[round]) || {};
+  const cardLabels = ((me.live && me.live[round]) || {}).labels || {};
+  const labelFor = (c) =>
+    cardLabels[c] || (cardStats[c] && cardStats[c].label) || c;
+
   let targetHtml = "";
   if (state === "pending") {
     targetHtml =
@@ -445,7 +455,7 @@ function renderPredictionCard(me, round) {
     const counts = live.counts || {};
     const bonus = live.minority_bonus || {};
     const minority = live.is_minority || {};
-    const stats = (me.candidate_stats && me.candidate_stats[round]) || {};
+    const stats = cardStats;
     // 미선택 시 자동 배정 규칙이 라운드마다 다르다 -- R1·R2는 자기 부서,
     // R3는 무작위(결선 진출자 개인이라 "자기 팀"이 없다).
     const autoNote =
@@ -465,7 +475,7 @@ function renderPredictionCard(me, round) {
           const isMinority = !!minority[c];
           const multLabel = mult !== undefined ? ` · 적중 시 ×${mult.toFixed(1)}` : "";
           return `<button class="choice-btn target-btn ${target === c ? "selected" : ""}${isMinority ? " minority" : ""}" data-round="${round}" data-target="${c}">
-            <span class="target-name">${isMinority ? "💎 " : ""}${c}</span>
+            <span class="target-name">${isMinority ? "💎 " : ""}${labelFor(c)}</span>
             ${renderCandidateStat(stats[c])}
             <span class="pct-label">${n}명 · ${pct}%${multLabel}</span>
           </button>`;
@@ -478,7 +488,7 @@ function renderPredictionCard(me, round) {
       `<p class="hint-line choice-hint">${CHOICE_HINT[round] || ""}</p>`;
   } else {
     const autoLabel = isAuto ? (round === 3 ? " (무작위 배정)" : " (우리 부서 자동 선택)") : "";
-    targetHtml = `<p>선택 결과: <strong>${target}</strong>${autoLabel}</p>`;
+    targetHtml = `<p>선택 결과: <strong>${labelFor(target)}</strong>${autoLabel}</p>`;
   }
 
   return `
