@@ -545,54 +545,6 @@ async def test_race_tick_sends_each_kart_collision_lane(monkeypatch):
     main_module.store.clear()
 
 
-@pytest.mark.asyncio
-async def test_race_tick_sends_each_kart_collision_lane(monkeypatch):
-    """**무대가 카트를 "자기 충돌 레인 안에" 그리려면 레인 번호가 필요하다.**
-
-    이걸 안 내려주면 화면은 자체 해시(laneFor)로 아무 레인에나 그리게 되고,
-    서버가 "3번 레인에서 맞았다"고 판정한 카트가 화면에서는 7번 레인에 있어
-    **장애물을 스쳐 지나가는데 갑자기 느려지는** 것처럼 보인다. 실제로 그
-    상태였고(측정: 맞은 카트가 그 장애물과 화면에서 겹치는 비율 약 10~14%),
-    사용자에게 "부딪힌 즉시 효과가 나타나지 않는다" / "주변 카트가 같이
-    영향받는다"로 관측됐다.
-    """
-    participants = generate_sample_participants(40, seed=5)
-    draw = fairness.compute_draw("lane-tick", participants, draw_count=3, seed="lane-seed")
-    session = Session(
-        session_id="lane-tick", participants=participants, draw_count=3, mode="racing",
-        total_seconds=300.0, created_at="2026-01-01T00:00:00Z", predictions_enabled=False,
-    )
-    session.draws.append(draw)
-    main_module.store.set_session(session)
-
-    monkeypatch.setattr(main_module.director, "build_runbook", lambda **kw: list(TINY_SEGMENTS))
-    monkeypatch.setattr(main_module, "RACE_TICK_INTERVAL_SECONDS", 0.01)
-
-    messages: list[dict] = []
-
-    async def fake_broadcast(message, sender=None, roles=None):
-        messages.append(message)
-
-    monkeypatch.setattr(main_module.hub, "broadcast", fake_broadcast)
-    await main_module.run_racing_sequence("lane-tick", 0, 300.0)
-
-    from app import race as race_module
-
-    for round_index in (1, 2, 3):
-        ticks = [m for m in messages if m["type"] == "race_tick" and m["round"] == round_index]
-        assert ticks, f"R{round_index} 틱이 없습니다"
-        tick = ticks[-1]
-        assert "lanes" in tick, f"R{round_index} 틱에 lanes가 빠졌습니다"
-        # 위치를 내려준 모든 카트에 레인이 있어야 한다(빠지면 그 카트만 엉뚱한 곳에 그려진다)
-        assert set(tick["lanes"]) == set(tick["positions"])
-        # 서버가 충돌 판정에 쓰는 값과 **정확히 같은 값**이라야 화면과 판정이 일치한다
-        for pid, lane in tick["lanes"].items():
-            assert lane == race_module.lane_for(draw.seed, pid, round_index)
-            assert 0 <= lane < race_module.LANE_COUNT
-
-    main_module.store.clear()
-
-
 def test_kart_lane_and_obstacle_lane_share_the_same_axis():
     """카트 레인과 장애물 레인이 **같은 축**(0..LANE_COUNT-1)이어야 한다.
 
